@@ -712,6 +712,11 @@ def _flow_balance_line(pa: PendingAction) -> str:
         return ""
 
 
+def _detail_lines(rows) -> str:
+    """'Label: value' lines for the confirm screen, skipping empty values."""
+    return "\n".join(f"{label}: {value}" for label, value in rows if str(value or "").strip())
+
+
 def _flow_fields(pa: PendingAction) -> dict:
     """The confirm screen's lines: the balance, the amount, who/what, the routing
     detail, and the customer's own narration.
@@ -751,48 +756,48 @@ def _flow_fields(pa: PendingAction) -> dict:
             return _with_context(savings_loans.confirmation_fields(pa))
         if at == "transfer":
             fee = Decimal(str(p.get("fee") or "0"))
-            cost = (f" · Bank fee {_money(fee)} · Total {_money(Decimal(p['amount']) + fee)}"
-                    if fee > 0 else "")
+            # One labelled fact per line. Run together with "·" separators the
+            # bank, account, fee and total wrapped into an unreadable paragraph
+            # on the confirm screen - the one place every figure must be clear.
+            rows = [("Bank", p.get("bank_name", "")), ("Account", p.get("account", ""))]
+            if fee > 0:
+                rows += [("Bank fee", _money(fee)),
+                         ("Total", _money(Decimal(p["amount"]) + fee))]
             return _with_context({
                 "amount": _money(Decimal(p["amount"])),
                 "recipient": f"To {p.get('name', 'recipient').upper()}",
-                "details": f"{p.get('bank_name', '')} · {p.get('account', '')}".strip(" ·") + cost})
+                "details": _detail_lines(rows)})
         if at == "airtime":
             return _with_context({
                 "amount": _money(Decimal(p["amount"])),
                 "recipient": f"{NETWORK_NAMES.get(p.get('net', ''), '')} airtime".strip(),
-                "details": f"To {p.get('phone', '')}".strip()})
+                "details": _detail_lines([("Phone", p.get("phone", ""))])})
         if at == "data":
             return _with_context({
                 "amount": _money(Decimal(p["price"])),
                 "recipient": f"{p.get('plan_name', 'Data')} · "
                              f"{NETWORK_NAMES.get(p.get('net', ''), '')}".strip(" ·"),
-                "details": f"To {p.get('phone', '')}".strip()})
+                "details": _detail_lines([("Phone", p.get("phone", ""))])})
         if at == "electricity":
-            cust = p.get("customer", "")
-            meter_line = f"Meter {p.get('meter', '')}".strip()
-            if cust:
-                meter_line += f" · {cust}"
-            address = p.get("customer_address") or p.get("address") or ""
-            if address:
-                meter_line += f" · {address}"
             return _with_context({
                 "amount": _money(Decimal(p["amount"])),
                 "recipient": DISCO_NAMES.get(p.get("disco", ""), "Electricity"),
-                "details": meter_line})
+                "details": _detail_lines([
+                    ("Meter", p.get("meter", "")), ("Name", p.get("customer", "")),
+                    ("Address", p.get("customer_address") or p.get("address") or "")])})
         if at == "cable":
             return _with_context({
                 "amount": _money(Decimal(p["price"])),
                 "recipient": f"{CABLE_NAMES.get(p.get('prov', ''), '')} "
                              f"{p.get('plan_name', '')}".strip(),
-                "details": f"Smartcard {p.get('iuc', '')}".strip()})
+                "details": _detail_lines([("Smartcard", p.get("iuc", ""))])})
         if at == "exam":
             quantity = int(p.get("quantity", 1))
             return _with_context({
                 "amount": _money(Decimal(p["amount"])),
                 "recipient": f"{p.get('exam_name', 'Exam')} {p.get('description', 'PIN')} "
                              f"×{quantity}",
-                "details": f"Delivery phone {p.get('phone', '')}".strip()})
+                "details": _detail_lines([("Delivery phone", p.get("phone", ""))])})
     except (KeyError, InvalidOperation):
         pass
     # Conversion (and any shape we don't itemise) falls back to the one-line

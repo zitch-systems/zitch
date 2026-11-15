@@ -3795,6 +3795,31 @@ class AiDataShorthandTests(TestCase):
         )
         return row.text if row else ""
 
+    def test_plan_can_be_picked_by_description_not_only_number(self):
+        """Reported: "Go with the cheapest" was answered with "Reply with a
+        plan number". A reply that describes exactly one listed plan picks it;
+        an ambiguous one still re-prompts rather than guessing."""
+        from whatsapp import router
+
+        DataPlan.objects.create(network="2", plan_type="1", name="1.5GB", validity="30 days",
+                                plan_code="glo-1.5gb", price=Decimal("1000"), active=True)
+        for reply_text, expected in (("Go with the cheapest", "glo-1.5gb"),
+                                     ("the 1k one", "glo-1.5gb"),
+                                     ("5GB", "glo-5gb"),
+                                     ("the biggest", "glo-5gb")):
+            with self.subTest(reply=reply_text):
+                PendingAction.objects.filter(msisdn=MSISDN).delete()
+                router._start_data(self.user, MSISDN)  # noqa: SLF001
+                router.handle_inbound(MSISDN, reply_text)
+                pa = PendingAction.objects.get(msisdn=MSISDN, action_type="data")
+                self.assertEqual(pa.payload.get("plan_code"), expected)
+        PendingAction.objects.filter(msisdn=MSISDN).delete()
+        router._start_data(self.user, MSISDN)  # noqa: SLF001
+        router.handle_inbound(MSISDN, "something nice")
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="data")
+        self.assertNotIn("plan_code", pa.payload)
+        self.assertIn("plan number", self.last_reply())
+
     def test_own_line_prefix_skips_phone_and_network_questions(self):
         from whatsapp import router
 

@@ -268,3 +268,29 @@ class VtuPendingOutcomeTests(TestCase):
                                                txn, {}, lambda t, r: ("x", []))
         self.assertEqual(outcome.status, router.OUTCOME_PENDING)
         self.assertIn("still processing", outcome)
+
+
+class FlowDeadlineTests(TestCase):
+    """The settle wait is capped by what is left of Meta's ~10s for the whole
+    exchange, so a slow PIN check plus a full wait cannot add up to
+    "Couldn't load content"."""
+
+    def setUp(self):
+        self.user = _make_user()
+
+    @override_settings(WHATSAPP_FLOW_SETTLE_WAIT=6)
+    def test_wait_stops_at_the_exchange_deadline(self):
+        import time
+
+        pa = _action(self.user)
+        _ledger(self.user, pa.id, Transaction.PENDING)
+        token = flows.FLOW_DEADLINE.set(time.monotonic() + 1.0)
+        try:
+            started = time.monotonic()
+            self.assertIsNone(router._await_settlement(pa.id, self.user))
+            self.assertLess(time.monotonic() - started, 1.0)
+        finally:
+            flows.FLOW_DEADLINE.reset(token)
+
+    def test_no_deadline_outside_a_flow_exchange(self):
+        self.assertIsNone(flows.flow_time_left())

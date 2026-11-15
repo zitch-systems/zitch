@@ -1101,6 +1101,10 @@ def _await_vtu_settlement(txn) -> None:
     from wallet.models import Transaction
 
     grace = float(getattr(dj_settings, "VTU_PENDING_GRACE_SECONDS", 5) or 0)
+    from .flows import flow_time_left
+    left = flow_time_left()
+    if left is not None:
+        grace = min(grace, left - 0.5)
     deadline = time.monotonic() + max(0.0, grace)
     while time.monotonic() < deadline:
         time.sleep(0.5)
@@ -1939,14 +1943,64 @@ def _exec_exam(pa: PendingAction, user, msisdn: str) -> str:
 
 
 def _pick(text: str, choices: list, fetch):
-    """Map a '1'-based reply to an item via `fetch(code)`; None if out of range."""
+    """Map a '1'-based reply to an item via `fetch(code)`; None if out of range.
+
+    Customers describe a plan as often as they number it - "go with the
+    cheapest", "the 1k one", "3GB" - and answering those with "reply with a
+    plan number" reads as the bot not listening. A reply that is not a number
+    is matched against the listed items themselves (see _pick_described).
+    """
     try:
-        idx = int(text.strip()) - 1
+        idx = int(text.strip().rstrip(".)")) - 1
     except ValueError:
-        return None
+        items = [item for item in (fetch(code) for code in choices) if item is not None]
+        return _pick_described(text, items)
     if not (0 <= idx < len(choices)):
         return None
     return fetch(choices[idx])
+
+
+_CHEAPEST_WORDS = re.compile(
+    r"\b(cheap(est|er)?|lowest|least|smallest|minimum|min|lowest price|least expensive|"
+    r"small(est)? one|budget)\b")
+_BIGGEST_WORDS = re.compile(
+    r"\b(biggest|largest|highest|most expensive|maximum|max|largest one)\b")
+_SIZE = re.compile(r"(\d+(?:\.\d+)?)\s*(gb|mb|tb)\b")
+
+
+def _pick_described(text: str, items: list):
+    """The ONE listed plan a free-text reply describes, or None when it is not
+    exactly one. Never guesses between two candidates: a wrong plan is money."""
+    low = (text or "").strip().lower()
+    if not low or not items:
+        return None
+    price = lambda item: Decimal(str(getattr(item, "price", 0) or 0))  # noqa: E731
+    if _CHEAPEST_WORDS.search(low):
+        cheapest = min(price(i) for i in items)
+        found = [i for i in items if price(i) == cheapest]
+        return found[0] if len(found) == 1 else None
+    if _BIGGEST_WORDS.search(low):
+        dearest = max(price(i) for i in items)
+        found = [i for i in items if price(i) == dearest]
+        return found[0] if len(found) == 1 else None
+    size = _SIZE.search(low.replace(",", ""))
+    if size:
+        wanted = f"{size[1]}{size[2]}".lower()
+        found = [i for i in items
+                 if wanted in re.sub(r"\s+", "", str(getattr(i, "name", "")).lower())]
+        if len(found) == 1:
+            return found[0]
+    token = re.search(r"(?:₦|ngn|n)?\s*(\d[\d,]*(?:\.\d+)?\s*[km]?)\b", low)
+    amount = parse_amount(token[1].replace(" ", "")) if token else None
+    if amount:
+        found = [i for i in items if price(i) == amount]
+        if len(found) == 1:
+            return found[0]
+    # A plan named outright ("DStv Compact", "Compact Plus").
+    named = [i for i in items if str(getattr(i, "name", "")).strip().lower() in low]
+    if len(named) == 1:
+        return named[0]
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -2588,6 +2642,13 @@ def _await_settlement(action_id: int, user, action_type: str = ""):
     configured_budget = getattr(settings, "WHATSAPP_FLOW_SETTLE_WAIT", 3)
     budget = 3 if configured_budget is None else float(configured_budget)
     budget = max(0, min(budget, 6))
+    # Never past the exchange's own deadline: the PIN check and the queueing
+    # before this point already spent part of Meta's ~10s, and a fixed budget
+    # on top of a slow start is how "Couldn't load content" happened.
+    from .flows import flow_time_left
+    left = flow_time_left()
+    if left is not None:
+        budget = min(budget, left - 0.5)
     if budget <= 0:
         return None
     # The key every executor stamps its ledger row with - except FX, which has

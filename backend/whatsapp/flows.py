@@ -13,6 +13,7 @@ Screen ids mirror the published Flow JSON (`flow_assets/pin_flow.json`):
 import base64
 import hashlib
 import hmac
+import contextvars
 import logging
 import re
 import time
@@ -820,12 +821,30 @@ def _check_contract(response: dict) -> dict:
     return response
 
 
+#: Absolute monotonic time by which this Flow exchange must have answered.
+#: Meta drops a data_exchange after ~10s and shows "Couldn't load content", so
+#: every wait inside one exchange (see router._await_settlement) is capped by
+#: what is LEFT of this budget, not by a fixed number of seconds of its own.
+FLOW_DEADLINE = contextvars.ContextVar("wa_flow_deadline", default=None)
+
+
+def flow_time_left() -> float | None:
+    """Seconds left before this exchange must answer, or None outside one."""
+    deadline = FLOW_DEADLINE.get()
+    return None if deadline is None else deadline - time.monotonic()
+
+
 def handle_flow_request(payload: dict) -> dict:
     """Route a decrypted Flows request to its response. Never raises - any
     unexpected shape resolves to a safe terminal screen so the endpoint always
     returns a well-formed (encryptable) reply."""
     started = time.monotonic()
-    response = _handle_flow_request(payload)
+    budget = float(getattr(settings, "WHATSAPP_FLOW_RESPONSE_BUDGET", 7.5) or 7.5)
+    token = FLOW_DEADLINE.set(started + budget)
+    try:
+        response = _handle_flow_request(payload)
+    finally:
+        FLOW_DEADLINE.reset(token)
     # SUCCESS is a reserved completion envelope. Older published flows without
     # RESULT must close cleanly instead of trying to render data on that name.
     if (response.get("screen") == SUCCESS_SCREEN

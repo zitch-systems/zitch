@@ -64,7 +64,7 @@ class FlowTransferFeeTests(TestCase):
         pa = self._pa(user)
         resp = self._form(pa, "gtb")
         self.assertEqual(resp["screen"], PIN_CHAIN)
-        self.assertIn("Bank fee ₦10.75 · Total ₦5,010.75", resp["data"]["details"])
+        self.assertIn("Bank fee: ₦10.75\nTotal: ₦5,010.75", resp["data"]["details"])
         pa.refresh_from_db()
         self.assertEqual(Decimal(pa.payload["fee"]), BANK_FEE_5K)
 
