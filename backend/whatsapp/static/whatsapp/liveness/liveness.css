@@ -1,0 +1,26 @@
+/* Shared by the WhatsApp face page and the app's in-app liveness check. */
+.lv-stage { text-align: center; }
+.lv-ring { position: relative; width: 268px; height: 268px; margin: 34px auto 30px; border-radius: 50%; padding: 10px; background: #fff; transition: box-shadow .3s ease; }
+.lv-frame { position: relative; width: 248px; height: 248px; border-radius: 50%; overflow: hidden; background: #e8eee9; border: 4px solid #14583d; }
+.lv-frame video, .lv-frame img { width: 100%; height: 100%; object-fit: cover; }
+.lv-frame video { transform: scaleX(-1); }
+.lv-frame .hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; color: #52665c; font-size: 14px; }
+.lv-arrow { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); min-width: 44px; padding: 2px 10px; border-radius: 999px; background: rgba(20, 88, 61, .82); color: #fff; font-size: 22px; line-height: 1.4; }
+.lv-arrow:empty { display: none; }
+/* The screen as a light: a bright white ring around the preview, and a white
+   page behind it, while the camera runs. Browsers cannot raise brightness. */
+body.lv-flash, body.lv-flash main { background: #fff; }
+body.lv-flash .lv-ring { box-shadow: 0 0 0 22px #fff, 0 0 0 23px #dfe7e1, 0 0 60px 34px #fff; }
+/* Text around the ring paints above its glow. */
+.lv-stage > div:not(.lv-ring), .lv-stage > p, body.lv-flash main > p, body.lv-flash main > h1 { position: relative; z-index: 1; }
+.lv-prompt { font-size: 18px; font-weight: 700; color: #142621; margin: 8px 0 4px; min-height: 27px; }
+.lv-chips { display: flex; justify-content: center; gap: 8px; list-style: none; padding: 0; margin: 8px 0; }
+.lv-chips li { min-width: 72px; padding: 6px 12px; border-radius: 999px; background: #eef3ef; color: #52665c; font-size: 14px; font-weight: 600; }
+.lv-chips li.current { background: #fff5de; color: #7a5a00; outline: 2px solid #f0d58a; }
+.lv-chips li.done { background: #14583d; color: #fff; }
+.lv-chips li.done::before { content: "✓ "; }
+.lv-hint { margin: 6px 0; color: #7a5a00; font-size: 14px; font-weight: 600; }
+.lv-dark { margin: 6px 0; padding: 8px 12px; border-radius: 10px; background: #fff5de; color: #7a5a00; font-size: 14px; font-weight: 600; }
+.lv-bright { margin: 8px 0 0; color: #52665c; font-size: 13px; }
+.hidden { display: none !important; }
+@media (prefers-reduced-motion: reduce) { .lv-ring { transition: none; } }

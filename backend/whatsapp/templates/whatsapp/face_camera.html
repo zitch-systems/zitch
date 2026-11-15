@@ -1,4 +1,4 @@
-<!doctype html>
+{% load static %}<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -6,6 +6,7 @@
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
   <title>Tier 2 face check · Zitch</title>
+  <link rel="stylesheet" href="{{ liveness_style }}" nonce="{{ nonce }}">
   <style nonce="{{ nonce }}">
     * { box-sizing: border-box; }
     body { margin: 0; background: #f4f6f2; color: #142621; font: 16px/1.5 system-ui, sans-serif; }
@@ -14,24 +15,21 @@
     h1 { font-size: 22px; line-height: 1.25; margin: 14px 0 6px; }
     p { margin: 6px 0; }
     .note { color: #52665c; font-size: 14px; }
-    .frame { position: relative; width: 248px; height: 248px; margin: 18px auto 8px; border-radius: 50%; overflow: hidden; background: #e8eee9; border: 4px solid #14583d; }
-    .frame video, .frame img { width: 100%; height: 100%; object-fit: cover; }
-    .frame video { transform: scaleX(-1); }
-    .frame .hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; color: #52665c; font-size: 14px; }
-    button, .pick { display: block; width: 100%; min-height: 50px; border: 0; border-radius: 12px; padding: 14px; margin-top: 14px; background: #14583d; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+    button, .pick, .back { display: block; width: 100%; min-height: 50px; border: 0; border-radius: 12px; padding: 14px; margin-top: 14px; background: #14583d; color: #fff; font: inherit; font-weight: 700; cursor: pointer; text-decoration: none; }
     button.ghost, .pick.ghost { background: #eef3ef; color: #14583d; }
+    button.link { min-height: 0; padding: 6px; background: none; color: #14583d; font-weight: 600; text-decoration: underline; }
     button:disabled { opacity: .6; }
-    button:focus, .pick:focus-within { outline: 3px solid #acdfaa; outline-offset: 2px; }
+    button:focus, .pick:focus-within, .back:focus { outline: 3px solid #acdfaa; outline-offset: 2px; }
     .pick input { position: absolute; width: 1px; height: 1px; opacity: 0; }
     .message { background: #fff5de; border-radius: 10px; padding: 12px; margin-top: 14px; text-align: left; }
-    .message.ok { background: #e6f5e8; }
+    .message.ok { background: #e6f5e8; font-weight: 600; }
     .tips { text-align: left; color: #52665c; font-size: 14px; padding-left: 18px; margin: 10px 0 0; }
     .ids { text-align: left; margin-top: 14px; }
     .ids label { display: block; font-size: 14px; font-weight: 600; margin-top: 10px; }
     .ids input { display: block; width: 100%; min-height: 46px; margin-top: 4px; padding: 10px 12px; border: 1px solid #c9d4cd; border-radius: 10px; font: inherit; letter-spacing: .08em; }
     .ids input:focus { outline: 3px solid #acdfaa; outline-offset: 1px; border-color: #14583d; }
+    .ids input[aria-invalid="true"] { border-color: #b4531f; }
     .ids small { color: #52665c; font-size: 12px; }
-    .hidden { display: none !important; }
     .trust { margin-top: 22px; padding-top: 10px; border-top: 1px solid #e4e9e3; color: #7a8a82; font-size: 10px; line-height: 1.4; }
     @media (max-width: 560px) { main { margin: 0; min-height: 100dvh; border-radius: 0; } }
   </style>
@@ -40,25 +38,25 @@
 <main>
   <div class="brand">zitch</div>
   <h1 id="title">Tier 2 · Face check</h1>
-  <p class="note" id="lead">Enter your BVN and NIN, then take a selfie in good light. Remove glasses or a face covering.</p>
+  <p class="note" id="lead">Enter your BVN and NIN. Then the camera opens: turn your head left, then right, then smile. Remove glasses or a face covering.</p>
 
-  <div class="ids" id="ids">
-    <label for="bvn">BVN</label>
-    <input id="bvn" name="bvn" form="face" inputmode="numeric" pattern="[0-9]{11}" maxlength="11" autocomplete="off" required>
-    <small>11 digits. Dial *565*0# to get it.</small>
-    <label for="nin">NIN</label>
-    <input id="nin" name="nin" form="face" inputmode="numeric" pattern="[0-9]{11}" maxlength="11" autocomplete="off" required>
-    <small>11 digits, on your NIN slip or NIMC app.</small>
-  </div>
-
-  <div class="frame" id="frame">
-    <video id="video" class="hidden" autoplay playsinline muted></video>
-    <img id="shot" class="hidden" alt="Your selfie">
-    <div class="hint" id="hint">Starting your front camera…</div>
-  </div>
-
-  <form id="face" autocomplete="off">
+  <form id="face" autocomplete="off" novalidate>
     {% csrf_token %}
+    <div class="ids" id="ids">
+      <label for="bvn">BVN</label>
+      <input id="bvn" name="bvn" inputmode="numeric" pattern="[0-9]{11}" maxlength="11" autocomplete="off" required aria-describedby="bvn-help">
+      <small id="bvn-help">11 digits. Dial *565*0# to get it.</small>
+      <label for="nin">NIN</label>
+      <input id="nin" name="nin" inputmode="numeric" pattern="[0-9]{11}" maxlength="11" autocomplete="off" required aria-describedby="nin-help">
+      <small id="nin-help">11 digits, on your NIN slip or NIMC app.</small>
+      <button type="submit" id="start">{% if picker_only %}Continue to selfie{% else %}Continue to face check{% endif %}</button>
+      <p class="lv-bright">💡 Screen at full brightness to light your face</p>
+    </div>
+  </form>
+
+  <div id="check" class="hidden">
+    {% include "whatsapp/_liveness_stage.html" %}
+    <!-- Fallbacks only: no model, a blocked camera, or a WebView. -->
     <button type="button" id="capture" class="hidden">Take photo</button>
     <label class="pick hidden" id="pick">
       <span id="pick-label">Open camera</span>
@@ -66,33 +64,43 @@
     </label>
     <button type="button" id="send" class="hidden">Use this photo</button>
     <button type="button" id="retake" class="ghost hidden">Retake</button>
-  </form>
+    <button type="button" id="manual" class="link hidden">Having trouble? Take a photo instead</button>
+  </div>
 
   <p class="message hidden" id="status" role="status" aria-live="polite"></p>
+  <a class="back hidden" id="back" href="https://wa.me/" rel="noreferrer">Return to WhatsApp</a>
   <ul class="tips" id="tips">
-    <li>Hold the phone at eye level.</li>
-    <li>Your whole face should fill the circle.</li>
+    <li>Hold the phone at eye level, in good light.</li>
+    <li>Keep your whole face inside the circle.</li>
   </ul>
 
-  <p class="trust">Banking services by Wema Bank Plc, licensed by the CBN. Deposits insured by NDIC. Your BVN, NIN and photo are sent only to your bank for this check and are not stored by Zitch.</p>
+  <p class="trust">Banking services by Wema Bank Plc, licensed by the CBN. Deposits insured by NDIC. Your BVN, NIN and photo are sent only to your bank for this check and are not stored by Zitch. The face check runs on your phone.</p>
   <noscript><p class="message">Enable JavaScript in your browser to take your selfie.</p></noscript>
 </main>
+{{ liveness_assets|json_script:"lv-assets" }}
+{% if not picker_only %}<script nonce="{{ nonce }}" src="{{ liveness_script }}"></script>{% endif %}
 <script nonce="{{ nonce }}">
 (function () {
   var pickerOnly = {{ picker_only|yesno:"true,false" }};
-  var MAX_SIDE = 720;
-  var video = document.getElementById('video');
-  var shot = document.getElementById('shot');
-  var hint = document.getElementById('hint');
-  var capture = document.getElementById('capture');
-  var pick = document.getElementById('pick');
-  var file = document.getElementById('file');
-  var send = document.getElementById('send');
-  var retake = document.getElementById('retake');
-  var status = document.getElementById('status');
-  var stream = null;
-  var image = '';
-  var done = false;
+  var nonce = (document.currentScript && document.currentScript.nonce) || '';
+  var LV = window.ZitchLiveness || null;
+  var DONE_TEXT = '✅ Tier 2 complete — Verification ongoing. We’ll confirm in WhatsApp shortly.';
+  var $ = function (id) { return document.getElementById(id); };
+  var form = $('face'), idsBox = $('ids'), check = $('check');
+  var video = $('video'), shot = $('shot'), hint = $('hint'), moves = $('lv-moves');
+  var capture = $('capture'), pick = $('pick'), file = $('file'), send = $('send');
+  var retake = $('retake'), manualBtn = $('manual'), status = $('status');
+  var stream = null, run = null, lock = null, image = '', busy = false, done = false;
+
+  // Start fetching the self-hosted model while the customer types.
+  var engine = null;
+  if (!pickerOnly && LV) {
+    var assets = JSON.parse($('lv-assets').textContent);
+    assets.nonce = nonce;
+    engine = LV.load(assets);
+    engine.catch(function () { /* handled when the camera opens */ });
+  }
+  var ui = LV ? LV.stage(document) : {};
 
   function show(el, on) { el.classList.toggle('hidden', !on); }
   function say(text, ok) {
@@ -100,12 +108,131 @@
     status.classList.toggle('ok', !!ok);
     show(status, !!text);
   }
-  function stop() {
-    if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+  function digits(id) { return $(id).value.replace(/\D/g, ''); }
+  function idsValid() {
+    var bad = null;
+    ['bvn', 'nin'].forEach(function (id) {
+      var ok = digits(id).length === 11;
+      $(id).setAttribute('aria-invalid', ok ? 'false' : 'true');
+      if (!ok && !bad) bad = id;
+    });
+    if (bad) {
+      say('Enter your 11-digit BVN and NIN above.');
+      $(bad).focus();
+      return false;
+    }
+    return true;
   }
 
+  function flash(on) { document.body.classList.toggle('lv-flash', on); }
+  function stopCamera() {
+    if (run) { run.stop(); run = null; }
+    if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+    if (lock) { lock.release(); lock = null; }
+    flash(false);
+  }
+  function setHint(text) { hint.textContent = text; show(hint, !!text); }
+
+  function preview(dataUrl) {
+    image = dataUrl;
+    shot.src = dataUrl;
+    show(shot, true); show(video, false); setHint('');
+    show(capture, false); show(pick, false); show(moves, false); show(manualBtn, false);
+  }
+
+  function usePicker(reason) {
+    stopCamera();
+    show(video, false); show(capture, false); show(moves, false); show(manualBtn, false);
+    setHint(reason || 'Tap “Open camera” to take your selfie.');
+    show(pick, true);
+  }
+
+  // The model could not run here: a plain front-camera photo instead.
+  function manual(reason) {
+    if (run) { run.stop(); run = null; }
+    show(moves, false); show(manualBtn, false);
+    say(reason || '');
+    if (!stream) return usePicker();
+    show(capture, true);
+  }
+
+  var liveUi = {
+    step: ui.step, prompt: ui.prompt, hint: ui.hint, dark: ui.dark,
+    done: function (dataUrl) {
+      run = null;
+      stopCamera();
+      preview(dataUrl);
+      submit();
+    },
+    error: function () { manual('Take a clear selfie in good light, then tap “Use this photo”.'); },
+    slow: function () { show(manualBtn, true); }
+  };
+
+  function withTimeout(promise, ms) {
+    return new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () { reject(new Error('timeout')); }, ms);
+      promise.then(function (v) { clearTimeout(timer); resolve(v); },
+                   function (e) { clearTimeout(timer); reject(e); });
+    });
+  }
+
+  function begin() {
+    image = '';
+    say('');
+    show(shot, false); show(send, false); show(retake, false); show(capture, false);
+    if (pickerOnly || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      return usePicker();
+    }
+    setHint('Starting your front camera…');
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
+      .then(function (s) {
+        stream = s;
+        video.srcObject = s;
+        if (video.play) { var p = video.play(); if (p && p.catch) p.catch(function () {}); }
+        show(video, true); show(pick, false);
+        flash(true);
+        lock = LV ? LV.wakeLock() : null;
+        if (!engine) return manual();
+        setHint('Getting the face check ready…');
+        withTimeout(engine, 20000).then(function (lm) {
+          if (!stream || done) return;
+          setHint('');
+          show(moves, true);
+          run = LV.session(lm, video, liveUi);
+        }, function () {
+          if (stream) { setHint(''); manual('Take a clear selfie in good light, then tap “Use this photo”.'); }
+        });
+      })
+      .catch(function () {
+        usePicker('Camera access was blocked. Tap “Open camera” to take your selfie instead.');
+      });
+  }
+
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+    if (done || busy || !idsValid()) return;
+    say('');
+    show(idsBox, false); show($('lead'), false); show(check, true);
+    // An ID-only correction keeps the photo already taken.
+    if (image) { preview(image); return submit(); }
+    begin();
+  });
+
+  capture.addEventListener('click', function () {
+    if (!video.videoWidth) return;
+    var dataUrl = toJpeg(video, video.videoWidth, video.videoHeight, true);
+    stopCamera();
+    preview(dataUrl);
+    show(send, true); show(retake, true);
+  });
+
+  manualBtn.addEventListener('click', function () {
+    manual('Take a clear selfie in good light, then tap “Use this photo”.');
+  });
+
   function toJpeg(source, width, height, mirror) {
-    var scale = Math.min(1, MAX_SIDE / Math.max(width, height));
+    if (LV) return LV.snapshot(source, width, height, mirror);
+    var scale = Math.min(1, 720 / Math.max(width, height));
     var canvas = document.createElement('canvas');
     canvas.width = Math.round(width * scale);
     canvas.height = Math.round(height * scale);
@@ -114,48 +241,6 @@
     ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL('image/jpeg', 0.85);
   }
-
-  function preview(dataUrl) {
-    image = dataUrl;
-    shot.src = dataUrl;
-    show(shot, true); show(video, false); show(hint, false);
-    show(capture, false); show(pick, false);
-    show(send, true); show(retake, true);
-    say('');
-  }
-
-  function usePicker(reason) {
-    stop();
-    show(video, false); show(capture, false);
-    hint.textContent = reason || 'Tap “Open camera” to take your selfie.';
-    show(hint, true); show(pick, true);
-  }
-
-  function startCamera() {
-    image = '';
-    show(shot, false); show(send, false); show(retake, false);
-    if (pickerOnly || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      return usePicker();
-    }
-    hint.textContent = 'Starting your front camera…';
-    show(hint, true);
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 } }, audio: false })
-      .then(function (s) {
-        stream = s;
-        video.srcObject = s;
-        show(video, true); show(hint, false); show(capture, true); show(pick, false);
-      })
-      .catch(function () {
-        usePicker('Camera access was blocked. Tap “Open camera” to take your selfie instead.');
-      });
-  }
-
-  capture.addEventListener('click', function () {
-    if (!video.videoWidth) return;
-    var dataUrl = toJpeg(video, video.videoWidth, video.videoHeight, true);
-    stop();
-    preview(dataUrl);
-  });
 
   file.addEventListener('change', function () {
     var chosen = file.files && file.files[0];
@@ -167,30 +252,39 @@
       var dataUrl = toJpeg(img, img.naturalWidth, img.naturalHeight, false);
       URL.revokeObjectURL(url);
       preview(dataUrl);
+      show(send, true); show(retake, true);
     };
     img.onerror = function () { URL.revokeObjectURL(url); say('We could not read that photo. Please take it again.'); };
     img.src = url;
   });
 
-  retake.addEventListener('click', function () { if (!done) startCamera(); });
+  retake.addEventListener('click', function () { if (!done && !busy) begin(); });
+  send.addEventListener('click', function () { submit(); });
 
-  send.addEventListener('click', async function () {
-    if (!image || send.disabled || done) return;
-    var bvn = document.getElementById('bvn').value.replace(/\D/g, '');
-    var nin = document.getElementById('nin').value.replace(/\D/g, '');
-    if (bvn.length !== 11 || nin.length !== 11) {
-      say('Enter your 11-digit BVN and NIN above.');
-      document.getElementById(bvn.length !== 11 ? 'bvn' : 'nin').focus();
-      return;
-    }
+  function finish() {
+    done = true;
+    stopCamera();
+    $('title').textContent = 'Tier 2 complete';
+    show($('lead'), false); show(check, false); show(idsBox, false); show($('tips'), false);
+    say(DONE_TEXT, true);
+    show($('back'), true);
+    // Only works where the page was opened by a script; otherwise the message
+    // and the WhatsApp link stay.
+    setTimeout(function () { try { window.close(); } catch (e) { /* stays open */ } }, 2500);
+  }
+
+  async function submit() {
+    if (!image || busy || done) return;
+    if (!idsValid()) { show(check, false); show(idsBox, true); show($('lead'), true); return; }
+    busy = true;
     send.disabled = true; retake.disabled = true;
+    show(send, false); show(retake, false);
     say('Checking with your bank. Please keep this page open…');
-    var form = document.getElementById('face');
     var body = new URLSearchParams();
     body.set('csrfmiddlewaretoken', form.elements.csrfmiddlewaretoken.value);
     body.set('image', image.split(',')[1] || '');
-    body.set('bvn', bvn);
-    body.set('nin', nin);
+    body.set('bvn', digits('bvn'));
+    body.set('nin', digits('nin'));
     var result;
     try {
       // CORS-mode fetch keeps the Origin header without leaking this link as
@@ -205,28 +299,31 @@
       // No automatic retry: the photo may already have reached the bank.
       result = { status: 'pending', message: 'We could not confirm the result here. We will message you in WhatsApp.' };
     }
+    busy = false;
+    send.disabled = false; retake.disabled = false;
     var idRetry = result.status === 'retry' && /BVN|NIN/.test(result.message || '');
-    if (!idRetry) { image = ''; }
-    if (result.status === 'verified') {
+    if (result.status === 'verified' || result.status === 'pending') {
+      image = '';
+      finish();
+    } else if (result.status === 'closed') {
+      image = '';
       done = true;
-      document.getElementById('title').textContent = 'Tier 2 verification complete';
-      document.getElementById('lead').textContent = 'Your account limits have been upgraded. You can close this page and return to WhatsApp.';
-      show(send, false); show(retake, false); show(document.getElementById('tips'), false);
-      show(document.getElementById('ids'), false);
-      say('✅ ' + (result.message || 'Verified.'), true);
-    } else if (result.status === 'pending' || result.status === 'closed') {
-      done = true;
-      show(send, false); show(retake, false); show(document.getElementById('ids'), false);
+      show(check, false); show(idsBox, false);
+      say(result.message);
+      show($('back'), true);
+    } else if (idRetry) {
+      // Keep the photo; correct the numbers and continue.
+      show(check, false); show(idsBox, true); show($('lead'), true);
       say(result.message);
     } else {
-      send.disabled = false; retake.disabled = false;
-      if (!idRetry) { show(send, false); }
+      image = '';
       say(result.message || 'Please take the photo again.');
+      retake.textContent = 'Try again';
+      show(retake, true);
     }
-  });
+  }
 
-  window.addEventListener('pagehide', stop);
-  startCamera();
+  window.addEventListener('pagehide', stopCamera);
 })();
 </script>
 </body>
