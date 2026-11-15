@@ -17,11 +17,19 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
     removeItem: jest.fn(async () => {}),
   },
 }));
-jest.mock('@/lib/api', () => ({ publicPost: (...args: unknown[]) => mockPost(...args) }));
+const mockApiPost = jest.fn();
+const mockSaveRefresh = jest.fn();
+jest.mock('@/lib/api', () => ({
+  publicPost: (...args: unknown[]) => mockPost(...args),
+  apiPost: (...args: unknown[]) => mockApiPost(...args),
+}));
 jest.mock('@/lib/secureStore', () => ({
   getSessionGeneration: () => mockGeneration,
   storeSession: (...args: unknown[]) => mockStoreSession(...args),
+  saveRefreshToken: (...args: unknown[]) => mockSaveRefresh(...args),
 }));
+jest.mock('@/lib/screenCapture', () => ({ usePinScreenProtection: () => {} }));
+jest.mock('@/components/design/ZIcon', () => () => null);
 jest.mock('@/lib/session', () => ({ unlockSession: () => mockUnlock() }));
 jest.mock('@/components/design/Notify', () => ({ notify: (...args: unknown[]) => mockNotify(...args) }));
 jest.mock('@/components/design/Loading', () => ({ Loading: () => null }));
@@ -30,6 +38,11 @@ jest.mock('@/lib/theme', () => ({ useTheme: () => ({ c: {} }), font: {} }));
 jest.mock('@/components/design/ui', () => ({
   Screen: ({ children }: { children: ReactNode }) => children,
   Header: () => null,
+  Field: (props: any) => {
+    const R = jest.requireActual<typeof import('react')>('react');
+    const { TextInput } = jest.requireActual<typeof import('react-native')>('react-native');
+    return R.createElement(TextInput, { ...props, accessibilityLabel: props.label });
+  },
   Btn: (props: any) => {
     const R = jest.requireActual<typeof import('react')>('react');
     const { Pressable } = jest.requireActual<typeof import('react-native')>('react-native');
@@ -65,7 +78,38 @@ it('keeps verified signup bound to the session in which the SMS code was submitt
   await act(async () => { finish({ ok: true, json: async () => ({ access_token: 'signup-access' }) }); });
   expect(mockStoreSession).toHaveBeenCalledWith({ access_token: 'signup-access' }, 0);
   expect(mockUnlock).toHaveBeenCalledTimes(1);
-  expect(mockReplace).toHaveBeenCalledWith('/setpassword');
+  // The account exists now; the password is set on this same page.
+  expect(mockReplace).not.toHaveBeenCalled();
+  expect(tree.root.findByProps({ accessibilityLabel: 'Password' }).props.editable).toBe(true);
+  act(() => tree.unmount());
+});
+
+it('sets the password on the same page, then goes to BVN and address', async () => {
+  const { tree, finish } = await startVerification();
+  await act(async () => { finish({ ok: true, json: async () => ({ access_token: 'signup-access' }) }); });
+  const field = (label: string) => tree.root.findByProps({ accessibilityLabel: label });
+  const cont = () => tree.root.findAll((n) => n.props.accessibilityLabel === 'Continue' && typeof n.props.onPress === 'function')[0];
+  await act(async () => { field('Password').props.onChangeText('Zitch-pass1'); });
+  await act(async () => { field('Confirm password').props.onChangeText('Zitch-pass'); });
+  expect(cont().props.disabled).toBe(true);
+  await act(async () => { field('Confirm password').props.onChangeText('Zitch-pass1'); });
+  expect(cont().props.disabled).toBe(false);
+  mockApiPost.mockResolvedValue({ ok: true, json: async () => ({ refresh_token: 'fresh-refresh' }) });
+  await act(async () => { await cont().props.onPress(); });
+  expect(mockApiPost).toHaveBeenCalledWith('/api/set-password/', { password: 'Zitch-pass1' });
+  expect(mockSaveRefresh).toHaveBeenCalledWith('fresh-refresh');
+  expect(mockReplace).toHaveBeenCalledWith({ pathname: '/kyc', params: { onboarding: '1' } });
+  act(() => tree.unmount());
+});
+
+it('keeps the server rules: a password without a symbol cannot be sent', async () => {
+  const { tree, finish } = await startVerification();
+  await act(async () => { finish({ ok: true, json: async () => ({ access_token: 'signup-access' }) }); });
+  const field = (label: string) => tree.root.findByProps({ accessibilityLabel: label });
+  await act(async () => { field('Password').props.onChangeText('Zitchpass1'); });
+  await act(async () => { field('Confirm password').props.onChangeText('Zitchpass1'); });
+  const cont = tree.root.findAll((n) => n.props.accessibilityLabel === 'Continue' && typeof n.props.onPress === 'function')[0];
+  expect(cont.props.disabled).toBe(true);
   act(() => tree.unmount());
 });
 

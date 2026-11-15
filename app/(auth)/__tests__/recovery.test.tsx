@@ -112,3 +112,17 @@ it('discards a delayed reset result when the recovery link changes account', asy
   expect(mockReplace).not.toHaveBeenCalled();
   act(() => tree.unmount());
 });
+
+it('sends a reset on a new device to the face check instead of signing in', async () => {
+  mockParams = { ident: 'ada@example.com' };
+  mockPost.mockResolvedValue({ ok: true, json: async () => ({ success: true, code: 'new_device_face_required', challenge: 'chal-1' }) });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<ResetPassword />); });
+  await act(async () => { field(tree, 'Reset code').props.onChangeText('654321'); });
+  await act(async () => { field(tree, 'New password').props.onChangeText('Password123!'); });
+  await act(async () => { field(tree, 'Confirm password').props.onChangeText('Password123!'); });
+  await act(async () => { await field(tree, 'Reset password').props.onPress(); });
+  expect(mockStoreSession).not.toHaveBeenCalled();
+  expect(mockReplace).toHaveBeenCalledWith({ pathname: '/newdevice', params: { challenge: 'chal-1', id: 'ada@example.com' } });
+  act(() => tree.unmount());
+});

@@ -45,7 +45,12 @@ const ResetPassword = ({ ident }: { ident: string }) => {
       const response = await publicPost('/api/password/reset/', { email_or_phone: ident, otp, password: p1 });
       const result = await response.json();
       if (!mounted.current || generation !== getSessionGeneration()) return;
-      if (response.ok && result.access_token) {
+      if (response.ok && result.code === 'new_device_face_required' && result.challenge) {
+        // The password is changed; this phone is new to the account, so the
+        // session waits for the face check, exactly as a sign-in would.
+        notify('Password reset', result.message || 'Confirm it’s you to finish signing in.', 'success');
+        router.replace({ pathname: '/newdevice', params: { challenge: String(result.challenge), id: ident } } as any);
+      } else if (response.ok && result.access_token) {
         await storeSession(result, generation);
         const authenticatedGeneration = getSessionGeneration();
         if (!mounted.current) return;

@@ -71,7 +71,7 @@ def _public(session):
                 "session": session.provider_session_id, "has_callback": "false"})}
 
 
-def start_tier2_liveness(user):
+def start_tier2_liveness(user, purpose="tier2_liveness"):
     if not tier2_face_available():
         return _unavailable()
     with transaction.atomic():
@@ -83,7 +83,7 @@ def start_tier2_liveness(user):
             return {"success": False, "message": "The live face workflow currently supports verified BVN. "
                     "Your NIN verification is saved; contact support for the NIN face option."}
         current = PremblyFaceSession.objects.filter(
-            user=user, status__in=["starting", "pending"], expires_at__gt=timezone.now()
+            user=user, purpose=purpose, status__in=["starting", "pending"], expires_at__gt=timezone.now()
         ).order_by("-created").first()
         if current and _bound(current, user):
             if current.provider_session_id and current.status == "pending":
@@ -93,14 +93,14 @@ def start_tier2_liveness(user):
         session = PremblyFaceSession.objects.create(
             user=user, widget_id=settings.PREMBLY["FACE_WIDGET_ID"],
             identity_type=identity[0], identity_hash=identity[1], credential_stamp=_stamp(user),
-            expires_at=timezone.now() + timedelta(minutes=20))
+            expires_at=timezone.now() + timedelta(minutes=20), purpose=purpose)
     try:
         response = requests.post(
             "https://backend.prembly.com/api/v1/checker-widget/sdk/sessions/initiate/",
             json={"first_name": user.first_name, "last_name": user.last_name,
                   "email": user.email, "phone": user.phone, "widget_id": session.widget_id,
                   "widget_key": settings.PREMBLY["FACE_WIDGET_KEY"],
-                  "metadata": {"zitch_action": str(session.state), "purpose": "tier2_liveness"}},
+                  "metadata": {"zitch_action": str(session.state), "purpose": session.purpose}},
             timeout=(5, 25), allow_redirects=False)
         body = response.json()
         data = body.get("data") if isinstance(body, dict) else None
@@ -180,7 +180,7 @@ def _face_comparison_passed(data):
     return True
 
 
-def verify_tier2_liveness(user, data, *, authorize=None) -> dict:
+def verify_tier2_liveness(user, data, *, authorize=None, purpose="tier2_liveness") -> dict:
     if not tier2_face_available():
         return _unavailable()
     if any(key in data for key in ("bvn", "nin", "live_image", "liveImageOfFace", "selfie", "image")):
@@ -190,7 +190,7 @@ def verify_tier2_liveness(user, data, *, authorize=None) -> dict:
         state = uuid.UUID(str(data.get("session", "")))
     except (ValueError, TypeError, AttributeError):
         return {"success": False, "message": "Start a live Prembly face session to continue."}
-    session = PremblyFaceSession.objects.filter(user=user, state=state).first()
+    session = PremblyFaceSession.objects.filter(user=user, state=state, purpose=purpose).first()
     if not session:
         return {"success": False, "message": "Unknown face verification session."}
     if not _bound(session, user):
@@ -230,7 +230,7 @@ def verify_tier2_liveness(user, data, *, authorize=None) -> dict:
               and live.get("status") == "completed" and live.get("is_live") is True
               and bool(live.get("process_id")) and not live.get("error")
               and isinstance(metadata, dict) and metadata.get("zitch_action") == str(session.state)
-              and metadata.get("purpose") == "tier2_liveness"
+              and metadata.get("purpose") == purpose
               and _verified_identity_matches(result.get("verification_data"), session)
               and _face_comparison_passed(result.get("face_scan_result")))
     if not passed:
@@ -249,6 +249,9 @@ def verify_tier2_liveness(user, data, *, authorize=None) -> dict:
         current.status = "verified"
         current.verified_at = timezone.now()
         current.save(update_fields=["status", "verified_at"])
+        if purpose != "tier2_liveness":
+            # A sign-in check confirms who is at the phone; it never upgrades anyone.
+            return {"success": True, "status": "verified", "message": "Face check complete."}
         current_user.face_verified = True
         current_user.recompute_tier()
         current_user.save(update_fields=["face_verified", "tier"])
@@ -260,7 +263,7 @@ def refresh_tier2_liveness(user):
     """Explicit app/chat status checks can finish an already authorized session."""
     if user.face_verified or not tier2_face_available():
         return
-    pending = PremblyFaceSession.objects.filter(user=user, status="pending",
+    pending = PremblyFaceSession.objects.filter(user=user, status="pending", purpose="tier2_liveness",
         expires_at__gt=timezone.now()).order_by("-created").first()
     if pending:
         verify_tier2_liveness(user, {"session": str(pending.state)})

@@ -408,6 +408,34 @@ class PremblyFaceSession(models.Model):
     created = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
     verified_at = models.DateTimeField(null=True)
+    # What the face check is for. "tier2_liveness" upgrades the customer;
+    # "login" only confirms it is them signing in on a new device and changes
+    # nothing about their verification. A session never serves the other purpose.
+    purpose = models.CharField(max_length=24, default="tier2_liveness")
+
+
+class LoginChallenge(models.Model):
+    """A sign-in from a device this account has never used, waiting for a face check.
+
+    The password was right, but no session exists yet: tokens are issued only once
+    a Prembly face check for this account passes (accounts.views.signin_face_status).
+    The raw challenge is returned once and only its hash is kept; it is bound to the
+    device that signed in, expires quickly, allows a few failed checks, and is used
+    at most once.
+    """
+
+    TTL_MINUTES = 15
+    MAX_FAILED_CHECKS = 3
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="login_challenges")
+    key = models.CharField(max_length=64, unique=True)
+    device_id = models.CharField(max_length=64, blank=True, default="")
+    face_session = models.ForeignKey(PremblyFaceSession, on_delete=models.SET_NULL, null=True, blank=True,
+                                     related_name="login_challenges")
+    failed_checks = models.PositiveSmallIntegerField(default=0)
+    created = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
 
 
 class IdentityProof(models.Model):

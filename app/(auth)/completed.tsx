@@ -8,10 +8,14 @@ import { useTheme, font } from '@/lib/theme';
 import { registerForPushNotifications } from '@/lib/notifications';
 import AuthGuard from '@/components/AuthGuard';
 import { getSessionGeneration } from '@/lib/secureStore';
+import { kycService } from '@/lib/services/kyc';
 
 const Completed = () => {
   const { c } = useTheme();
   const [firstName, setFirstName] = useState('');
+  // Sign-up verifies the BVN before the PIN, so most people arrive verified;
+  // someone who chose "I'll do this later" is offered the BVN step instead.
+  const [bvnVerified, setBvnVerified] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -22,6 +26,9 @@ const Completed = () => {
     // Ask only after account creation, when the benefit is concrete and an
     // authenticated token exists to bind this device's push token server-side.
     registerForPushNotifications(true).catch(() => {});
+    kycService.getStatus().then((st) => {
+      if (active && generation === getSessionGeneration() && st.success && st.bvn_verified) setBvnVerified(true);
+    }).catch(() => {});
     return () => { active = false; };
   }, []);
 
@@ -37,12 +44,23 @@ const Completed = () => {
           {firstName ? `Welcome to Zitch, ${firstName}!` : 'Welcome to Zitch!'}
         </Text>
         <Text style={{ fontSize: 14, color: c.ink3, marginTop: 10, textAlign: 'center', maxWidth: 300, lineHeight: 21, fontFamily: font.regular }}>
-          Your sign-up is complete. Verify your identity, then check your account status. Only add money when your account is enabled for funding.
+          {bvnVerified
+            ? 'Your sign-up is complete and your BVN is verified. You’re on Tier 1, with up to ₦50,000 per transfer.'
+            : 'Your sign-up is complete. Verify your BVN to open Tier 1 and start sending money.'}
         </Text>
       </View>
       <View style={{ paddingBottom: 24, gap: 12 }}>
-        <Btn label="Verify my identity" icon="insurance" onPress={() => router.replace('/kyc')} />
-        <Btn label="Go to home" variant="outline" onPress={() => router.replace('/home')} />
+        {bvnVerified ? (
+          <>
+            <Btn label="Go to home" onPress={() => router.replace('/home')} />
+            <Btn label="Raise my limits" variant="outline" onPress={() => router.push('/accountlimits')} />
+          </>
+        ) : (
+          <>
+            <Btn label="Verify my BVN" icon="insurance" onPress={() => router.replace({ pathname: '/kyc', params: { onboarding: '1' } } as any)} />
+            <Btn label="Go to home" variant="outline" onPress={() => router.replace('/home')} />
+          </>
+        )}
       </View>
     </Screen>
   );

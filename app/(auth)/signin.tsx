@@ -125,7 +125,11 @@ const Signin = () => {
       const readable = !!parsed && typeof parsed === 'object' && !Array.isArray(parsed);
       const result = readable ? parsed : {};
       if (!mounted.current || generation !== getSessionGeneration()) return;
-      if (response.ok && result.access_token) {
+      if (result.code === 'new_device_face_required' && typeof result.challenge === 'string') {
+        // A device this account has never used: no session until a face check
+        // confirms it is the customer.
+        router.push({ pathname: '/newdevice', params: { challenge: result.challenge, id: form.email.trim() } });
+      } else if (response.ok && result.access_token) {
         // Persist the session BEFORE navigating so the auth guard sees a token.
         await storeSession(result, generation);
         const authenticatedGeneration = getSessionGeneration();

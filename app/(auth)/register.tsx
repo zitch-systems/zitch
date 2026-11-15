@@ -5,7 +5,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { notify } from '@/components/design/Notify';
 import { publicPost } from '@/lib/api';
 import { getSessionGeneration } from '@/lib/secureStore';
-import { isCompleteRegistrationName, splitRegistrationName } from '@/lib/registration';
+import { isCompleteNamePart, normalizeNamePart } from '@/lib/registration';
 import { PRIVACY_URL, TERMS_URL } from '@/components/configFiles/links';
 import ZIcon from '@/components/design/ZIcon';
 import { Loading } from '@/components/design/Loading';
@@ -21,9 +21,11 @@ const Register = () => {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
-  const [form, setForm] = useState({ name: '', email: '', phone: '' });
+  const [form, setForm] = useState({ first: '', last: '', email: '', phone: '' });
 
-  const nameOk = isCompleteRegistrationName(form.name);
+  const firstOk = isCompleteNamePart(form.first);
+  const lastOk = isCompleteNamePart(form.last);
+  const nameOk = firstOk && lastOk;
   const phoneOk = /^0\d{10}$/.test(form.phone);
   const emailValue = form.email.trim();
   const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailValue);
@@ -36,7 +38,8 @@ const Register = () => {
     const generation = getSessionGeneration();
     const current = () => mounted.current && generation === getSessionGeneration();
     try {
-      const { firstName, lastName } = splitRegistrationName(form.name);
+      const firstName = normalizeNamePart(form.first);
+      const lastName = normalizeNamePart(form.last);
       const email = form.email.trim().toLowerCase();
       const response = await publicPost('/api/phone_verification/', {
         email,
@@ -88,17 +91,32 @@ const Register = () => {
       <View style={{ gap: 16 }}>
         <View>
           <Field
-            label="Full name"
-            value={form.name}
-            onChangeText={(e) => setForm({ ...form, name: e })}
-            placeholder="William Adeyemi"
+            label="First name"
+            value={form.first}
+            onChangeText={(e) => setForm({ ...form, first: e })}
+            placeholder="William"
             autoCapitalize="words"
-            autoComplete="name"
-            textContentType="name"
+            autoComplete="given-name"
+            textContentType="givenName"
             prefix={<ZIcon name="user" size={18} color={c.ink3} />}
           />
-          {form.name.length > 0 && !nameOk && (
-            <Text style={{ fontSize: 12, color: c.red, marginTop: 6, marginLeft: 2, fontFamily: font.regular }}>Enter your first and last name</Text>
+          {form.first.length > 0 && !firstOk && (
+            <Text style={{ fontSize: 12, color: c.red, marginTop: 6, marginLeft: 2, fontFamily: font.regular }}>Enter your first name</Text>
+          )}
+        </View>
+        <View>
+          <Field
+            label="Surname"
+            value={form.last}
+            onChangeText={(e) => setForm({ ...form, last: e })}
+            placeholder="Adeyemi"
+            autoCapitalize="words"
+            autoComplete="family-name"
+            textContentType="familyName"
+            prefix={<ZIcon name="user" size={18} color={c.ink3} />}
+          />
+          {form.last.length > 0 && !lastOk && (
+            <Text style={{ fontSize: 12, color: c.red, marginTop: 6, marginLeft: 2, fontFamily: font.regular }}>Enter your surname</Text>
           )}
         </View>
         <View>
