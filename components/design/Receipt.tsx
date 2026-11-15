@@ -5,7 +5,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path } from 'react-native-svg';
 import * as Clipboard from 'expo-clipboard';
 import ZIcon from '@/components/design/ZIcon';
-import { LoadingMark } from '@/components/design/Loading';
+import { LoadingMark, ZCoil } from '@/components/design/Loading';
 import { Btn } from '@/components/design/ui';
 import { NText } from '@/components/design/Naira';
 import { flash, notifyError } from '@/components/design/Notify';
@@ -180,11 +180,13 @@ const Receipt = ({
   // loaded yet rather than printing a blank row onto a document people treat as
   // proof. accountName is the bank's legal name for the NUBAN; firstName is a
   // greeting and only stands in when the fuller name isn't there.
-  const { accountName, firstName, accountNumber, bankName } = useWallet();
+  // The partner bank is never named on a receipt: the sender's account is their
+  // Zitch account (review, Nov 2026).
+  const { accountName, firstName, accountNumber } = useWallet();
   const from = senderRows({
     name: accountName || firstName,
     account: accountNumber,
-    bank: bankName,
+    bank: accountNumber ? 'Zitch account' : undefined,
   });
 
   // Date and time always; the reference only when the server actually gave us one
@@ -259,7 +261,7 @@ const Receipt = ({
               <Image source={MARK} resizeMode="contain" style={{ position: 'absolute', right: -30, top: -36, width: 150, height: 206, tintColor: '#fff', opacity: 0.08 }} />
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <Image source={MARK} resizeMode="contain" style={{ width: 20, height: 27, tintColor: '#fff' }} />
+                  <ZCoil height={36} box={27} />
                   <Text style={{ fontSize: 21, fontFamily: font.extrabold, color: '#fff', letterSpacing: -0.3 }}>zitch</Text>
                 </View>
                 <Text numberOfLines={1} style={{ flexShrink: 1, marginLeft: 12, fontSize: 12.5, fontFamily: font.bold, color: C.brandTint }}>

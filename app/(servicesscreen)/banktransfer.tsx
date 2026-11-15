@@ -126,7 +126,7 @@ const TintBtn = ({ label, icon, onPress, disabled }: { label: string; icon: stri
       })}
     >
       <ZIcon name={icon} size={18} color={c.brand} stroke={2.2} />
-      <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.brand }}>{label}</Text>
+      <Text style={{ fontSize: 13, fontFamily: font.bold, color: c.brand }}>{label}</Text>
     </Pressable>
   );
 };
@@ -144,7 +144,7 @@ const DetailRow = ({ icon, label, value, big }: { icon: string; label: string; v
         <NText
           numberOfLines={big ? 1 : 2}
           style={{
-            fontSize: big ? 27 : 16,
+            fontSize: big ? 21.5 : 14,
             color: c.ink1,
             fontFamily: big ? font.extrabold : font.bold,
             marginTop: big ? 3 : 2,
@@ -220,8 +220,8 @@ const BankTransfer = () => {
       <Screen>
         <Header title="Bank Transfer" onBack={() => router.back()} />
         <Card pad={16}>
-          <Text style={{ fontSize: 17, fontFamily: font.bold, color: c.ink1 }}>Your funding account is not available yet</Text>
-          <Text style={{ fontSize: 13.5, color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 12 }}>
+          <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>Your funding account is not available yet</Text>
+          <Text style={{ fontSize: 12, color: c.ink2, fontFamily: font.regular, lineHeight: 19, marginTop: 12 }}>
             {fundingMessage || 'Check your account setup to see the next step. Bank transfer details will appear once your account is ready.'}
           </Text>
           <View style={{ marginTop: 18 }}><Btn label="Check account setup" onPress={() => router.push('/addmoney')} /></View>
@@ -251,23 +251,23 @@ const BankTransfer = () => {
         <DetailRow icon="user" label="Name" value={accountName || '—'} />
 
         <View style={{ flexDirection: 'row', gap: 12, marginTop: 18 }}>
-          <TintBtn label="Copy Number" icon="copy" onPress={copyAccount} disabled={!ready} />
+          <TintBtn label="Copy number" icon="copy" onPress={copyAccount} disabled={!ready} />
           <View style={{ flex: 1 }}>
-            <Btn label="Share Details" icon="share" size="md" onPress={shareDetails} disabled={!ready} />
+            <Btn label="Share details" icon="share" size="md" onPress={shareDetails} disabled={!ready} />
           </View>
         </View>
       </Card>
 
       {/* ---- How it works ---- */}
       <Card pad={16} style={{ marginTop: 12 }}>
-        <Text style={{ fontSize: 15.5, color: c.ink1, fontFamily: font.extrabold }}>Add money in 3 steps</Text>
+        <Text style={{ fontSize: 13.5, color: c.ink1, fontFamily: font.extrabold }}>Add money in 3 steps</Text>
         <View style={{ marginTop: 14, gap: 14 }}>
           {steps.map((s, i) => (
             <View key={s} style={{ flexDirection: 'row', gap: 12 }}>
               <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: iconTint(c.brand, theme === 'dark'), alignItems: 'center', justifyContent: 'center' }}>
-                <Text style={{ fontSize: 13, fontFamily: font.bold, color: c.brand }}>{i + 1}</Text>
+                <Text style={{ fontSize: 11.5, fontFamily: font.bold, color: c.brand }}>{i + 1}</Text>
               </View>
-              <NText style={{ flex: 1, fontSize: 13.5, color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{s}</NText>
+              <NText style={{ flex: 1, fontSize: 12, color: c.ink2, fontFamily: font.regular, lineHeight: 19 }}>{s}</NText>
             </View>
           ))}
         </View>
@@ -275,7 +275,7 @@ const BankTransfer = () => {
 
       {/* ---- Bank shortcuts ---- */}
       <Card pad={16} style={{ marginTop: 12 }}>
-        <Text style={{ fontSize: 15.5, color: c.ink1, fontFamily: font.extrabold }}>Tap a bank to open its app</Text>
+        <Text style={{ fontSize: 13.5, color: c.ink1, fontFamily: font.extrabold }}>Tap a bank to open its app</Text>
         <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular, marginTop: 4 }}>
           We’ll copy your account number first.
         </Text>
@@ -292,7 +292,7 @@ const BankTransfer = () => {
                 style={({ pressed }) => ({ width: '33.33%', alignItems: 'center', gap: 8, paddingVertical: 10, opacity: pressed ? 0.7 : 1 })}
               >
                 <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: iconTint(tone, theme === 'dark'), alignItems: 'center', justifyContent: 'center' }}>
-                  <Text style={{ fontSize: 17, fontFamily: font.extrabold, color: tone }}>{monogram(b.name)}</Text>
+                  <Text style={{ fontSize: 15, fontFamily: font.extrabold, color: tone }}>{monogram(b.name)}</Text>
                 </View>
                 <Text numberOfLines={1} style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.medium, textAlign: 'center', paddingHorizontal: 4 }}>
                   {b.name}

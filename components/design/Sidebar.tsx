@@ -9,6 +9,7 @@ import { useTheme, font } from '@/lib/theme';
 import { useRailWidth } from '@/lib/device';
 import { BANKING_TABS, selectedBankingTab } from '@/components/navigation/bankingTabs';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
+import { useTabInk } from '@/components/design/BottomNav';
 
 const ITEMS = BANKING_TABS;
 
@@ -18,6 +19,7 @@ const ITEMS = BANKING_TABS;
  */
 const Sidebar = ({ state, navigation, width }: BottomTabBarProps & { width?: number }) => {
   const { c } = useTheme();
+  const idle = useTabInk();
   const insets = useSafeAreaInsets();
   const fallbackW = useRailWidth();
   const activeName = state.routes[state.index]?.name;
@@ -50,14 +52,14 @@ const Sidebar = ({ state, navigation, width }: BottomTabBarProps & { width?: num
               aria-selected={on}
               style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, paddingHorizontal: 14, borderRadius: 14, backgroundColor: on ? 'rgba(15,162,149,.12)' : 'transparent' }}
             >
-              <ZIcon name={it.icon} size={22} color={on ? c.brand : c.ink2} stroke={on ? 2.1 : 1.7} />
-              <Text style={{ flex: 1, fontSize: 15, fontFamily: on ? font.bold : font.semibold, color: on ? c.brand : c.ink2 }}>{it.label}</Text>
+              <ZIcon name={it.icon} size={22} color={on ? c.brand : idle} stroke={on ? 2.1 : 1.7} />
+              <Text style={{ flex: 1, fontSize: 15, fontFamily: on ? font.bold : font.semibold, color: on ? c.brand : idle }}>{it.label}</Text>
             </Pressable>
           );
         })}
         <Pressable onPress={() => router.push('/linkwhatsapp')} accessibilityRole="button" accessibilityLabel="Bank on WhatsApp" style={{ flexDirection: 'row', alignItems: 'center', gap: 13, minHeight: 48, paddingVertical: 13, paddingHorizontal: 14, borderRadius: 14 }}>
           <WhatsAppGlyph size={22} />
-          <Text style={{ flex: 1, fontSize: 15, fontFamily: font.semibold, color: c.ink2 }}>WhatsApp</Text>
+          <Text style={{ flex: 1, fontSize: 15, fontFamily: font.semibold, color: idle }}>WhatsApp</Text>
         </Pressable>
       </ScrollView>
 

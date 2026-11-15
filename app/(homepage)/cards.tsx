@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, AppState, View, Text, Pressable, Image } from 'react-native';
+import { Alert, AppState, View, Text, Pressable } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
@@ -9,6 +9,7 @@ import { cardsService, type VirtualCard } from '@/lib/services/cards';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Btn, Field, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { QuickAmounts } from '@/components/design/flowkit';
+import { ZCoil } from '@/components/design/Loading';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { usePinScreenProtection } from '@/lib/screenCapture';
@@ -346,7 +347,9 @@ const Cards = () => {
             end={{ x: 1, y: 1 }}
             style={{ margin: 16, borderRadius: 22, padding: 20, minHeight: 200, overflow: 'hidden', shadowColor: '#000', shadowOpacity: 0.5, shadowRadius: 24, shadowOffset: { width: 0, height: 18 }, elevation: 8 }}
           >
-            <Image source={require('@/assets/images/zitch-mark.png')} style={{ position: 'absolute', right: -20, bottom: -30, width: 160, height: 160, opacity: 0.22 }} resizeMode="contain" />
+            <View pointerEvents="none" style={{ position: 'absolute', right: -20, bottom: -30, opacity: 0.22 }}>
+              <ZCoil height={200} box={160} />
+            </View>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <Text style={{ color: 'rgba(255,255,255,.9)', fontSize: 13, fontFamily: font.bold, letterSpacing: 1.3 }}>ZITCH</Text>
               <ZIcon name="wallet" size={22} color="#fff" />

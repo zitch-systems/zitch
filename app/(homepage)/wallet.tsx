@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, Image } from 'react-native';
+import { View, Text, Pressable } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Btn, TxnRow, money, NText, settledTransactionTotal } from '@/components/design/ui';
 import { SectionLabel } from '@/components/design/widgets';
+import { ZCoil } from '@/components/design/Loading';
 import { ConnectedAccounts } from '@/components/design/ConnectedAccounts';
 import { useTheme, font } from '@/lib/theme';
 import { transactionParams, useWallet } from '@/lib/wallet';
@@ -14,7 +15,7 @@ import { walletCapabilityMessage } from '@/lib/services/wallet';
 
 const Wallet = () => {
   const { c } = useTheme();
-  const { balance, totalBalance, fullName, firstName, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, reloadLinked, loading, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
+  const { balance, totalBalance, fullName, firstName, accountNumber, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, reloadLinked, loading, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
   const capabilityMessage = walletCapabilityMessage({ billPaymentsAvailable, transfersAvailable });
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -55,11 +56,9 @@ const Wallet = () => {
         end={{ x: 1, y: 1 }}
         style={{ margin: 16, borderRadius: 22, padding: 18, overflow: 'hidden', shadowColor: '#004D47', shadowOpacity: 0.5, shadowRadius: 22, shadowOffset: { width: 0, height: 16 }, elevation: 6 }}
       >
-        <Image
-          source={require('@/assets/images/zitch-mark.png')}
-          style={{ position: 'absolute', right: -18, bottom: -22, width: 140, height: 140, opacity: 0.18 }}
-          resizeMode="contain"
-        />
+        <View pointerEvents="none" style={{ position: 'absolute', right: -18, bottom: -22, opacity: 0.18 }}>
+          <ZCoil height={175} box={140} />
+        </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
           <Text style={{ fontSize: 11, color: 'rgba(255,255,255,.82)', fontFamily: font.bold, letterSpacing: 1.5 }}>ZITCH WALLET</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 3, paddingHorizontal: 9, borderRadius: 999, backgroundColor: 'rgba(255,255,255,.16)' }}>
@@ -103,7 +102,7 @@ const Wallet = () => {
                   {fullName || firstName || 'Your account'}
                 </Text>
                 <NText numberOfLines={1} style={{ color: 'rgba(255,255,255,.82)', fontSize: 11.5, fontFamily: font.medium, marginTop: 1 }}>
-                  {groupedAccount}{bankName ? ` · ${bankName}` : ''}
+                  {groupedAccount} · Zitch account
                 </NText>
               </View>
               <ZIcon name="copy" size={15} color="rgba(255,255,255,.85)" />

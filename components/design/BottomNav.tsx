@@ -10,8 +10,16 @@ import { BANKING_TABS, selectedBankingTab } from '@/components/navigation/bankin
 
 type TabItem = typeof BANKING_TABS[number];
 
+// Idle tabs read in actual black on the light theme (review, Nov 2026); on the dark
+// theme the same role falls to the brightest ink so they stay legible.
+export const useTabInk = () => {
+  const { c, theme } = useTheme();
+  return theme === 'dark' ? c.ink1 : '#000000';
+};
+
 const BankingTab = ({ item, state, navigation }: BottomTabBarProps & { item: TabItem }) => {
   const { c } = useTheme();
+  const idle = useTabInk();
   const current = state.routes[state.index]?.name;
   const selected = selectedBankingTab(current) === item.name;
   const target = state.routes.find((route) => route.name === item.name)?.key;
@@ -30,15 +38,16 @@ const BankingTab = ({ item, state, navigation }: BottomTabBarProps & { item: Tab
       style={({ pressed }) => ({ flex: 1, minWidth: 0, minHeight: 64, alignItems: 'center', gap: 4, paddingHorizontal: 2, opacity: pressed ? 0.75 : 1 })}
     >
       <View style={{ minWidth: 46, height: 38, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: selected ? c.surface3 : 'transparent' }}>
-        <ZIcon name={item.icon} size={24} color={selected ? c.brand : c.ink3} stroke={selected ? 2.2 : 1.8} />
+        <ZIcon name={item.icon} size={24} color={selected ? c.brand : idle} stroke={selected ? 2.2 : 1.8} />
       </View>
-      <Text style={{ fontSize: 11.5, fontFamily: selected ? font.bold : font.medium, color: selected ? c.brand : c.ink3, textAlign: 'center' }}>{item.label}</Text>
+      <Text style={{ fontSize: 11.5, fontFamily: selected ? font.bold : font.semibold, color: selected ? c.brand : idle, textAlign: 'center' }}>{item.label}</Text>
     </Pressable>
   );
 };
 
 const BottomNav = (props: BottomTabBarProps) => {
   const { c } = useTheme();
+  const idle = useTabInk();
   const insets = useSafeAreaInsets();
   return (
     <View style={{ backgroundColor: c.surface, borderTopWidth: 1, borderTopColor: c.line, paddingBottom: insets.bottom }}>
@@ -49,7 +58,7 @@ const BottomNav = (props: BottomTabBarProps) => {
           <View style={{ width: 38, height: 38, borderRadius: 14, backgroundColor: '#128C7E', alignItems: 'center', justifyContent: 'center' }}>
             <WhatsAppGlyph size={25} color="#fff" />
           </View>
-          <Text style={{ fontSize: 11.5, fontFamily: font.semibold, color: c.ink2, textAlign: 'center' }}>WhatsApp</Text>
+          <Text style={{ fontSize: 11.5, fontFamily: font.semibold, color: idle, textAlign: 'center' }}>WhatsApp</Text>
         </Pressable>
         {BANKING_TABS.slice(2).map((item) => <BankingTab key={item.name} {...props} item={item} />)}
       </View>

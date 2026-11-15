@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Image } from 'react-native';
+import { ZCoil } from '@/components/design/Loading';
 import ZIcon from '@/components/design/ZIcon';
 import { Tap } from '@/components/design/ui';
 import { useTheme, font, radius, ICON_COLORS, iconTint } from '@/lib/theme';
@@ -41,11 +41,9 @@ export const Hero = ({ children, style, watermark = 120 }: { children: React.Rea
         ...style,
       }}
     >
-      <Image
-        source={require('@/assets/images/zitch-mark.png')}
-        style={{ position: 'absolute', right: -18, bottom: -22, width: watermark, height: watermark, opacity: 0.18 }}
-        resizeMode="contain"
-      />
+      <View pointerEvents="none" style={{ position: 'absolute', right: -18, bottom: -22, opacity: 0.18 }}>
+        <ZCoil height={Math.round(watermark * 1.25)} box={watermark} />
+      </View>
       {children}
     </LinearGradient>
   );

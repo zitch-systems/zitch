@@ -40,7 +40,7 @@ const MORE = [
 
 const Home = () => {
   const { c } = useTheme();
-  const { balance, totalBalance, firstName, fullName, avatar, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, linked, reloadLinked, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
+  const { balance, totalBalance, firstName, fullName, avatar, accountNumber, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, linked, reloadLinked, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
   const capabilityMessage = walletCapabilityMessage({ billPaymentsAvailable, transfersAvailable });
   const [more, setMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -145,7 +145,7 @@ const Home = () => {
                     {fullName || firstName || 'Your account'}
                   </Text>
                   <NText numberOfLines={1} style={{ color: 'rgba(255,255,255,.82)', fontSize: 11.5, fontFamily: font.medium, marginTop: 1 }}>
-                    {groupedAccount}{bankName ? ` · ${bankName}` : ''}
+                    {groupedAccount} · Zitch account
                   </NText>
                 </View>
                 <ZIcon name="copy" size={15} color="rgba(255,255,255,.85)" />
