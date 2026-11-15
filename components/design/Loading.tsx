@@ -53,7 +53,7 @@ for (let i = 0; i < FRAMES; i++) {
  * still Z pose (frame 0) instead of a perpetual spin, and the surrounding label
  * still says what is happening.
  */
-const ZCoil = ({ height, box }: { height: number; box: number }) => {
+export const ZCoil = ({ height, box }: { height: number; box: number }) => {
   const [beat] = useState(() => new Animated.Value(0));
   const [reduceMotion, setReduceMotion] = useState(false);
 
@@ -126,6 +126,7 @@ const ZCoil = ({ height, box }: { height: number; box: number }) => {
 export const Loading = ({ label, full = true }: { label?: string; full?: boolean }) => {
   const { c } = useTheme();
   const size = full ? 96 : 64;
+  // The coil turns on the screen's own background: no halo behind it (review, Nov 2026).
 
   return (
     <View
@@ -139,20 +140,8 @@ export const Loading = ({ label, full = true }: { label?: string; full?: boolean
       }
     >
       <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
-        {/* Soft brand halo behind the coil. It does NOT animate, so the glow stays
-            put while the ribbon turns. */}
-        <View
-          style={{
-            position: 'absolute',
-            width: size,
-            height: size,
-            borderRadius: size,
-            backgroundColor: c.brand,
-            opacity: 0.12,
-          }}
-        />
         {/* A cell slightly taller than the box: its transparent padding overflows,
-            leaving the ribbon itself comfortably inside the halo. */}
+            leaving the ribbon itself comfortably inside the box. */}
         <ZCoil height={size * 1.1} box={size} />
       </View>
       {label ? (

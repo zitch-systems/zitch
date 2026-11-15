@@ -347,9 +347,10 @@ const AddMoney = () => {
             </Text>
             {capabilityMessage ? <Text style={{ color: c.ink2, fontFamily: font.semibold, lineHeight: 20, marginTop: 12 }}>{capabilityMessage} {fundingState?.migration_message}</Text> : null}
             <View style={{ height: 1, backgroundColor: c.line, marginVertical: 14 }} />
-            {/* Design order top-to-bottom: bank name, grouped number, account name */}
+            {/* Top to bottom: label, grouped number, account name. The partner bank
+                is not named here (review, Nov 2026); Bank transfer details has it. */}
             <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>
-              {account.bank_name}
+              Zitch account number
             </Text>
             <Text style={{ fontSize: 26, color: c.ink1, fontFamily: font.extrabold, letterSpacing: 1.5, marginTop: 6, marginBottom: 2, fontVariant: ['tabular-nums'] }}>
               {grouped(account.account_number)}

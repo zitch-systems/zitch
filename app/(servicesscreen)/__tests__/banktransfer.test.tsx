@@ -33,7 +33,7 @@ it.each(['', '7111234567', '123', 'abc7121234567', '712-123-4567'])('shows setup
   const output = JSON.stringify(tree.toJSON());
   expect(output).toContain('Your funding account is not available yet');
   expect(output).toContain(mockWallet.fundingMessage);
-  expect(output).not.toContain('Copy Number');
+  expect(output).not.toContain('Copy number');
   expect(output).not.toContain('Tap a bank to open its app');
   act(() => tree.root.findByProps({ accessibilityLabel: 'Check account setup' }).props.onPress());
   expect(mockPush).toHaveBeenCalledWith('/addmoney');
@@ -47,7 +47,7 @@ it('copies the exact live funding number without promising unrestricted instant 
   await act(async () => { tree = renderer.create(<BankTransfer />); });
   expect(JSON.stringify(tree.toJSON())).toContain('712 123 4567');
   expect(JSON.stringify(tree.toJSON())).not.toMatch(/any amount|instantly/);
-  const copy = tree.root.findAllByProps({ accessibilityLabel: 'Copy Number' }).find((node) => typeof node.type !== 'string')!;
+  const copy = tree.root.findAllByProps({ accessibilityLabel: 'Copy number' }).find((node) => typeof node.type !== 'string')!;
   await act(async () => { await copy.props.onPress(); });
   expect(mockCopy).toHaveBeenCalledWith('7121234567');
   await act(async () => tree.unmount());
@@ -58,7 +58,7 @@ it('handles a clipboard failure without leaving an unhandled action', async () =
   mockCopy.mockRejectedValue(new Error('Clipboard unavailable'));
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<BankTransfer />); });
-  const copy = tree.root.findAllByProps({ accessibilityLabel: 'Copy Number' }).find((node) => typeof node.type !== 'string')!;
+  const copy = tree.root.findAllByProps({ accessibilityLabel: 'Copy number' }).find((node) => typeof node.type !== 'string')!;
   await act(async () => { await expect(copy.props.onPress()).resolves.toBe(false); });
   expect(mockCopy).toHaveBeenCalledTimes(1);
   act(() => tree.unmount());

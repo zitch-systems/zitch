@@ -73,8 +73,8 @@ it('shows Tier 0, gives the balance eye an action and opens linked accounts', as
   expect(mockSetShowBal).toHaveBeenCalledWith(false);
   act(() => tree.root.findByProps({ accessibilityLabel: 'Linked bank accounts' }).props.onPress());
   expect(mockPush).toHaveBeenCalledWith('/wallet');
-  expect(JSON.stringify(tree.toJSON())).toContain('Child accounts · coming soon');
-  expect(JSON.stringify(tree.toJSON())).toContain('USSD banking · coming soon');
+  // USSD, BizPayment and Junior are not on Me any more (review, Nov 2026)
+  for (const gone of ['Zitch USSD', 'My BizPayment', 'Zitch Junior']) expect(JSON.stringify(tree.toJSON())).not.toContain(gone);
   act(() => tree.unmount());
 });
 

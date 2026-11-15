@@ -140,8 +140,6 @@ const Me = () => {
     { icon: 'history', title: 'Transaction History', go: () => router.push('/history') },
     { icon: 'chart', title: 'Account Limits', sub: 'KYC tiers & transaction limits', go: () => router.push('/accountlimits') },
     { icon: 'bank', title: 'Linked bank accounts', sub: 'View and connect bank accounts', go: () => router.push('/wallet') },
-    { icon: 'bank', title: 'My BizPayment', sub: 'Payment links · coming soon', go: () => router.push('/bizpayment') },
-    { icon: 'invite', title: 'Zitch Junior', sub: 'Child accounts · coming soon', go: () => router.push('/junior') },
     { icon: 'loan', title: 'Buy Now, Pay Later', sub: 'Check availability', go: () => router.push('/bnpl') },
   ];
   const grp2: any[] = [
@@ -149,7 +147,6 @@ const Me = () => {
     { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 6-digit PIN', go: () => router.push('/resetpin') },
     { icon: 'help', title: 'Customer Service Center', go: () => router.push('/support') },
     { icon: 'gift', title: 'Invitation', sub: 'Invite friends to Zitch', go: () => router.push('/invite') },
-    { icon: 'airtime', title: 'Zitch USSD', sub: 'USSD banking · coming soon', go: () => router.push('/ussd') },
   ];
 
   const Group = ({ items }: { items: any[] }) => (

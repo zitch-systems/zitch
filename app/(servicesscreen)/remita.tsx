@@ -236,7 +236,7 @@ const Remita = () => {
       />
 
       <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN" protectScreen>
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
+        <Text style={{ fontSize: 13.5, lineHeight: 20, color: c.ink3, marginBottom: 16, marginTop: 0, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>
         <PinPad onComplete={(p) => pay(p)} busy={busy} error={pinError} />

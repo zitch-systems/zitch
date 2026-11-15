@@ -3,10 +3,21 @@ import { View, Text, Image, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Circle, Path } from 'react-native-svg';
 import { font } from '@/lib/theme';
+import { ZCoil } from '@/components/design/Loading';
 
-// Ribbon mark / circular badge — uses the brand PNGs from the design handoff.
-// `glow` adds the cyan halo the design uses on the splash + receipt lockups.
-export const ZMark = ({ size = 40, badge = false, glow = false }: { size?: number; badge?: boolean; glow?: boolean }) => {
+// The Zitch logo is the coil: the ribbon Z turning on its axis (the same sprite
+// as the loader), on whatever surface it sits on. `size` is the logo's footprint;
+// the coil's cell is drawn a little larger because its frames carry transparent
+// padding round the ribbon. Reduce-motion users get the still Z.
+// `badge` and `glow` are kept so existing callers compile; the coil has no disc
+// or halo behind it (review, Nov 2026).
+export const ZMark = ({ size = 40 }: { size?: number; badge?: boolean; glow?: boolean }) => (
+  <ZCoil height={Math.round(size * 1.3)} box={size} />
+);
+
+// The previous PNG mark, still used where the logo must be a flat tinted shape
+// (the receipt's watermark pattern).
+export const ZMarkStill = ({ size = 40, badge = false, glow = false }: { size?: number; badge?: boolean; glow?: boolean }) => {
   const glowStyle = glow
     ? {
         shadowColor: '#5CF5EB',
