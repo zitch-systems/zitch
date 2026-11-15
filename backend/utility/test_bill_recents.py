@@ -37,12 +37,13 @@ class BillRecentsTests(TestCase):
         self.user = _user()
 
     def _txn(self, service, meta, *, status=Transaction.SUCCESS, user=None, days_ago=0):
-        txn = Transaction.objects.create(
-            user=user or self.user, amount=Decimal("1000"), direction=Transaction.OUT,
-            service=service, reference=f"rec-{next(_refs)}", meta=meta, transaction_status=status)
-        if days_ago:
-            Transaction.objects.filter(pk=txn.pk).update(created=timezone.now() - timedelta(days=days_ago))
-        return txn
+        # Ledger rows are immutable on PostgreSQL (a trigger refuses updates to
+        # `created`), so an older row is written with the clock moved back.
+        when = timezone.now() - timedelta(days=days_ago)
+        with patch("django.utils.timezone.now", return_value=when):
+            return Transaction.objects.create(
+                user=user or self.user, amount=Decimal("1000"), direction=Transaction.OUT,
+                service=service, reference=f"rec-{next(_refs)}", meta=meta, transaction_status=status)
 
     def _recents(self, user=None):
         r = self.client.post("/api/utility/recents/", {"access_token": _token(user or self.user)},
