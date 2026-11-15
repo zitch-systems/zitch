@@ -133,26 +133,24 @@ describe('BuyCable response binding', () => {
     });
     expect(tree.root.findAllByProps({ accessibilityLabel: 'Stale GoTV Plan' })).toHaveLength(0);
 
+    // A complete smartcard number checks itself: the first (old) check is
+    // left pending while the customer types a different number.
     await act(async () => {
-      control(tree, 'Smartcard / IUC number').props.onChangeText('11111111');
-    });
-    let oldValidation!: Promise<void>;
-    await act(async () => {
-      oldValidation = control(tree, 'Validate IUC').props.onPress();
+      control(tree, 'Smartcard / IUC number').props.onChangeText('1111111111');
       await Promise.resolve();
     });
     await act(async () => {
-      control(tree, 'Smartcard / IUC number').props.onChangeText('22222222');
+      control(tree, 'Smartcard / IUC number').props.onChangeText('2222222222');
+      await Promise.resolve();
     });
     await act(async () => {
       resolveOldIuc({ ok: true, json: async () => ({ success: true, customer_name: 'Stale Subscriber' }) });
-      await oldValidation;
+      await Promise.resolve();
+      await Promise.resolve();
     });
-
-    expect(control(tree, 'Continue').props.disabled).toBe(true);
-    expect(control(tree, 'Validate IUC')).toBeTruthy();
-
-    await act(async () => { await control(tree, 'Validate IUC').props.onPress(); });
+    // The stale name never lands; the current number's own check resolves it.
+    expect(JSON.stringify(tree.toJSON())).not.toContain('Stale Subscriber');
+    expect(mockApiPost).toHaveBeenCalledTimes(2);
 
     await act(async () => {
       control(tree, 'DStv One').props.onPress();

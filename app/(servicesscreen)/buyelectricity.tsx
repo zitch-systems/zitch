@@ -149,11 +149,14 @@ const BuyElectricity = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recents, disco]);
   const attempted = useRef('');
+  // The meter checks itself as soon as the number is in: from 8 digits, once
+  // typing pauses (so a 10-13 digit number is not checked half-typed).
   useEffect(() => {
-    if (meter.length >= 10 && !verifiedCustomer && !validating && attempted.current !== validationKey) {
-      attempted.current = validationKey;
-      validateMeter();
-    }
+    if (meter.length < 8 || verifiedCustomer || validating || attempted.current === validationKey) return undefined;
+    const run = () => { attempted.current = validationKey; validateMeter(); };
+    if (meter.length >= 10) { run(); return undefined; }
+    const timer = setTimeout(run, 700);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [validationKey, verifiedCustomer, validating]);
 
@@ -314,12 +317,6 @@ const BuyElectricity = () => {
         ) : checkFailedFor === validationKey ? (
           <View style={{ marginTop: 4, alignSelf: 'flex-start' }}>
             <Btn label="Try again" variant="ghost" size="sm" full={false} onPress={validateMeter} style={{ backgroundColor: 'transparent', paddingHorizontal: 0 }} />
-          </View>
-        ) : meter.length >= 8 && meter.length < 10 ? (
-          // Shorter meters are valid but not checked on their own (the auto
-          // check waits for 10 digits so it does not fire mid-typing).
-          <View style={{ marginTop: 4, alignSelf: 'flex-start' }}>
-            <Btn label="Check meter" variant="ghost" size="sm" full={false} onPress={validateMeter} style={{ backgroundColor: 'transparent', paddingHorizontal: 0 }} />
           </View>
         ) : null}
       </View>

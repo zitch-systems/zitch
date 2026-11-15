@@ -141,10 +141,13 @@ const BuyCable = () => {
   // keystroke or while a request is already in flight.
   const attemptedRef = useRef('');
   useEffect(() => {
-    if (iuc.length >= 10 && !verifiedName && !validating && attemptedRef.current !== `${prov}:${iuc}`) {
-      attemptedRef.current = `${prov}:${iuc}`;
-      validateIuc();
-    }
+    if (iuc.length < 8 || verifiedName || validating || attemptedRef.current === `${prov}:${iuc}`) return undefined;
+    // Checked as soon as the number is in: at once from 10 digits, after a short
+    // pause for 8-9 (so a longer number is not checked half-typed).
+    const run = () => { attemptedRef.current = `${prov}:${iuc}`; validateIuc(); };
+    if (iuc.length >= 10) { run(); return undefined; }
+    const timer = setTimeout(run, 700);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [iuc, prov, verifiedName, validating]);
 
@@ -309,9 +312,11 @@ const BuyCable = () => {
       <View style={{ marginTop: 8, marginBottom: 8 }}>
         {verifiedName ? (
           <Text style={{ color: c.brandDeep, fontFamily: font.semibold, fontSize: 12.5 }}>✓ {verifiedName}</Text>
-        ) : iuc.length >= 8 ? (
-          // Names resolve on their own once the number is complete; this is the retry.
-          <Btn label={validating ? 'Validating…' : 'Validate IUC'} variant="ghost" size="sm" full={false} onPress={validateIuc} disabled={validating} style={{ backgroundColor: 'transparent', alignSelf: 'flex-start' }} />
+        ) : validating ? (
+          <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12.5 }}>Checking…</Text>
+        ) : iuc.length >= 8 && attemptedRef.current === `${prov}:${iuc}` ? (
+          // The automatic check ran and found no name: offer a retry.
+          <Btn label="Try again" variant="ghost" size="sm" full={false} onPress={validateIuc} style={{ backgroundColor: 'transparent', alignSelf: 'flex-start', paddingHorizontal: 0 }} />
         ) : null}
       </View>
 
