@@ -785,8 +785,26 @@ def pending_alert_delivery_ids(*, limit, exclude=()):
     return list(qs.values_list("pk", flat=True)[:max(0, int(limit or 0))])
 
 
-MAX_ALERT_ATTEMPTS = 5
+#: Sends per alert before it is given up and reported. With the capped backoff
+#: below that is about 85 minutes of trying: long enough to ride out a provider
+#: incident or a token rotation, where five tries used to run out in fifteen.
+MAX_ALERT_ATTEMPTS = 12
 ALERT_LEASE = timedelta(minutes=5)
+#: The longest wait between two tries of one alert.
+MAX_ALERT_BACKOFF = timedelta(minutes=10)
+#: How long to wait before re-sending an alert whose first send ended without a
+#: clear answer (a timeout, a 5xx), in case the provider did take it.
+UNKNOWN_OUTCOME_WAIT = timedelta(seconds=90)
+#: Contact routes that a customer may add later but usually never does. An alert
+#: waiting on one of them is dropped after this long instead of being re-checked
+#: every minute forever, ahead of alerts that can be sent.
+ROUTE_WAIT = timedelta(minutes=30)
+_CONTACT_ROUTE_REASONS = frozenset({"email_unverified", "phone_unverified", "no_push_device",
+                                    "no_active_link"})
+
+
+def _retry_delay(attempts: int) -> timedelta:
+    return min(timedelta(seconds=60 * 2 ** max(0, attempts - 1)), MAX_ALERT_BACKOFF)
 
 
 def _enqueue_alert(txn_pk, *, reversal=False, requires="", whatsapp_only=False):
@@ -905,6 +923,13 @@ def _prepare_alert(pk):
         if (row.channel == "whatsapp" and row.error_code == "template_unconfigured"
                 and not (getattr(settings, "WHATSAPP", {}) or {}).get("TXN_ALERT_TEMPLATE")):
             reason = "template_unconfigured"
+        if reason and reason in _CONTACT_ROUTE_REASONS and row.created <= now - ROUTE_WAIT:
+            # Nothing to send it to: no verified email, no push device, no linked
+            # chat. Dropped rather than re-checked every minute forever, where a
+            # growing pile of these sorts ahead of alerts that can be sent.
+            row.state, row.error_code = row.SKIPPED, reason
+            row.save(update_fields=["state", "error_code", "updated"])
+            return None
         if reason:
             first_failure = row.error_code != reason
             row.state, row.error_code = row.READY, reason
@@ -935,6 +960,8 @@ def _send_alert_channel(row):
     from utility.providers import send_email, send_sms
 
     txn = row.transaction
+    if row.channel == "whatsapp" and row.error_code == WINDOW_CLOSED:
+        return _whatsapp_template_for_owner(txn, reversal=row.reversal)
     subject, body = _describe(txn, reversal=row.reversal)
     if row.channel == "email":
         return send_email(
@@ -947,6 +974,52 @@ def _send_alert_channel(row):
     if row.channel == "push":
         return _push_alert(txn, subject)
     return _deliver_claimed_whatsapp_alert(txn, reversal=row.reversal)
+
+
+#: error_code of a WhatsApp alert Meta accepted and later failed because the
+#: customer's 24-hour window had closed: the next try goes as the template.
+WINDOW_CLOSED = "window_closed"
+
+
+def _whatsapp_template_for_owner(txn, *, reversal=False):
+    from whatsapp.models import WhatsAppLink
+
+    link = WhatsAppLink.objects.filter(user=txn.user, status=WhatsAppLink.ACTIVE).first()
+    if link is None:
+        return {"success": False, "not_dispatched": True, "code": "no_active_link"}
+    return _whatsapp_alert_via_template(txn, link.wa_msisdn, reversal=reversal)
+
+
+def whatsapp_alert_failed(message_id: str, error_code=None) -> bool:
+    """Meta accepted a WhatsApp alert and then reported it undelivered.
+
+    The send API answers 200 with a message id even when the customer's 24-hour
+    service window has closed; the refusal (131047) arrives later on the status
+    webhook. The alert was recorded ACCEPTED and the template fallback never ran,
+    so a customer who had not written to us in a day was never told about their
+    money. Such an alert is reopened: sent as the template straight away when the
+    window had closed, and retried as usual for any other failure.
+    """
+    from .models import TransactionAlertDelivery
+
+    if not message_id:
+        return False
+    try:
+        code = int(error_code)
+    except (TypeError, ValueError):
+        code = None
+    now = timezone.now()
+    window = code in _WINDOW_CLOSED_CODES
+    changed = TransactionAlertDelivery.objects.filter(
+        channel="whatsapp", provider_reference=str(message_id)[:128],
+        state=TransactionAlertDelivery.ACCEPTED,
+    ).update(state=TransactionAlertDelivery.RETRY,
+             error_code=WINDOW_CLOSED if window else f"delivery_failed_{code or 'unknown'}"[:64],
+             next_attempt_at=now if window else now + timedelta(seconds=60), updated=now)
+    if changed:
+        log.warning("txn_alert_delivery_failed_after_acceptance code=%s window_closed=%s",
+                    code, window)
+    return bool(changed)
 
 
 def _report_alert_route_unavailable(reason):
@@ -1013,20 +1086,32 @@ def _finish_alert(row, result):
         accepted = False
     undispatched = result.get("not_dispatched") is True or (
         result.get("mock") and not (settings.DEBUG or getattr(settings, "TESTING", False)))
+    refused = (result.get("uncertain") is not True
+               and (result.get("uncertain") is False or result.get("retryable") is True
+                    or bool(result.get("error_code"))))
+    exhausted = row.attempts >= MAX_ALERT_ATTEMPTS
     if undispatched:
         state, reason = row.READY, str(result.get("code") or "route_unavailable")[:64]
         next_attempt = now + timedelta(seconds=60)
     elif accepted:
         state, reason, next_attempt = row.ACCEPTED, "", None
-    elif missing_acceptance_id or result.get("uncertain") is True:
+    elif missing_acceptance_id:
+        # "Accepted" with no message id is a provider integration answering
+        # wrongly, the same way every time. Retrying it would repeat the alert on
+        # every try, so a person looks at it.
         state, reason, next_attempt = row.REVIEW, "dispatch_outcome_unknown", None
-    elif (result.get("uncertain") is False or result.get("retryable") is True
-          or (result.get("error_code") and result.get("uncertain") is not True)):
-        state = row.EXHAUSTED if row.attempts >= MAX_ALERT_ATTEMPTS else row.RETRY
-        reason = "retry_limit" if state == row.EXHAUSTED else "provider_refused"
-        next_attempt = None if state == row.EXHAUSTED else now + timedelta(seconds=min(60 * 2**(row.attempts - 1), 3600))
+    elif exhausted:
+        state, reason, next_attempt = row.EXHAUSTED, "retry_limit", None
+    elif refused:
+        state, reason, next_attempt = row.RETRY, "provider_refused", now + _retry_delay(row.attempts)
     else:
-        state, reason, next_attempt = row.REVIEW, "dispatch_outcome_unknown", None
+        # No clear answer: a timeout, a dropped connection, a 5xx. The provider
+        # may or may not have taken it. This used to park the alert for review,
+        # where nothing sent it again, so one Meta 5xx was a customer never told
+        # about their money. It is sent again after a wait instead: an alert that
+        # arrives twice is better than one that never arrives.
+        state, reason = row.RETRY, "outcome_unknown"
+        next_attempt = now + max(UNKNOWN_OUTCOME_WAIT, _retry_delay(row.attempts))
     # A very slow accepted response can resolve our expired-dispatch review only
     # while it still carries the exact winning token. No new sender can claim it.
     changed = TransactionAlertDelivery.objects.filter(
