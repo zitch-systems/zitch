@@ -368,6 +368,12 @@ def _wema_vas_route(service_id: str, payload: dict):
     return None
 
 
+def _bill_contact_email() -> str:
+    """Contact email sent to the partner bank when the customer has none on file."""
+    links = getattr(settings, "ZITCH_LINKS", {}) or {}
+    return str(links.get("SUPPORT_EMAIL") or "").strip() or "support@zitch.ng"
+
+
 def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -> dict:
     """Submit every VAS purchase through the partner-bank biller.
 
@@ -413,9 +419,13 @@ def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -
         res = wema.purchase_data(route["amount"], reference or "", phone, network,
                                  route["code"], source_account=src)
     else:
+        # The bank's PayBill rejects a blank customerEmail ("'Customer Email' must
+        # not be empty"), and WhatsApp customers often have no email on file, so
+        # fall back to Zitch's support mailbox rather than failing the bill.
+        email = str(payload.get("email") or "").strip() or _bill_contact_email()
         res = wema.pay_bill(route["amount"], reference or "", package_id=route["code"],
                             identifier=payload.get("billersCode", ""), source_account=src,
-                            phone=phone)
+                            phone=phone, email=email, name=str(payload.get("name") or ""))
     res.setdefault("vas_rail", "wema")
     res.setdefault("vas_type", route["type"])
     return res

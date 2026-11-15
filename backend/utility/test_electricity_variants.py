@@ -145,6 +145,15 @@ class ElectricityVariantRoutingTests(TestCase):
                     self.assertEqual(pay.call_args.kwargs["package_id"], package_id)
                     self.assertEqual(pay.call_args.kwargs["identifier"], "555000111")
                     self.assertEqual(pay.call_args.kwargs["source_account"], "0155500011")
+                    # The bank rejects a blank customerEmail, so a customer with
+                    # no email on file must still send a non-empty one.
+                    self.assertTrue(pay.call_args.kwargs["email"])
+            vtu_purchase("ikeja-electric", {
+                "variation_code": "prepaid", "billersCode": "555000111",
+                "amount": "1500", "email": "amina@example.com", "name": "Amina Bello",
+            }, "REF-email")
+            self.assertEqual(pay.call_args.kwargs["email"], "amina@example.com")
+            self.assertEqual(pay.call_args.kwargs["name"], "Amina Bello")
 
     def test_missing_variant_refuses_validation_and_payment_before_provider_calls(self):
         self.postpaid.delete()
