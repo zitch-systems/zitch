@@ -221,7 +221,7 @@ class FaceLinkTests(TestCase):
             self.assertNotIn(loose, csp)
         body = response.content.decode()
         # Every script and stylesheet on the page carries this response's nonce.
-        for tag in re.findall(r"<(?:script|link)\b[^>]*>", body):
+        for tag in re.findall(r"<(?:script|link)\b[^>]*>", body, flags=re.IGNORECASE):
             if 'type="application/json"' in tag:
                 continue
             self.assertIn(f'nonce="{nonce}"', tag)
