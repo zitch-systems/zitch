@@ -39,7 +39,9 @@ type Status = {
   migration_message?: string;
   face_rail?: 'document' | 'wema';
   tier2_face_rail?: 'prembly' | 'wema';
-  tier2_face_flow?: 'prembly_sdk';
+  tier2_face_flow?: 'prembly_sdk' | 'wema_selfie';
+  // Bank-rail Tier 2: one selfie, no BVN/NIN re-entry once Tier 1 is verified.
+  tier2_face_pending?: boolean;
   tier2_face_available?: boolean;
   tier2_unavailable_reason?: string;
   tier3_address_available?: boolean;
@@ -273,6 +275,11 @@ const Kyc = () => {
     && !(status?.bvn_verified && status?.nin_verified);
   const hasTier1Identity = !!(status?.bvn_verified || status?.nin_verified);
   const sdkFlow = status?.tier2_face_flow === 'prembly_sdk';
+  // The bank takes the selfie on its own; the identity numbers it already holds
+  // for this account. Only an account with no verified Tier 1 identity types one.
+  const faceOnly = status?.tier2_face_rail === 'wema';
+  const askIdentity = !faceOnly || !hasTier1Identity;
+  const tier2Pending = faceOnly && status?.tier2_face_pending === true;
   const needsBankUpgrade = !sdkFlow && (!!status?.bank_upgrade_required || needsUpgrade);
   const tier2Unavailable = status?.tier2_face_available === false;
   const tier3Unavailable = status?.tier3_address_available === false;
@@ -684,9 +691,9 @@ const Kyc = () => {
     setUpgradeCameraOpen(true);
   };
   const submitUpgrade = () => submit(
-    () => kycService.upgradeTier2(upBvn, upNin, upSelfie),
-    'Identity verified — tier upgraded',
-    ['bvn_verified', 'nin_verified', 'face_verified'],
+    () => kycService.upgradeTier2(askIdentity ? upBvn : '', askIdentity ? upNin : '', upSelfie),
+    askIdentity ? 'Identity verified — tier upgraded' : 'Tier 2 verified',
+    askIdentity ? ['bvn_verified', 'nin_verified', 'face_verified'] : ['face_verified'],
   );
 
   const pickAddressProof = async () => {
@@ -852,8 +859,9 @@ const Kyc = () => {
           )}
           {status.email_verified && hasTier1Identity && (tier2Unavailable && (needsBankUpgrade || !status.face_verified)
             ? <Tier2Unavailable /> : needsBankUpgrade
-            ? <MethodCard id="upgrade" icon="user" color={C_SELFIE} title="Tier 2 · Face verification" sub="Confirm your identity details and take a selfie" />
-            : <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Selfie verification" sub="Tier 2 · Prembly verification" done={!!status.face_verified} />)}
+            ? <MethodCard id="upgrade" icon="user" color={C_SELFIE} title="Tier 2 · Face verification"
+                sub={tier2Pending ? 'Your bank is checking your selfie' : faceOnly ? 'Take a quick selfie' : 'Confirm your identity details and take a selfie'} />
+            : <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Face verification" sub="Tier 2" done={!!status.face_verified} />)}
           {addressVerificationAvailable && status?.tier !== undefined && status.tier >= 2 && (addressPending
             ? <AddressPending /> : tier3Unavailable && !status.address_verified
               ? <Tier3Unavailable /> : <MethodCard id="address" icon="home" color={C_BVN} title="Address verification" sub="Tier 3" done={!!status?.address_verified} />)}
@@ -1015,8 +1023,11 @@ const Kyc = () => {
       {method === 'upgrade' && !tier2Unavailable && (
         <View>
           <Hero icon="insurance" color={C_BVN} title="Tier 2 · Face verification"
-                sub="Your bank requires BVN and NIN with your face verification for this upgrade. Tier 1 needs only one identity; these details complete Tier 2." />
+                sub={askIdentity
+                  ? 'Your bank requires BVN and NIN with your face verification for this upgrade. Tier 1 needs only one identity; these details complete Tier 2.'
+                  : 'Take a clear selfie with your front camera. Your bank matches it to the photo on your verified BVN or NIN — no need to type them again.'} />
           <View style={{ marginTop: 22 }}>
+            {askIdentity && <>
             <Field editable={!busy} label="Bank Verification Number (BVN)" placeholder="Enter your 11-digit BVN" keyboardType="number-pad"
                    value={upBvn} onChangeText={(v) => setUpBvn(v.replace(/\D/g, '').slice(0, 11))}
                    prefix={<ZIcon name="insurance" size={18} color={c.ink3} />} />
@@ -1031,6 +1042,7 @@ const Kyc = () => {
                    value={upNin} onChangeText={(v) => setUpNin(v.replace(/\D/g, '').slice(0, 11))}
                    prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
             <View style={{ height: 14 }} />
+            </>}
             <Tap disabled={busy} accessibilityLabel={upSelfie ? 'Retake selfie' : 'Take a selfie'} onPress={captureUpgradeSelfie}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: upSelfie ? C_BVN : c.line, backgroundColor: upSelfie ? 'rgba(15,162,149,.08)' : c.surface2 }}>
                 <View style={{ width: 40, height: 40, borderRadius: 11, backgroundColor: upSelfie ? 'rgba(15,162,149,.16)' : c.surface3, alignItems: 'center', justifyContent: 'center' }}>
@@ -1044,7 +1056,7 @@ const Kyc = () => {
             </Tap>
             <View style={{ height: 22 }} />
             <Btn label={busy ? 'Verifying…' : 'Finish verification'}
-                 disabled={busy || upBvn.length !== 11 || upNin.length !== 11 || !upSelfie}
+                 disabled={busy || (askIdentity && (upBvn.length !== 11 || upNin.length !== 11)) || !upSelfie}
                  onPress={submitUpgrade} />
           </View>
           <Footer />

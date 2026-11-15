@@ -1420,6 +1420,7 @@ def _kyc_state(user) -> dict:
     from wallet.identity import accepted_identity_pending
     from wallet.services import customer_funding_account
     from wallet.address_verification import tier3_address_capability
+    from wallet.views import TIER2_FACE_UNAVAILABLE, tier2_face_available, tier2_face_pending
 
     funding = customer_funding_account(user)
     held = bool(funding.get("legacy_funding_review"))
@@ -1504,11 +1505,16 @@ def _kyc_state(user) -> dict:
                                           if not held and wema.face_verify_live()
                                           else ["sms_otp"]),
         "face_rail": "document",
-        "tier2_face_rail": "prembly",
-        "tier2_face_flow": "prembly_sdk",
+        # Tier 2 is one live face photo sent to the bank with this account. The
+        # app captures it with its own camera module; no third-party liveness
+        # SDK, and no BVN/NIN re-entry once Tier 1 is verified.
+        "tier2_face_rail": "wema",
+        "tier2_face_flow": "wema_selfie",
         "tier2_requires_nin": False,
+        "tier2_requires_identity": not user.tier1_identity_verified,
+        "tier2_face_pending": not user.face_verified and tier2_face_pending(user),
         "tier2_face_available": tier2_face_available(),
-        "tier2_unavailable_reason": "" if tier2_face_available() else TIER2_LIVENESS_UNAVAILABLE,
+        "tier2_unavailable_reason": "" if tier2_face_available() else TIER2_FACE_UNAVAILABLE,
         "address_rail": "wema",
         **({key: value for key, value in funding.items()
             if key in {"provider", "has_account", "account_setup_state", "available",
@@ -1621,9 +1627,9 @@ def transaction_limits(request):
 @require_user
 def kyc_status(request):
     """POST /api/kyc/status/ {access_token} -> tier + verification flags"""
-    from utility.liveness import refresh_tier2_liveness
+    from wallet.views import refresh_tier2_face
 
-    refresh_tier2_liveness(request.user_obj)
+    refresh_tier2_face(request.user_obj)
     # Reload retained address state without treating bank account status as
     # proof for a submitted address. Keep _kyc_state free of provider I/O;
     # callers also use it while holding user/action locks.

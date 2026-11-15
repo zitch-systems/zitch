@@ -25,7 +25,6 @@ from common.ratelimit import ratelimit
 from utility.providers import (funding_initialize, funding_verify,
                                payment_provider, partnership_new_business_allowed)
 from utility import wema as wema_provider
-from utility.liveness import verify_tier2_liveness
 
 from .models import FundingIntent, Transaction, Wallet, WemaProvisioningAttempt
 from .services import (
@@ -815,18 +814,63 @@ def complete_wema_provisioning(user, otp: str, tracking_id: str,
 @ratelimit("wema_wallet_upgrade_tier2", limit=5, window=60)
 @require_user
 def wema_wallet_upgrade_tier2(request):
-    """POST /api/wallet/wema/upgrade-tier2/ {access_token,bvn,nin,live_image}
+    """POST /api/wallet/wema/upgrade-tier2/ {access_token, live_image, bvn?, nin?}
 
-    Existing partnership accounts are upgraded by ALAT with one combined request:
-    accountNumber + BVN + NIN + liveImageOfFace. The docs do not expose a separate
-    OTP continuation for a second identity on an already-created NUBAN.
+    Tier 2 sends the bank this account's number with a live face photo
+    (partner-account-upgrade-tier2). BVN/NIN are optional: only forwarded when
+    the customer typed them.
     """
     return upgrade_wema_identity(request.user_obj, request.data)
 
 
+TIER2_FACE_UNAVAILABLE = ("Tier 2 face verification is temporarily unavailable. Your verified "
+                          "identity is saved. Please try again later.")
+#: A face-only upgrade the bank accepted but has not finished. Lets the status
+#: check (app) and the WhatsApp worker finish it with a read-back, without the
+#: customer sending a second photo. Losing it only means taking a new selfie.
+_TIER2_PENDING_KEY = "wema_tier2_face_pending:{}"
+_TIER2_PENDING_SECONDS = 2 * 60 * 60
+
+
+def tier2_face_available() -> bool:
+    """Tier 2 is one bank call (account + live face photo). No separate
+    liveness vendor is involved; the bank compares the photo with the photo on
+    the customer's BVN/NIN record."""
+    return wema_provider.tier2_upgrade_live() or wema_provider.wema_simulation()
+
+
+def _live_image(data):
+    """Return (base64 image, error)."""
+    live_image = (data.get("live_image") or data.get("liveImageOfFace")
+                  or data.get("selfie") or "")
+    if not isinstance(live_image, str) or not live_image.strip():
+        return "", "Take a live selfie to complete Tier 2"
+    live_image = live_image.strip()
+    if len(live_image) > 2_800_000:
+        return "", "Selfie is too large. Retake it at a lower resolution."
+    if live_image.startswith("data:"):
+        header, separator, encoded = live_image.partition(",")
+        if not separator or not re.fullmatch(r"data:image/[a-zA-Z0-9.+-]+;base64", header):
+            return "", "Take a new live selfie and submit its base64 image."
+        live_image = encoded
+    try:
+        if not base64.b64decode(live_image, validate=True):
+            return "", "Take a new live selfie and submit its base64 image."
+    except (ValueError, binascii.Error):
+        return "", "Take a new live selfie and submit its base64 image."
+    return live_image, ""
+
+
 def upgrade_wema_identity(user, data):
-    """Shared Tier 2 service for authenticated, rate-limited app/portal handlers.
-    Account selection and identity ownership remain server-side."""
+    """Shared Tier 2 service for authenticated, rate-limited app/WhatsApp handlers.
+
+    Tier 2 is a live face photo sent to the bank for this account. A customer
+    who already passed Tier 1 sends only the photo: the bank already holds the
+    BVN/NIN behind the account and matches the face against that record. A BVN
+    or NIN is only forwarded when the customer typed one (older app builds, or
+    an account opened before Tier 1 was confirmed). Account selection and
+    identity ownership remain server-side, and the bank's read-back - not the
+    submission - is what raises the tier."""
     if not partnership_new_business_allowed(user):
         return fail("Bank account upgrades are temporarily unavailable.",
                     status=409, code="partnership_archived")
@@ -837,76 +881,84 @@ def upgrade_wema_identity(user, data):
         return fail("Set up your partner-bank account first", status=400)
     bvn, nin = data.get("bvn") or "", data.get("nin") or ""
     if not isinstance(bvn, str) or not isinstance(nin, str):
-        return fail("Enter your 11-digit BVN and NIN")
+        return fail("Enter a valid 11-digit BVN or NIN")
     bvn, nin = bvn.strip(), nin.strip()
     if (bvn and not re.fullmatch(r"[0-9]{11}", bvn)
             or nin and not re.fullmatch(r"[0-9]{11}", nin)):
-        return fail("Enter your 11-digit BVN and NIN")
-    live_image = (data.get("live_image") or data.get("liveImageOfFace")
-                  or data.get("selfie") or "")
-    if not isinstance(live_image, str):
-        return fail("Take a live selfie to complete the bank upgrade")
-    live_image = live_image.strip()
-    if user.bvn_verified:
-        if len(bvn) != 11:
-            return fail(
-                "Your bank needs your BVN, NIN and selfie in the same request, so "
-                "please enter your BVN once more. It stays verified either way - "
-                "we don't re-store it.",
-                status=400,
-            )
-        if hash_identifier(bvn) != user.bvn_hash:
-            return fail("That BVN does not match the BVN already verified on this account.", status=409)
-    if len(bvn) != 11:
-        return fail("Enter your 11-digit BVN")
-    if len(nin) != 11:
-        return fail("Enter your 11-digit NIN")
-    if user.nin_verified and not hmac.compare_digest(hash_identifier(nin), user.nin_hash):
+        return fail("Enter a valid 11-digit BVN or NIN")
+    if bvn and user.bvn_verified and not hmac.compare_digest(hash_identifier(bvn), user.bvn_hash):
+        return fail("That BVN does not match the BVN already verified on this account.", status=409)
+    if nin and user.nin_verified and not hmac.compare_digest(hash_identifier(nin), user.nin_hash):
         return fail("That NIN does not match the NIN already verified on this account.", status=409)
-    if not live_image:
-        return fail("Take a live selfie to complete the bank upgrade")
-    if len(live_image) > 2_800_000:
-        return fail("Selfie is too large. Retake it at a lower resolution.")
-    if live_image.startswith("data:"):
-        header, separator, encoded = live_image.partition(",")
-        if not separator or not re.fullmatch(r"data:image/[a-zA-Z0-9.+-]+;base64", header):
-            return fail("Take a new live selfie and submit its base64 image.")
-        live_image = encoded
-    try:
-        if not base64.b64decode(live_image, validate=True):
-            return fail("Take a new live selfie and submit its base64 image.")
-    except (ValueError, binascii.Error):
-        return fail("Take a new live selfie and submit its base64 image.")
-    if _identity_owned_by_another_user(user, WemaProvisioningAttempt.BVN, bvn):
+    if not (bvn or nin or user.tier1_identity_verified):
+        return fail("Verify your BVN or NIN (Tier 1) before the Tier 2 face check.",
+                    status=409, code="tier1_required")
+    live_image, error = _live_image(data)
+    if error:
+        return fail(error)
+    if bvn and _identity_owned_by_another_user(user, WemaProvisioningAttempt.BVN, bvn):
         return fail("This BVN is already linked to another Zitch account", status=409)
-    if _identity_owned_by_another_user(user, WemaProvisioningAttempt.NIN, nin):
+    if nin and _identity_owned_by_another_user(user, WemaProvisioningAttempt.NIN, nin):
         return fail("This NIN is already linked to another Zitch account", status=409)
-
-    # An image score or client callback cannot attest the customer's live
-    # presence. Only the shared server-session verifier may authorize Tier 2.
-    biometric = verify_tier2_liveness(user, data)
-    if not biometric.get("success"):
-        return fail(biometric.get("message", "We could not verify your live selfie"),
-                    status=503 if biometric.get("unavailable") else 400,
-                    code=biometric.get("code", "liveness_not_verified"))
 
     res = wema_provider.upgrade_tier2(wallet.account_number, bvn=bvn, nin=nin,
                                      live_image=live_image)
     if res.get("pending"):
-        return JsonResponse({"success": False, "pending": True,
-                             "message": "Your bank is still processing your identity upgrade."}, status=202)
+        return _tier2_pending(user, bvn, nin)
     if not res.get("success"):
-        return fail(res.get("message", "Our partner bank could not upgrade this account right now"),
+        return fail(res.get("message", "Your bank could not confirm your face. Retake the selfie in good light."),
                     status=502)
+    ref = str((res.get("raw") or {}).get("message") or "wema_tier2")[:128]
+    return confirm_wema_tier2(user, bvn=bvn, nin=nin, ref=ref,
+                              account_number=wallet.account_number)
 
+
+def _tier2_pending(user, bvn, nin):
+    if not (bvn or nin):
+        from django.core.cache import cache
+
+        cache.set(_TIER2_PENDING_KEY.format(user.pk), "1", _TIER2_PENDING_SECONDS)
+    return JsonResponse({"success": False, "pending": True,
+                         "message": "Your bank is still checking your face. We'll update your tier shortly."},
+                        status=202)
+
+
+def tier2_face_pending(user) -> bool:
+    from django.core.cache import cache
+
+    return bool(cache.get(_TIER2_PENDING_KEY.format(user.pk)))
+
+
+def refresh_tier2_face(user) -> bool:
+    """Finish a face-only upgrade the bank accepted earlier. Returns True once
+    Tier 2 is confirmed. Never sends anything to the bank except a read."""
+    from django.core.cache import cache
+
+    if user.face_verified or not tier2_face_pending(user):
+        return bool(user.face_verified)
+    response = confirm_wema_tier2(user)
+    user.refresh_from_db()
+    if response.status_code != 202:
+        cache.delete(_TIER2_PENDING_KEY.format(user.pk))
+    return bool(user.face_verified)
+
+
+def confirm_wema_tier2(user, *, bvn="", nin="", ref="wema_tier2", account_number=""):
+    """Read the bank's tier back and only then raise Tier 2 locally.
+
+    ``account_number`` is the account the photo was submitted for; if the
+    wallet moved to another account meanwhile, nothing is raised."""
+    wallet = get_or_create_wallet(user)
+    confirmed_account_number = account_number or wallet.account_number
+    if not confirmed_account_number:
+        return fail("Set up your partner-bank account first", status=400)
     # A successful submission is not proof that the bank completed its upgrade.
     # Read back the same account before raising either local or bank-side limits.
-    bank_state = wema_provider.get_kyc_status(wallet.account_number)
+    bank_state = wema_provider.get_kyc_status(confirmed_account_number)
     confirmed_tier = str(bank_state.get("tier") or "").strip().casefold()
     if (not bank_state.get("success") or bank_state.get("mock")
             or confirmed_tier not in {"2", "tier 2", "tier2", "3", "tier 3", "tier3"}):
-        return JsonResponse({"success": False, "pending": True,
-                             "message": "Your bank is still processing your identity upgrade."}, status=202)
+        return _tier2_pending(user, bvn, nin)
     if (not bank_state.get("name")
             or wema_provider.holder_name_mismatch(user.get_full_name(), bank_state["name"])):
         return fail("We could not confirm your bank account details. Please contact Zitch Support.",
@@ -914,37 +966,35 @@ def upgrade_wema_identity(user, data):
 
     try:
         with db_transaction.atomic():
-            # Another ownership flow may have completed while the providers were
-            # checking the image. Recheck under lock before writing either ID.
-            confirmed_account_number = wallet.account_number
+            # Another ownership flow may have completed while the bank was
+            # checking the image. Recheck under lock before writing any ID.
             wallet = Wallet.objects.select_for_update().get(pk=wallet.pk)
             if wallet.account_number != confirmed_account_number:
                 return fail("Your bank account changed during verification. Please contact Zitch Support.",
                             status=409, code="identity_review_required")
             user = User.objects.select_for_update().get(pk=user.pk)
+            fields = ["face_verified", "tier"]
             for kind, raw in (("bvn", bvn), ("nin", nin)):
+                if not raw:
+                    continue
                 if (getattr(user, f"{kind}_verified") and not hmac.compare_digest(
                         getattr(user, f"{kind}_hash"), hash_identifier(raw))):
                     return fail(f"That {kind.upper()} does not match the identity already verified on this account.",
                                 status=409)
-            user.set_bvn(bvn)
-            user.set_nin(nin)
-            user.bvn_verified = True
-            user.nin_verified = True
+                getattr(user, f"set_{kind}")(raw)
+                setattr(user, f"{kind}_verified", True)
+                fields += [f"{kind}_hash", f"{kind}_last4", f"{kind}_verified"]
+            if not user.tier1_identity_verified:
+                return fail("Verify your BVN or NIN (Tier 1) before the Tier 2 face check.",
+                            status=409, code="tier1_required")
             user.face_verified = True
             user.recompute_tier()
-            user.save(update_fields=[
-                "bvn_hash", "bvn_last4", "bvn_verified",
-                "nin_hash", "nin_last4", "nin_verified",
-                "face_verified", "tier",
-            ])
-            ref = str((res.get("raw") or {}).get("message") or "wema_tier2")[:128]
-            record_identity_proof(user, IdentityProof.BVN, bvn,
-                                  source=IdentityProof.WEMA_TIER2,
-                                  provider_reference=ref)
-            record_identity_proof(user, IdentityProof.NIN, nin,
-                                  source=IdentityProof.WEMA_TIER2,
-                                  provider_reference=ref)
+            user.save(update_fields=fields)
+            for kind, raw in (("bvn", bvn), ("nin", nin)):
+                if raw:
+                    record_identity_proof(user, getattr(IdentityProof, kind.upper()), raw,
+                                          source=IdentityProof.WEMA_TIER2,
+                                          provider_reference=ref)
             wallet.bank_tier = max(wallet.bank_tier, 2)
             wallet.identity_upgrade_required = False
             wallet.save(update_fields=["bank_tier", "identity_upgrade_required", "updated"])
@@ -954,6 +1004,7 @@ def upgrade_wema_identity(user, data):
     return ok(**_account_payload(wallet, upgraded=True, tier=user.tier,
                                  bvn_verified=user.bvn_verified,
                                  nin_verified=user.nin_verified,
+                                 face_verified=user.face_verified,
                                  message="Bank identity upgrade complete"))
 
 

@@ -74,7 +74,7 @@ class VerificationWebTests(TestCase):
             linked_at=timezone.now(),
         )
         # No test can accidentally touch a remote KYC/bank service.
-        self.face = self.enterContext(patch("wallet.views.verify_tier2_liveness"))
+        self.face = self.enterContext(patch("utility.liveness.verify_tier2_liveness"))
         self.tier2 = self.enterContext(patch("wallet.views.wema_provider.upgrade_tier2"))
         self.provider = self.enterContext(patch("accounts.views.kyc_verify_address",
                                                 return_value={"success": True}))
@@ -170,25 +170,18 @@ class VerificationWebTests(TestCase):
         self.pa.refresh_from_db()
         self.assertEqual(self.pa.state, PIN)
 
-    def test_prembly_tier2_works_with_production_bank_switch_off_without_unlocking_funds(self):
-        """Render reports Prembly ready while Wema is disabled/unconfigured."""
+    def test_tier2_link_opens_with_bank_switch_off_without_unlocking_funds(self):
+        """A Tier 2 link can be opened while banking is archived; funds stay held."""
         from wallet.services import customer_funding_account
 
         User.objects.filter(pk=self.user.pk).update(face_verified=False, tier=1)
         self.user.refresh_from_db()
         with override_settings(TESTING=False, WEMA_CUTOVER_APPROVED=False,
-                               WEMA_PARTNERSHIP_MODE="archive"), \
-                patch("utility.liveness.tier2_face_available", return_value=True), \
-                patch("utility.liveness.start_tier2_liveness", return_value={
-                    "success": True, "session": "bound-session",
-                    "url": "https://sdk-live.prembly.com/?session=bound-session"}) as start:
+                               WEMA_PARTNERSHIP_MODE="archive"):
             self.path = self.start(tier=2)
             self.assertEqual(self.get().status_code, 200)
-            self.assertEqual(self.post({"action": "tier2"}).status_code, 403)
-            start.assert_not_called()
             self.unlock()
-            self.assertEqual(self.post({"action": "tier2"}).status_code, 200)
-            start.assert_called_once()
+            self.assertContains(self.get(), "/wa/face/")
             funding = customer_funding_account(self.user)
             self.assertFalse(funding["can_fund"])
             self.assertFalse(funding["transfers_available"])
@@ -197,11 +190,11 @@ class VerificationWebTests(TestCase):
         self.tier2.assert_not_called()
         self.bank_address.assert_not_called()
 
-    @override_settings(PREMBLY={"FACE_SDK_ENABLED": True})
-    def test_worker_sends_tier2_link_without_prembly_credentials(self):
+    def test_worker_sends_tier2_camera_link(self):
         from .router import _send_web_verification
 
-        with patch("whatsapp.router.send_cta_url", return_value={"success": True}) as send:
+        with patch("wallet.views.tier2_face_available", return_value=True), \
+                patch("whatsapp.router.send_cta_url", return_value={"success": True}) as send:
             _send_web_verification(self.user, MSISDN, 2)
         send.assert_called_once()
         path = urlsplit(send.call_args.args[2]).path
@@ -210,11 +203,11 @@ class VerificationWebTests(TestCase):
         self.assertTrue(path.startswith("/wa/face/"))
         self.assertNotContains(self.get(path), "transaction PIN", status_code=200)
 
-    @override_settings(PREMBLY={"FACE_SDK_ENABLED": False})
     def test_worker_respects_disabled_tier2_switch(self):
         from .router import _send_web_verification
 
-        with patch("whatsapp.router.send_cta_url") as send, patch("whatsapp.router.reply") as reply:
+        with patch("wallet.views.tier2_face_available", return_value=False), \
+                patch("whatsapp.router.send_cta_url") as send, patch("whatsapp.router.reply") as reply:
             _send_web_verification(self.user, MSISDN, 2)
         send.assert_not_called()
         reply.assert_called_once()
@@ -297,7 +290,7 @@ class VerificationWebTests(TestCase):
                    return_value=["legacy_balance"]):
             self.path = self.start(tier=2)
             self.get()
-            self.assertEqual(self.post({"action": "tier2"}).status_code, 403)
+            self.assertEqual(self.post({"action": "tier2"}).status_code, 410)
             self.assertEqual(self.post({"action": "pin", "pin": "invalid"}).status_code, 403)
             self.assertEqual(self.get().status_code, 200)
 
@@ -754,41 +747,33 @@ class VerificationWebTests(TestCase):
         self.assertEqual(response.status_code, 413)
         self.assert_security_headers(response)
 
-    def test_tier2_is_truthful_and_never_calls_still_photo_liveness_or_upgrade(self):
+    def test_tier2_form_never_takes_a_photo_or_identity_numbers(self):
         User.objects.filter(pk=self.user.pk).update(face_verified=False, tier=1)
         self.path = self.start(tier=2)
         self.unlock()
         response = self.get()
-        self.assertContains(response, "temporarily unavailable", status_code=503)
-        self.assertNotContains(response, 'name="bvn"', status_code=503)
-        self.assertNotContains(response, 'name="selfie"', status_code=503)
+        self.assertNotContains(response, 'name="bvn"')
+        self.assertNotContains(response, 'name="selfie"')
         self.assertEqual(self.post({"action": "tier2", "live_image": "photo",
-                                   "bvn": "12345678901", "nin": "12345678902"}).status_code, 400)
+                                   "bvn": "12345678901", "nin": "12345678902"}).status_code, 410)
         self.face.assert_not_called()
         self.tier2.assert_not_called()
         self.assertEqual(self.post(self.address()).status_code, 400)
         self.provider.assert_not_called()
 
-    def test_tier2_pin_gate_opens_prembly_without_collecting_nin(self):
+    def test_old_pin_gated_tier2_link_hands_over_to_the_camera_page(self):
         User.objects.filter(pk=self.user.pk).update(nin_verified=False, face_verified=False, tier=1)
         self.path = self.start(tier=2)
-        with patch("utility.liveness.tier2_face_available", return_value=True), \
-                patch("utility.liveness.start_tier2_liveness", return_value={
-                    "success": True, "session": "server-session",
-                    "url": "https://sdk-live.prembly.com/?session=provider-session"}) as start:
-            self.get()
-            self.assertEqual(self.post({"action": "tier2"}).status_code, 403)
-            start.assert_not_called()
-            self.unlock()
-            self.assertContains(self.get(), "No additional NIN verification is needed")
-            response = self.post({"action": "tier2"})
-            self.assertContains(response, "Open Prembly face verification")
-            self.assertNotContains(response, 'name="nin"')
-            start.assert_called_once()
-            self.user.refresh_from_db()
-            self.assertFalse(self.user.face_verified)
-            self.assertEqual(self.user.tier, 1)
+        self.unlock()
+        response = self.get()
+        self.assertContains(response, "/wa/face/")
+        self.assertNotContains(response, "Prembly")
+        self.assertNotContains(response, 'name="nin"')
+        self.face.assert_not_called()
         self.tier2.assert_not_called()
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.face_verified)
+        self.assertEqual(self.user.tier, 1)
 
     def test_tier3_requires_actual_tier2_identity_flags(self):
         User.objects.filter(pk=self.user.pk).update(face_verified=False)

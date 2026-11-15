@@ -10,9 +10,9 @@ The API's JSON/bearer
 transport is replaced ONLY here by a bounded form and action-scoped PIN proof.
 No AccessToken is issued, and no caller can choose an endpoint or account.
 
-Tier 2 starts a server-created Prembly SDK session after the same PIN gate.
-The provider session is checked by the shared secret-authenticated adapter;
-client callbacks, uploaded stills and NIN inputs cannot authorize the upgrade.
+Tier 2 uses its own link (face_page): a Zitch camera page whose selfie goes
+to the bank's Tier 2 upgrade with this account. The bank's read-back, not the
+submission, raises the tier. No third-party liveness vendor is involved.
 """
 import base64
 import hashlib
@@ -58,7 +58,6 @@ ADDRESS_FIELDS = {
     "lga": 60, "landmark": 100, "postalCode": 12,
 }
 REQUIRED_ADDRESS_FIELDS = {"buildingNumber", "street", "city", "state", "lga"}
-from utility.liveness import TIER2_LIVENESS_UNAVAILABLE as UNAVAILABLE
 
 
 
@@ -94,13 +93,11 @@ def _binding(pa):
 def _verification_allowed(user, tier):
     """Keep KYC identity proof independent of unresolved banking balances.
 
-    Tier 2 uses the Prembly session and a PIN-bound WhatsApp capability, not a
-    Wema payout or account instruction. An archived account under review must
-    not strand a BVN-verified customer unable to finish liveness. This only
-    opens the verification page; it NEVER lifts the separate bank funding and
-    spend holds. Tier 3 still follows the bank's eligibility/upgrade policy,
-    including its global lifecycle switch. Independent Prembly identity checks
-    follow the same eligibility as the app and do not authorize bank business.
+    Tier 2 needs a verified Tier 1 identity and a bank account to upgrade; the
+    upgrade service itself re-checks the bank's eligibility. This only opens
+    the verification page; it NEVER lifts the separate bank funding and spend
+    holds. Tier 3 still follows the bank's eligibility/upgrade policy,
+    including its global lifecycle switch.
     """
     if tier == 2:
         # Tier 2 upgrades a bank account; with no account there is nothing to
@@ -241,14 +238,12 @@ def _form(request, pa, user, *, message="", status=200, values=None, refresh_sta
             return _page(request, status=403)
         return _page(request, "pin", status=status, message=message)
     if pa.payload["tier"] == 2:
-        from utility.liveness import tier2_face_available
-
         if user.face_verified and user.tier >= 2:
             return _page(request, "face_complete")
-        if not tier2_face_available():
-            return _page(request, "unavailable", status=503, message=UNAVAILABLE)
+        # Older PIN-gated Tier 2 links now hand over to the camera page.
+        token = request.path.rstrip("/").rsplit("/", 1)[-1]
         return _page(request, "tier2", status=status, message=message,
-                     face_url=pa.payload.get("face_url", ""))
+                     face_url=reverse("whatsapp_face", kwargs={"token": token}))
     from accounts.views import _kyc_state
 
     if refresh_status and user.address_verification_pending:
@@ -346,38 +341,9 @@ def _run_address_operation(request, user, data):
 def _submit(request, claims):
     action = request.POST.get("action", "")
     if action in ("tier2", "face_status"):
-        with transaction.atomic():
-            pa, user = _resolve(claims, lock=True)
-            if pa is None:
-                return _page(request, status=410)
-            if (pa.payload["tier"] != 2 or request.FILES
-                    or set(request.POST) - {"action", "csrfmiddlewaretoken"}
-                    or any(len(request.POST.getlist(k)) != 1 for k in request.POST)):
-                return _page(request, "error", status=400, message="Use the face verification buttons on this page.")
-            if not _has_proof(request, pa, user):
-                return _page(request, "pin", status=403, message="Enter your transaction PIN to continue.")
-        from utility.liveness import start_tier2_liveness, verify_tier2_liveness
-
-        def still_authorized():
-            active, owner = _resolve(claims, lock=True)
-            return active is not None and _has_proof(request, active, owner)
-
-        result = (start_tier2_liveness(user) if action == "tier2" else
-                  verify_tier2_liveness(user, {"session": pa.payload.get("face_session", "")},
-                                       authorize=still_authorized))
-        with transaction.atomic():
-            current, current_user = _resolve(claims, lock=True)
-            if current is None or not _has_proof(request, current, current_user):
-                return _page(request, status=410)
-            if action == "tier2" and result.get("success"):
-                current.payload["face_session"] = result["session"]
-                current.payload["face_url"] = result["url"]
-                current.save(update_fields=["payload"])
-            if result.get("status") in ("failed", "expired"):
-                current.payload.pop("face_session", None)
-                current.payload.pop("face_url", None)
-                current.save(update_fields=["payload"])
-            return _form(request, current, current_user, message=result.get("message", ""))
+        # Tier 2 now runs on the camera page (face_page), not on this form.
+        return _page(request, "unavailable", status=410,
+                     message="Open the Tier 2 link from WhatsApp to take your selfie.")
     if action == "status":
         # Readback may make a bank GET and lock Wallet -> User. Authenticate in
         # a short transaction, then release User/Link/Action before that call.
@@ -428,8 +394,6 @@ def _submit(request, claims):
         if not _has_proof(request, pa, user):
             return _page(request, "pin", status=403,
                          message="Enter your transaction PIN to continue.")
-        if action == "tier2" and pa.payload["tier"] == 2:
-            return _page(request, "unavailable", status=409, message=UNAVAILABLE)
         if action != "address" or pa.payload["tier"] != 3:
             return _page(request, "unavailable", status=400,
                          message="This action is not available from this verification link.")
@@ -564,12 +528,15 @@ def verification_page(request, token):
 
 
 # --------------------------------------------------------------------------- #
-# Tier 2 direct face link: WhatsApp -> Prembly camera, no Zitch page, no PIN.
+# Tier 2 face link: WhatsApp -> Zitch camera page -> bank. No PIN, no vendor.
 # --------------------------------------------------------------------------- #
 #: Link-preview fetchers open the URL before the customer taps it. A preview
-#: must never create (and get billed for) a Prembly session.
+#: gets the closed page and never reaches the camera or the bank.
 _PREVIEW_AGENTS = ("facebookexternalhit", "facebookcatalog", "whatsapp/", "meta-externalagent",
                    "twitterbot", "slackbot", "telegrambot", "discordbot", "bot", "crawler", "spider")
+FACE_PROCESSING, FACE_PENDING, FACE_FAILED = "web_face_processing", "web_face_pending", "web_face_failed"
+#: A JPEG selfie from the page is ~100-300 KB; base64 adds a third.
+MAX_FACE_REQUEST_BYTES = 3_000_000
 
 
 def _is_preview_fetch(request) -> bool:
@@ -578,103 +545,199 @@ def _is_preview_fetch(request) -> bool:
 
 
 def _android_in_app(request) -> bool:
-    """WhatsApp's in-app browser on Android is a WebView ("; wv)"), which left
-    Prembly stuck on "Please wait, opening the camera"."""
+    """WhatsApp's in-app browser on Android is a WebView ("; wv)"), where the
+    camera often never opens."""
     agent = request.headers.get("User-Agent") or ""
     return "Android" in agent and "; wv)" in agent
 
 
 def _chrome_handoff(request, url: str):
-    """Hand the Prembly session to Chrome, where the camera works, and fall back
-    to opening it in place if the WebView cannot follow an intent link."""
+    """Reopen this page in Chrome, where the camera works. If the WebView cannot
+    follow an intent link, stay here (``?stay=1``) and use the photo picker."""
     from django.http import HttpResponse
     from django.utils.html import escape
 
     parts = urlsplit(url)
-    intent = (f"intent://{parts.netloc}{parts.path}?{parts.query}"
+    intent = (f"intent://{parts.netloc}{parts.path}"
               "#Intent;scheme=https;package=com.android.chrome;end")
+    fallback = url + "?stay=1"
     nonce = request.verification_nonce
     body = (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>Opening camera</title><style nonce='{nonce}'>body{{font-family:sans-serif;"
         "padding:32px;color:#14532d}a{color:#166534}</style></head><body>"
-        "<p>Opening the camera check…</p>"
-        f"<p><a href='{escape(url)}'>Tap here if it does not open</a></p>"
+        "<p>Opening the camera…</p>"
+        f"<p><a href='{escape(fallback)}'>Tap here if it does not open</a></p>"
         f"<script nonce='{nonce}'>"
         f"location.href={json.dumps(intent)};"
-        f"setTimeout(function(){{location.replace({json.dumps(url)});}},1500);"
+        f"setTimeout(function(){{location.replace({json.dumps(fallback)});}},1500);"
         "</script></body></html>")
     return HttpResponse(body)
 
 
-def _face_redirect(request, token):
-    from utility.liveness import start_tier2_liveness, tier2_face_available
+def _face_resolve(claims, *, lock=False):
+    """Like _resolve, but also reads a face check already submitted from this link."""
+    if claims is None:
+        return None, None
+    actions = PendingAction.objects.select_for_update() if lock else PendingAction.objects
+    pa = actions.filter(pk=claims["p"], action_type=ACTION_TYPE).first()
+    if pa is None or pa.state not in (FACE_PROCESSING, FACE_PENDING, FACE_FAILED, COMPLETE):
+        return _resolve(claims, lock=lock)
+    if (not isinstance(pa.payload, dict) or pa.payload.get("tier") != 2
+            or not hmac.compare_digest(claims["b"], _binding(pa))):
+        return None, None
+    user = get_user_model().objects.filter(pk=pa.user_id, is_active=True).first()
+    return (pa, user) if user else (None, None)
 
-    claims = _decode(token)
-    pa, user = _resolve(claims)
+
+def _face_get(request, token):
+    from wallet.views import tier2_face_available
+
+    pa, user = _face_resolve(_decode(token))
     if pa is None or pa.payload.get("tier") != 2:
         return _page(request, status=410)
-    if user.face_verified and user.tier >= 2:
+    if (user.face_verified and user.tier >= 2) or pa.state == COMPLETE:
         return _page(request, "face_complete")
+    if pa.state in (FACE_PROCESSING, FACE_PENDING):
+        return _page(request, "face_pending", status=202)
+    if pa.state == FACE_FAILED or pa.expired:
+        return _page(request, status=410)
     if not tier2_face_available():
-        return _page(request, "unavailable", status=503, message=UNAVAILABLE)
+        return _page(request, "unavailable", status=503, message=FACE_UNAVAILABLE)
     if _is_preview_fetch(request):
-        # Nothing is started for a preview; the customer's own tap starts it.
         return _page(request, "closed", status=200)
-    # start_tier2_liveness reuses a still-pending session, so repeat taps and
-    # refreshes never open (or pay for) a second one.
-    result = start_tier2_liveness(user)
-    if not result.get("success"):
-        return _page(request, "error", status=202 if result.get("pending") else 409,
-                     message=result.get("message") or UNAVAILABLE)
+    if _android_in_app(request) and request.GET.get("stay") != "1":
+        return _chrome_handoff(request, _public_origin() + request.path)
+    return render(request, "whatsapp/face_camera.html", {
+        "nonce": request.verification_nonce,
+        "picker_only": request.GET.get("stay") == "1",
+    })
+
+
+def _json(http_status, **body):
+    from django.http import JsonResponse
+
+    return JsonResponse(body, status=http_status)
+
+
+@sensitive_variables("image")
+def _face_post(request, token):
+    """Send the selfie to the bank once. Retry only after an explicit refusal."""
+    from wallet.views import upgrade_wema_identity
+
+    if (request.content_type not in ("application/x-www-form-urlencoded", "multipart/form-data")
+            or set(request.POST) - {"image", "csrfmiddlewaretoken"} or request.FILES
+            or any(len(request.POST.getlist(k)) != 1 for k in request.POST)):
+        return _json(400, status="retry", message="Take the photo using this page.")
+    image = request.POST.get("image", "")
     with transaction.atomic():
-        current, _current_user = _resolve(claims, lock=True)
-        if current is None:
-            return _page(request, status=410)
-        current.payload["face_session"] = result["session"]
-        current.payload["face_url"] = result["url"]
-        current.save(update_fields=["payload"])
-    if _android_in_app(request):
-        return _chrome_handoff(request, result["url"])
-    return HttpResponseRedirect(result["url"])
+        pa, user = _face_resolve(_decode(token), lock=True)
+        if pa is None or pa.payload.get("tier") != 2 or pa.state == FACE_FAILED:
+            return _json(410, status="closed", message="This link has closed. Reply 7 in WhatsApp for a new one.")
+        if pa.state in (FACE_PROCESSING, FACE_PENDING):
+            return _json(202, status="pending", message=FACE_PENDING_TEXT)
+        if pa.state == COMPLETE or (user.face_verified and user.tier >= 2):
+            return _json(200, status="verified", message="Tier 2 is already complete.")
+        # Claim before the bank call: a timeout or a double tap must not send
+        # the photo twice.
+        if not PendingAction.objects.filter(pk=pa.pk, state__in=(PIN, READY)).update(state=FACE_PROCESSING):
+            return _json(409, status="pending", message=FACE_PENDING_TEXT)
+    try:
+        response = upgrade_wema_identity(user, {"live_image": image})
+        body = json.loads(response.content)
+    except Exception:  # Never log the image, identities or provider payloads.
+        PendingAction.objects.filter(pk=pa.pk, state=FACE_PROCESSING).update(state=FACE_PENDING)
+        return _json(202, status="pending", message=FACE_PENDING_TEXT)
+    if response.status_code == 200 and body.get("success") is True:
+        _finish_face(pa, "verified")
+        return _json(200, status="verified", message="Tier 2 verification complete.")
+    if response.status_code == 202:
+        PendingAction.objects.filter(pk=pa.pk, state=FACE_PROCESSING).update(state=FACE_PENDING)
+        return _json(202, status="pending", message=FACE_PENDING_TEXT)
+    # An explicit refusal: allow another photo from the same link. Only our own
+    # validation messages are shown; bank text may carry account details.
+    PendingAction.objects.filter(pk=pa.pk, state=FACE_PROCESSING).update(state=pa.state)
+    own = response.status_code in (400, 409, 429)
+    message = (body.get("message") if own else "") or FACE_RETRY_TEXT
+    return _json(response.status_code if own else 422, status="retry", message=message)
 
 
+def _finish_face(pa, outcome):
+    """Record the outcome on the link and tell the customer in WhatsApp, once."""
+    from .router import reply
+
+    with transaction.atomic():
+        current = PendingAction.objects.select_for_update().filter(pk=pa.pk).first()
+        if current is None or "face_notified" in (current.payload or {}):
+            return False
+        current.payload["face_notified"] = outcome
+        current.state = COMPLETE if outcome == "verified" else FACE_FAILED
+        current.save(update_fields=["payload", "state"])
+    reply(pa.msisdn, FACE_DONE_TEXT if outcome == "verified" else FACE_FAILED_TEXT)
+    return True
+
+
+@csrf_protect
+@ensure_csrf_cookie
 @ratelimit("wa_verification_face", limit=30, window=300)
+def _face_protected(request, token):
+    if request.method == "POST":
+        return _face_post(request, token)
+    return _face_get(request, token)
+
+
+@sensitive_post_parameters()
+@csrf_exempt
 def face_page(request, token):
-    """GET-only: check the WhatsApp-bound link and send the customer straight
-    into the Prembly camera session.
+    """The Tier 2 link WhatsApp sends: a Zitch camera page, then the bank.
 
     No PIN here, by design. The link is a 15-minute signed capability bound to
     the linked WhatsApp number, the account's current login/PIN stamp and this
-    action, and the upgrade only completes when Prembly's live face matches the
-    photo on the BVN this account already verified (checked server-side in
-    utility.liveness against the stored BVN hash). Someone holding a forwarded
-    link cannot pass that, so the PIN step added friction without protection.
+    action, and Tier 2 only completes when the bank matches the live photo to
+    the BVN/NIN record behind this account and its read-back shows Tier 2.
+    Someone holding a forwarded link cannot pass that with their own face.
+    This is NOT a CSRF exemption: the inner csrf_protect checks every POST.
     """
     request.verification_nonce = secrets.token_urlsafe(24)
-    if request.method != "GET":
+    if request.method not in ("GET", "POST"):
         response = _page(request, status=405)
-        response["Allow"] = "GET"
+        response["Allow"] = "GET, POST"
     elif not request.is_secure() or request.build_absolute_uri("/").rstrip("/") != _public_origin():
         response = _page(request, status=403)
+    elif request.method == "POST" and (
+        request.headers.get("Origin") != _public_origin()
+        or request.headers.get("Sec-Fetch-Site") == "cross-site"
+    ):
+        response = _json(403, status="retry", message="Open this link from WhatsApp.")
+    elif request.method == "POST" and int(request.META.get("CONTENT_LENGTH") or 0) > MAX_FACE_REQUEST_BYTES:
+        response = _json(413, status="retry", message="That photo is too large. Please take it again.")
     else:
-        response = _face_redirect(request, token)
+        try:
+            response = _face_protected(request, token)
+        except (RequestDataTooBig, SuspiciousOperation, ValueError):
+            response = _json(400, status="retry", message="We could not read that photo. Please take it again.")
     response["Cache-Control"] = "no-store, private, max-age=0"
     response["Referrer-Policy"] = "no-referrer"
     response["X-Content-Type-Options"] = "nosniff"
     response["X-Frame-Options"] = "DENY"
     response["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+    response["Permissions-Policy"] = "camera=(self), microphone=(), geolocation=()"
     response["Content-Security-Policy"] = (
-        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; "
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; "
         f"style-src 'nonce-{request.verification_nonce}'; "
-        f"script-src 'nonce-{request.verification_nonce}'; object-src 'none'")
+        f"script-src 'nonce-{request.verification_nonce}'; connect-src 'self'; "
+        "img-src data: blob:; media-src blob: mediastream:; object-src 'none'")
     return response
 
 
-#: How many open WhatsApp face sessions one sweep asks Prembly about. Each is
-#: one authenticated readback; anything beyond this waits for the next sweep.
 FACE_SWEEP_LIMIT = 20
+FACE_UNAVAILABLE = ("Tier 2 face verification is temporarily unavailable. Your verified "
+                    "identity is saved. Please try again later.")
+FACE_PENDING_TEXT = ("Your bank is checking your photo. We'll message you in WhatsApp "
+                     "with the result - you can close this page.")
+FACE_RETRY_TEXT = ("Your bank could not confirm your face. Take the photo again in good "
+                   "light, facing the camera, with nothing covering your face.")
 FACE_DONE_TEXT = ("✅ *Tier 2 verification complete.*\n\n"
                   "Your face check passed and your account limits have been upgraded.")
 FACE_FAILED_TEXT = ("❌ *Your face check wasn't confirmed.*\n\n"
@@ -682,50 +745,31 @@ FACE_FAILED_TEXT = ("❌ *Your face check wasn't confirmed.*\n\n"
 
 
 def notify_face_results(limit: int = FACE_SWEEP_LIMIT) -> int:
-    """Tell WhatsApp customers how their Prembly face check ended, unprompted.
+    """Finish face checks the bank was still processing, and tell the customer.
 
-    The customer used to have to come back and reply 7 for the result. The
-    worker now asks Prembly (the same authenticated readback the status check
-    uses - a callback or redirect is never proof) about each open session that
-    was started from a WhatsApp face link, and sends the outcome once.
-    Returns how many customers were notified.
-    """
-    from accounts.models import PremblyFaceSession
-    from utility.liveness import verify_tier2_liveness
+    Only reads back the bank's tier (refresh_tier2_face); the photo is never
+    sent again. Returns how many customers were notified."""
+    from wallet.views import refresh_tier2_face, tier2_face_pending
 
-    from .router import reply
-
-    since = timezone.now() - timedelta(hours=1)
+    since = timezone.now() - timedelta(hours=2)
     actions = (PendingAction.objects
-               .filter(action_type=ACTION_TYPE, created__gte=since,
-                       payload__has_key="face_session")
+               .filter(action_type=ACTION_TYPE, created__gte=since, state=FACE_PENDING)
                .exclude(payload__has_key="face_notified")
+               .select_related("user")
                .order_by("created")[:limit])
     notified = 0
     for pa in actions:
-        session = PremblyFaceSession.objects.filter(
-            user_id=pa.user_id, state=pa.payload.get("face_session")).select_related("user").first()
-        if session is None:
-            continue
-        if session.status == "pending":
-            verify_tier2_liveness(session.user, {"session": str(session.state)})
-            session.refresh_from_db(fields=["status"])
-        if session.status not in ("verified", "failed"):
-            continue
-        with transaction.atomic():
-            # Claim before sending so two workers never message twice.
-            current = PendingAction.objects.select_for_update().filter(pk=pa.pk).first()
-            if current is None or "face_notified" in (current.payload or {}):
-                continue
-            current.payload["face_notified"] = session.status
-            current.save(update_fields=["payload"])
-        reply(pa.msisdn, FACE_DONE_TEXT if session.status == "verified" else FACE_FAILED_TEXT)
-        notified += 1
+        user = pa.user
+        if refresh_tier2_face(user):
+            notified += _finish_face(pa, "verified")
+        elif not tier2_face_pending(user):
+            # The bank refused it, or it is no longer being tracked.
+            notified += _finish_face(pa, "failed")
     return notified
 
 
 def face_link(user, msisdn) -> str:
-    """The Tier 2 link WhatsApp sends: one tap to the Prembly camera."""
+    """The Tier 2 link WhatsApp sends: one tap to the Zitch camera page."""
     url = start_verification(user, msisdn, 2)
     token = url.rstrip("/").rsplit("/", 1)[-1]
     return _public_origin() + reverse("whatsapp_face", kwargs={"token": token})

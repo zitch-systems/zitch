@@ -10,7 +10,8 @@ import { beginExternalActivity, endExternalActivity } from '@/lib/session';
  * In-app selfie capture for the combined Wema Tier-2 upgrade.
  *
  * Expo SDK 51 does not include the Vision Camera stack used by newer builds.
- * The configured verification service remains the decision boundary: this modal
+ * The bank remains the decision boundary (it matches the photo to the BVN/NIN
+ * record behind the account and its read-back raises the tier): this modal
  * only captures a front-camera JPEG as base64 and passes it to the upgrade
  * endpoint as `live_image`.
  */

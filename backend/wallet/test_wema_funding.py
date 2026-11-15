@@ -369,12 +369,11 @@ class WemaWalletProvisioningTests(TestCase):
         self.user.refresh_from_db()
         self.assertFalse(self.user.bvn_verified)
 
-    @patch("wallet.views.verify_tier2_liveness", return_value={"success": True})
     @patch("utility.wema.upgrade_tier2", return_value={"success": True, "raw": {"message": "ok"}})
     @patch("utility.wema.get_kyc_status", return_value={
         "success": True, "tier": "Tier 2", "name": "ADA EZE"})
     def test_existing_account_combined_upgrade_marks_bvn_nin_and_face(
-            self, _sync, mock_upgrade, mock_liveness):
+            self, _sync, mock_upgrade):
         wallet = Wallet.objects.get(user=self.user)
         wallet.account_number = "0123456789"
         wallet.account_name = "ADA EZE"
@@ -390,27 +389,23 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertTrue(self.user.bvn_verified)
         self.assertTrue(self.user.nin_verified)
         self.assertTrue(self.user.face_verified)
-        self.assertEqual(mock_liveness.call_count, 1)
-        self.assertEqual(mock_liveness.call_args.args[0].pk, self.user.pk)
         mock_upgrade.assert_called_once_with(
             "0123456789", bvn="22222222222", nin="12345678901",
             live_image="ZmFrZQ==")
 
-    @patch("wallet.views.verify_tier2_liveness",
-           return_value={"success": False, "message": "No live face detected"})
     @patch("utility.wema.upgrade_tier2")
-    def test_existing_account_upgrade_never_reaches_wema_when_liveness_fails(
-            self, mock_upgrade, _mock_liveness):
+    def test_existing_account_upgrade_without_tier1_or_photo_never_reaches_wema(self, mock_upgrade):
         wallet = Wallet.objects.get(user=self.user)
         wallet.account_number = "0123456789"
         wallet.save(update_fields=["account_number"])
-        r = self._post("/api/wallet/wema/upgrade-tier2/", {
-            "bvn": "22222222222",
-            "nin": "12345678901",
-            "live_image": "c3RpbGwtcGhvdG8=",
-        })
+        # No verified Tier 1 identity and none typed: nothing for the bank to match.
+        r = self._post("/api/wallet/wema/upgrade-tier2/", {"live_image": "c3RpbGwtcGhvdG8="})
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json()["code"], "tier1_required")
+        # No photo at all.
+        r = self._post("/api/wallet/wema/upgrade-tier2/", {"bvn": "22222222222"})
         self.assertEqual(r.status_code, 400)
-        self.assertIn("live face", r.json()["message"].lower())
+        self.assertIn("selfie", r.json()["message"].lower())
         mock_upgrade.assert_not_called()
 
 

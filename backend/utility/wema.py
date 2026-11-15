@@ -1003,6 +1003,12 @@ def address_verify_live() -> bool:
     return _product_live("upgrade")
 
 
+def tier2_upgrade_live() -> bool:
+    """Whether the bank can take a Tier 2 upgrade (account + live face photo)
+    for real. Same Account Upgrade subscription as Tier 3."""
+    return _product_live("upgrade")
+
+
 def _face_key() -> str:
     """The value ALAT's face-biometric web app expects as `x_tk`.
 

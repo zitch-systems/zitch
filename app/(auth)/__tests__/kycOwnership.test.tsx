@@ -186,7 +186,7 @@ it('refreshes an already verified BVN on the same profile without resetting veri
     const menu = JSON.stringify(tree.toJSON());
     expect(menu).toContain('BVN verification');
     expect(menu).toContain('NIN verification');
-    expect(menu).toContain('Selfie verification');
+    expect(menu).toContain('Face verification');
     expect(tree.root.findAllByType(Text).filter((node) => node.props.children === 'Verified')).toHaveLength(3);
     expect(menu).not.toContain('12345678901');
   } finally {
@@ -458,25 +458,28 @@ it.each([0, '0', '50000.00'])('preserves an explicitly confirmed transaction lim
 });
 
 
-it('opens Prembly for a BVN-verified customer without requesting NIN or using the bank upgrade', async () => {
+it('Tier 2 on the bank rail asks a verified customer for a selfie only', async () => {
   mockParams.verify_identity = '';
   const verified = { ...state, bvn_verified: true, email_verified: true, phone_verified: true,
-    tier: 1, bank_upgrade_required: true, tier2_face_flow: 'prembly_sdk', tier2_face_available: true };
-  mockOpenBrowser.mockResolvedValue({ type: 'dismiss' });
+    tier: 1, bank_upgrade_required: true, tier2_face_rail: 'wema', tier2_face_flow: 'wema_selfie',
+    tier2_face_available: true };
+  let upgraded = false;
   mockApiJson.mockImplementation(async (path: string) => {
-    if (path === EP.kyc.status) return verified;
-    if (path === EP.kyc.livenessStart) return { success: true, session: 'server-bound', url: 'https://sdk-live.prembly.com/?session=opaque' };
-    if (path === EP.kyc.livenessStatus) return { ...verified, success: true, face_verified: true, tier: 2, status: 'verified' };
+    if (path === EP.kyc.status) return upgraded ? { ...verified, face_verified: true, tier: 2, bank_upgrade_required: false } : verified;
+    if (path === EP.wallet.wemaUpgradeTier2) { upgraded = true; return { success: true, face_verified: true, tier: 2 }; }
     throw new Error(`Unexpected API call: ${path}`);
   });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Selfie verification, Tier 2 · Prembly verification' }).props.onPress(); });
+  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Tier 2 · Face verification, Take a quick selfie' }).props.onPress(); });
+  // No BVN or NIN to type again, and no third-party face check.
   expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
-  expect(JSON.stringify(tree.toJSON())).toContain('No additional NIN verification is needed');
-  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Open Prembly face verification' }).props.onPress(); });
-  expect(mockOpenBrowser).toHaveBeenCalledWith('https://sdk-live.prembly.com/?session=opaque');
-  expect(mockApiJson).toHaveBeenCalledWith(EP.kyc.livenessStatus, { session: 'server-bound' });
-  expect(mockNotify).toHaveBeenCalledWith('Tier 2 verified', expect.any(String), 'success');
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Prembly');
+  act(() => { tree.root.findByProps({ accessibilityLabel: 'Take a selfie' }).props.onPress(); });
+  act(() => { tree.root.findByProps({ testID: 'face-capture' }).props.onCapture('SELFIE64'); });
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Finish verification' }).props.onPress(); });
+  expect(mockApiJson).toHaveBeenCalledWith(EP.wallet.wemaUpgradeTier2, { bvn: '', nin: '', live_image: 'SELFIE64' });
+  expect(mockOpenBrowser).not.toHaveBeenCalled();
+  expect(mockNotify).toHaveBeenCalledWith('Tier 2 verified', undefined, 'success');
   await act(async () => tree.unmount());
 });

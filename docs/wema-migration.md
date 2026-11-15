@@ -321,8 +321,15 @@ The follow-up rails from the bundle are wired (mock-first, fail-closed):
 - **Account tier upgrade** — `upgrade_tier2` ({accountNumber, nin, bvn, liveImageOfFace}) and
   `upgrade_tier3` ({residentialAddress, accountNumber}) on `/account-upgrade`. Tier 3 is
   best-effort synced when the user verifies their address (`accounts.views.kyc_address`), so the
-  NUBAN's bank-side limits track the user's KYC. Tier 2 is **not** auto-synced: it needs the raw
-  BVN/NIN, which Zitch doesn't retain post-provisioning (only an HMAC + last4).
+  NUBAN's bank-side limits track the user's KYC. Tier 2 is the customer's own step: the app's
+  camera module or the WhatsApp face page (`/wa/face/<token>`) captures a selfie and
+  `wallet.views.upgrade_wema_identity` sends `{accountNumber, liveImageOfFace}` with **empty**
+  `bvn`/`nin` once Tier 1 is verified (Zitch keeps only an HMAC + last4, and the bank already holds
+  the identity behind the NUBAN). A typed BVN/NIN is forwarded only when the customer enters one.
+  The local tier is raised only after `get_kyc_status` reads back Tier 2+ with a matching name;
+  a 202 is finished later by `refresh_tier2_face` (status check / WhatsApp worker), read-only.
+  **To confirm with Wema:** that `partner-account-upgrade-tier2` accepts empty `bvn`/`nin` for an
+  account already opened with a verified BVN or NIN.
 - **Remita** — `validate_rrr` / `pay_remita` / `remita_receipt` (`/remita-payment`).
   `POST /api/utility/validate_rrr/` + `POST /api/utility/payremita/` validate then pay an RRR
   from the user's NUBAN via `run_provider_purchase` (debit → pay → settle/refund). A timed-out

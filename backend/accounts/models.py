@@ -344,7 +344,7 @@ class User(AbstractUser):
     def recompute_tier(self) -> None:
         """Derive the KYC tier from the verifications completed (ascending):
         Tier 1 needs verified contact details and either BVN or NIN; Tier 2
-        needs a verified identity and Prembly liveness; Tier 3 adds address verification.
+        needs a verified identity and the bank-confirmed face check; Tier 3 adds address verification.
 
         Both contact requirements apply to every account, however it signed up.
         The app earns `phone_verified` at signup (that IS the signup OTP); a

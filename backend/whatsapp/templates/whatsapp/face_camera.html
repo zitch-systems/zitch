@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Tier 2 face check · Zitch</title>
+  <style nonce="{{ nonce }}">
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f4f6f2; color: #142621; font: 16px/1.5 system-ui, sans-serif; }
+    main { max-width: 520px; margin: 24px auto; padding: 24px 20px 18px; background: #fff; border-radius: 20px; text-align: center; }
+    .brand { font-weight: 800; letter-spacing: -.04em; font-size: 24px; color: #14583d; text-align: left; }
+    h1 { font-size: 22px; line-height: 1.25; margin: 14px 0 6px; }
+    p { margin: 6px 0; }
+    .note { color: #52665c; font-size: 14px; }
+    .frame { position: relative; width: 248px; height: 248px; margin: 18px auto 8px; border-radius: 50%; overflow: hidden; background: #e8eee9; border: 4px solid #14583d; }
+    .frame video, .frame img { width: 100%; height: 100%; object-fit: cover; }
+    .frame video { transform: scaleX(-1); }
+    .frame .hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; color: #52665c; font-size: 14px; }
+    button, .pick { display: block; width: 100%; min-height: 50px; border: 0; border-radius: 12px; padding: 14px; margin-top: 14px; background: #14583d; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+    button.ghost, .pick.ghost { background: #eef3ef; color: #14583d; }
+    button:disabled { opacity: .6; }
+    button:focus, .pick:focus-within { outline: 3px solid #acdfaa; outline-offset: 2px; }
+    .pick input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+    .message { background: #fff5de; border-radius: 10px; padding: 12px; margin-top: 14px; text-align: left; }
+    .message.ok { background: #e6f5e8; }
+    .tips { text-align: left; color: #52665c; font-size: 14px; padding-left: 18px; margin: 10px 0 0; }
+    .hidden { display: none !important; }
+    .trust { margin-top: 22px; padding-top: 10px; border-top: 1px solid #e4e9e3; color: #7a8a82; font-size: 10px; line-height: 1.4; }
+    @media (max-width: 560px) { main { margin: 0; min-height: 100dvh; border-radius: 0; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="brand">zitch</div>
+  <h1 id="title">Tier 2 · Face check</h1>
+  <p class="note" id="lead">Look straight at the camera in good light. Remove glasses or a face covering.</p>
+
+  <div class="frame" id="frame">
+    <video id="video" class="hidden" autoplay playsinline muted></video>
+    <img id="shot" class="hidden" alt="Your selfie">
+    <div class="hint" id="hint">Starting your front camera…</div>
+  </div>
+
+  <form id="face" autocomplete="off">
+    {% csrf_token %}
+    <button type="button" id="capture" class="hidden">Take photo</button>
+    <label class="pick hidden" id="pick">
+      <span id="pick-label">Open camera</span>
+      <input type="file" id="file" accept="image/*" capture="user">
+    </label>
+    <button type="button" id="send" class="hidden">Use this photo</button>
+    <button type="button" id="retake" class="ghost hidden">Retake</button>
+  </form>
+
+  <p class="message hidden" id="status" role="status" aria-live="polite"></p>
+  <ul class="tips" id="tips">
+    <li>Hold the phone at eye level.</li>
+    <li>Your whole face should fill the circle.</li>
+  </ul>
+
+  <p class="trust">Banking services by Wema Bank Plc, licensed by the CBN. Deposits insured by NDIC. Your photo is sent only to your bank for this check.</p>
+  <noscript><p class="message">Enable JavaScript in your browser to take your selfie.</p></noscript>
+</main>
+<script nonce="{{ nonce }}">
+(function () {
+  var pickerOnly = {{ picker_only|yesno:"true,false" }};
+  var MAX_SIDE = 720;
+  var video = document.getElementById('video');
+  var shot = document.getElementById('shot');
+  var hint = document.getElementById('hint');
+  var capture = document.getElementById('capture');
+  var pick = document.getElementById('pick');
+  var file = document.getElementById('file');
+  var send = document.getElementById('send');
+  var retake = document.getElementById('retake');
+  var status = document.getElementById('status');
+  var stream = null;
+  var image = '';
+  var done = false;
+
+  function show(el, on) { el.classList.toggle('hidden', !on); }
+  function say(text, ok) {
+    status.textContent = text || '';
+    status.classList.toggle('ok', !!ok);
+    show(status, !!text);
+  }
+  function stop() {
+    if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+  }
+
+  function toJpeg(source, width, height, mirror) {
+    var scale = Math.min(1, MAX_SIDE / Math.max(width, height));
+    var canvas = document.createElement('canvas');
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    var ctx = canvas.getContext('2d');
+    if (mirror) { ctx.translate(canvas.width, 0); ctx.scale(-1, 1); }
+    ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.85);
+  }
+
+  function preview(dataUrl) {
+    image = dataUrl;
+    shot.src = dataUrl;
+    show(shot, true); show(video, false); show(hint, false);
+    show(capture, false); show(pick, false);
+    show(send, true); show(retake, true);
+    say('');
+  }
+
+  function usePicker(reason) {
+    stop();
+    show(video, false); show(capture, false);
+    hint.textContent = reason || 'Tap “Open camera” to take your selfie.';
+    show(hint, true); show(pick, true);
+  }
+
+  function startCamera() {
+    image = '';
+    show(shot, false); show(send, false); show(retake, false);
+    if (pickerOnly || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      return usePicker();
+    }
+    hint.textContent = 'Starting your front camera…';
+    show(hint, true);
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 } }, audio: false })
+      .then(function (s) {
+        stream = s;
+        video.srcObject = s;
+        show(video, true); show(hint, false); show(capture, true); show(pick, false);
+      })
+      .catch(function () {
+        usePicker('Camera access was blocked. Tap “Open camera” to take your selfie instead.');
+      });
+  }
+
+  capture.addEventListener('click', function () {
+    if (!video.videoWidth) return;
+    var dataUrl = toJpeg(video, video.videoWidth, video.videoHeight, true);
+    stop();
+    preview(dataUrl);
+  });
+
+  file.addEventListener('change', function () {
+    var chosen = file.files && file.files[0];
+    file.value = '';
+    if (!chosen || !/^image\//.test(chosen.type)) return;
+    var url = URL.createObjectURL(chosen);
+    var img = new Image();
+    img.onload = function () {
+      var dataUrl = toJpeg(img, img.naturalWidth, img.naturalHeight, false);
+      URL.revokeObjectURL(url);
+      preview(dataUrl);
+    };
+    img.onerror = function () { URL.revokeObjectURL(url); say('We could not read that photo. Please take it again.'); };
+    img.src = url;
+  });
+
+  retake.addEventListener('click', function () { if (!done) startCamera(); });
+
+  send.addEventListener('click', async function () {
+    if (!image || send.disabled || done) return;
+    send.disabled = true; retake.disabled = true;
+    say('Checking with your bank. Please keep this page open…');
+    var form = document.getElementById('face');
+    var body = new URLSearchParams();
+    body.set('csrfmiddlewaretoken', form.elements.csrfmiddlewaretoken.value);
+    body.set('image', image.split(',')[1] || '');
+    var result;
+    try {
+      // CORS-mode fetch keeps the Origin header without leaking this link as
+      // Referer. The target is always this exact page.
+      var response = await fetch(window.location.pathname, {
+        method: 'POST', body: body, mode: 'cors', credentials: 'same-origin',
+        referrerPolicy: 'no-referrer', cache: 'no-store',
+        headers: { 'X-CSRFToken': form.elements.csrfmiddlewaretoken.value }
+      });
+      result = await response.json();
+    } catch (error) {
+      // No automatic retry: the photo may already have reached the bank.
+      result = { status: 'pending', message: 'We could not confirm the result here. We will message you in WhatsApp.' };
+    }
+    image = '';
+    if (result.status === 'verified') {
+      done = true;
+      document.getElementById('title').textContent = 'Tier 2 verification complete';
+      document.getElementById('lead').textContent = 'Your account limits have been upgraded. You can close this page and return to WhatsApp.';
+      show(send, false); show(retake, false); show(document.getElementById('tips'), false);
+      say('✅ ' + (result.message || 'Verified.'), true);
+    } else if (result.status === 'pending' || result.status === 'closed') {
+      done = true;
+      show(send, false); show(retake, false);
+      say(result.message);
+    } else {
+      send.disabled = false; retake.disabled = false;
+      show(send, false);
+      say(result.message || 'Please take the photo again.');
+    }
+  });
+
+  window.addEventListener('pagehide', stop);
+  startCamera();
+})();
+</script>
+</body>
+</html>
