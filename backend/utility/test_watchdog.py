@@ -65,12 +65,14 @@ class AlertOutboxWatchTests(TestCase):
         self.user, _token = make_user("08071250001", "outbox@zitch.test")
         self.txn = credit(self.user, "100", "Deposit")
 
-    def delivery(self, minutes_ago, state="ready"):
+    def delivery(self, minutes_ago, state="ready", next_try_in=None, channel="email"):
         from wallet.models import TransactionAlertDelivery as Delivery
 
-        row, _ = Delivery.objects.get_or_create(transaction=self.txn, channel="email", reversal=False)
+        row, _ = Delivery.objects.get_or_create(transaction=self.txn, channel=channel, reversal=False)
+        next_try = None if next_try_in is None else timezone.now() + timedelta(minutes=next_try_in)
         Delivery.objects.filter(pk=row.pk).update(
-            state=state, created=timezone.now() - timedelta(minutes=minutes_ago))
+            state=state, created=timezone.now() - timedelta(minutes=minutes_ago),
+            next_attempt_at=next_try)
 
     def test_an_alert_waiting_five_minutes_is_reported(self):
         self.delivery(7)
@@ -85,3 +87,18 @@ class AlertOutboxWatchTests(TestCase):
             self.delivery(30, state="retry")
             self.assertTrue(watchdog.check_alert_outbox())
         alert.assert_not_called()
+
+    def test_an_alert_parked_on_a_channel_that_is_not_set_up_is_not_reported(self):
+        # Weeks old, but the worker looked at it under a minute ago and will
+        # look again in a minute: the channel is off, the worker is fine.
+        self.delivery(60 * 24 * 30, next_try_in=1, channel="sms")
+        with mock.patch("utility.alerts.alert") as alert:
+            self.assertTrue(watchdog.check_alert_outbox())
+        alert.assert_not_called()
+
+    def test_a_parked_alert_the_worker_stopped_rechecking_is_reported(self):
+        self.delivery(60 * 24 * 30, next_try_in=-10, channel="sms")
+        with mock.patch("utility.alerts.alert") as alert:
+            self.assertFalse(watchdog.check_alert_outbox())
+        self.assertEqual(alert.call_args.kwargs["waiting"], 1)
+
