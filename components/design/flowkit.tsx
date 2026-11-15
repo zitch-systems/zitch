@@ -178,11 +178,14 @@ export const ProviderGrid = ({
   value,
   onPick,
   cols = 4,
+  borderless = false,
 }: {
   items: { id: string; name: string; color: string; logo?: any }[];
   value: string;
   onPick: (id: string) => void;
   cols?: number;
+  /** No borders: the chosen tile keeps a soft teal tint instead of a ring (review, Nov 2026). */
+  borderless?: boolean;
 }) => {
   const { c } = useTheme();
   return (
@@ -197,10 +200,10 @@ export const ProviderGrid = ({
               accessibilityRole="radio"
               accessibilityLabel={it.name}
               accessibilityState={{ selected: on }}
-              style={{ alignItems: 'center', gap: 7, paddingVertical: 12, borderRadius: 16, backgroundColor: c.surface, borderWidth: 2, borderColor: on ? c.brand : c.line }}
+              style={{ alignItems: 'center', gap: 7, paddingVertical: 12, borderRadius: 16, backgroundColor: borderless && on ? 'rgba(6,110,102,0.10)' : c.surface, borderWidth: borderless ? 0 : 2, borderColor: on ? c.brand : c.line }}
             >
               {it.logo ? (
-                <View style={{ width: '100%', height: 46, borderRadius: 12, backgroundColor: '#fff', borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 }}>
+                <View style={{ width: '100%', height: 46, borderRadius: 12, backgroundColor: '#fff', borderWidth: borderless ? 0 : 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 }}>
                   <Image source={it.logo} resizeMode="contain" style={{ width: '100%', height: 32 }} />
                 </View>
               ) : (
@@ -227,10 +230,12 @@ export const PlanList = ({
   plans,
   value,
   onPick,
+  borderless = false,
 }: {
   plans: { id: string; label: string; sub?: string; price: number }[];
   value: string;
   onPick: (id: string) => void;
+  borderless?: boolean;
 }) => {
   const { c } = useTheme();
   return (
@@ -244,7 +249,7 @@ export const PlanList = ({
             accessibilityRole="radio"
             accessibilityLabel={`${p.label}, ${money(p.price)}`}
             accessibilityState={{ selected: on }}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 16, borderRadius: 15, backgroundColor: c.surface, borderWidth: 2, borderColor: on ? c.brand : c.line }}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 16, borderRadius: 15, backgroundColor: borderless && on ? 'rgba(6,110,102,0.10)' : c.surface, borderWidth: borderless ? 0 : 2, borderColor: on ? c.brand : c.line }}
           >
             <View style={{ flex: 1 }}>
               <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>{p.label}</Text>

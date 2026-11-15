@@ -7,8 +7,10 @@ import { getSessionGeneration } from '@/lib/secureStore';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { EP } from '@/lib/endpoints';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Screen, Header, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, ProviderGrid, PlanList, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { RecentField } from '@/components/design/billkit';
+import { useBillRecents, refreshBillRecents, shortDate } from '@/lib/recents';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -55,6 +57,16 @@ const BuyCable = () => {
   const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
   const validationGeneration = useRef(0);
+  // The smartcard field opens with the last one used on this provider.
+  const recents = useBillRecents();
+  const iucEdited = useRef(false);
+  const cards = recents.smartcards.filter((r) => r.provider === prov);
+  useEffect(() => {
+    if (iucEdited.current) return;
+    const last = recents.smartcards.find((r) => r.provider === prov);
+    setIuc(last ? last.iuc : '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recents, prov]);
 
   // Fetch bouquets for the chosen provider.
   useEffect(() => {
@@ -160,6 +172,7 @@ const BuyCable = () => {
     setValidating(false);
     setValidatedName('');
     setValidatedFor('');
+    iucEdited.current = false;
     setProv(value);
   };
 
@@ -168,6 +181,7 @@ const BuyCable = () => {
     setValidating(false);
     setValidatedName('');
     setValidatedFor('');
+    iucEdited.current = true;
     setIuc(value.replace(/\D/g, '').slice(0, 12));
   };
 
@@ -204,6 +218,7 @@ const BuyCable = () => {
         setTxnRef(String(result.reference || ''));
         setStep(null);
         setDone(true);
+        refreshBillRecents();
         reload();
       } else if (outcome === 'pending' || outcome === 'unknown') {
         setPending(true);
@@ -265,21 +280,27 @@ const BuyCable = () => {
       <Header title="Cable TV" onBack={() => router.back()} />
 
       <Label>Select provider</Label>
-      <ProviderGrid items={PROVIDERS} value={prov} onPick={changeProvider} cols={4} />
+      <ProviderGrid items={PROVIDERS} value={prov} onPick={changeProvider} cols={4} borderless />
 
-      <Field
+      <RecentField
         label="Smartcard / IUC number"
         value={iuc}
         onChangeText={changeIuc}
-        keyboardType="number-pad"
+        onPick={(it) => changeIuc(it.value)}
+        items={cards.slice(0, 5).map((r) => ({ value: r.iuc, sub: [r.name, `Last paid ${shortDate(r.last_used)}`].filter(Boolean).join(' · ') }))}
+        menuTitle="Recent smartcard numbers"
+        anotherLabel="Use another smartcard number"
+        tag={iuc && cards.some((r) => r.iuc === iuc) ? 'Last used' : undefined}
         placeholder="1234 5678 90"
+        maxLength={12}
       />
       <View style={{ marginTop: 8, marginBottom: 8 }}>
         {verifiedName ? (
           <Text style={{ color: c.brandDeep, fontFamily: font.semibold, fontSize: 12.5 }}>✓ {verifiedName}</Text>
-        ) : (
+        ) : iuc.length >= 8 ? (
+          // Names resolve on their own once the number is complete; this is the retry.
           <Btn label={validating ? 'Validating…' : 'Validate IUC'} variant="outline" size="sm" full={false} onPress={validateIuc} disabled={validating} />
-        )}
+        ) : null}
       </View>
 
       <Label>Choose a bouquet</Label>
@@ -288,7 +309,7 @@ const BuyCable = () => {
       ) : currentPlans.length === 0 ? (
         <View><Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>No bouquets available.</Text><Btn label="Retry plans" variant="outline" onPress={() => setCatalogueRevision((value) => value + 1)} /></View>
       ) : (
-        <PlanList plans={currentPlans} value={plan} onPick={setPlan} />
+        <PlanList plans={currentPlans} value={plan} onPick={setPlan} borderless />
       )}
       {!!planObj && !hasAuthoritativePrice ? <View style={{ marginVertical: 12 }}><Text style={{ color: c.ink3, fontFamily: font.regular }}>A confirmed price is needed before payment.</Text><Btn label="Refresh price" variant="outline" onPress={() => setQuoteRevision((value) => value + 1)} /></View> : null}
       <View style={{ height: 14 }} />

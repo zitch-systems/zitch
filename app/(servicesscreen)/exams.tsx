@@ -6,8 +6,10 @@ import { getSessionGeneration } from '@/lib/secureStore';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { examsService } from '@/lib/services/bills';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
+import { Screen, Header, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, Monogram, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { RecentField, type RecentItem } from '@/components/design/billkit';
+import { useBillRecents, refreshBillRecents, shortDate, groupPhone } from '@/lib/recents';
 import { notify } from '@/components/design/Notify';
 import Receipt from '@/components/design/Receipt';
 import { useTheme, font } from '@/lib/theme';
@@ -36,6 +38,16 @@ const Exams = () => {
   useEffect(() => {
     if (!phoneEdited.current) setPhone((current) => current || purchasablePhoneNumber(phoneNumber));
   }, [phoneNumber]);
+  // Your own number first, then the numbers PINs went to before.
+  const recents = useBillRecents();
+  const own = purchasablePhoneNumber(phoneNumber);
+  const phoneItems: RecentItem[] = [
+    ...(own ? [{ value: own, title: groupPhone(own), sub: 'My number' }] : []),
+    ...recents.exam_phones.filter((r) => r.phone !== own).slice(0, 5).map((r) => ({
+      value: r.phone, title: groupPhone(r.phone), sub: `Last used ${shortDate(r.last_used)}`,
+    })),
+  ];
+  const changePhone = (v: string) => { phoneEdited.current = true; setPhone(purchasablePhoneNumber(v) || v.replace(/\D/g, '').slice(0, 15)); };
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const purchaseInFlight = useRef(false);
@@ -91,6 +103,7 @@ const Exams = () => {
         setPurchasedPins(delivered.map((value: unknown) => String(value)));
         setStep(null);
         setDone(true);
+        refreshBillRecents();
         reload();
       } else if (outcome === 'pending' || outcome === 'unknown') {
         setPending(true);
@@ -199,14 +212,20 @@ const Exams = () => {
         </Pressable>
       </View>
 
-      <Field
+      <RecentField
         label="Phone number (PIN delivery)"
         value={phone}
-        onChangeText={(v) => { phoneEdited.current = true; setPhone(purchasablePhoneNumber(v) || v.replace(/\D/g, '').slice(0, 15)); }}
-        keyboardType="number-pad"
+        onChangeText={changePhone}
+        onPick={(it) => changePhone(it.value)}
+        items={phoneItems}
+        menuTitle="Recent numbers"
+        anotherLabel="Use another number"
+        tag={phone && phone === own ? 'My number' : undefined}
+        format={groupPhone}
+        maxLength={15}
         placeholder="0801 234 5678"
       />
-      <View style={{ height: 6 }} />
+      <View style={{ height: 10 }} />
       <BalanceHint amount={amount} balance={balance} />
       {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 

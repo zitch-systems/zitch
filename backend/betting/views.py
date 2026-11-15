@@ -7,7 +7,8 @@ from common.http import (
     api, check_daily_limit, check_send_limits, fail, idempotent_replay, ok, parse_amount,
     provider_purchase_response, require_user, spend_key, verify_transaction_pin,
 )
-from utility.providers import vtu_purchase
+from common.ratelimit import ratelimit
+from utility.providers import vtu_purchase, vtu_verify_customer
 from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceeded, existing_for_key, run_provider_purchase
 
 from .models import BettingPlatform
@@ -21,6 +22,30 @@ def list_platforms(request):
         {"code": p.code, "name": p.name, "color": p.color}
         for p in platforms
     ])
+
+
+@api
+@ratelimit("verify_betting", limit=20, window=300)
+@require_user
+def verify_betting(request):
+    """POST /api/betting/verify/ {access_token, platform, user_id} -> {success, account_name}
+
+    Shows the name on the betting account once the ID is typed, so the customer
+    can see the money is going to the right account before paying. When the
+    platform cannot be checked through our partner bank, the answer says so and
+    the app simply shows no name; funding is unaffected.
+    """
+    platform = BettingPlatform.objects.filter(code=str(request.data.get("platform", "")), active=True).first()
+    if platform is None:
+        return fail("Betting platform not found", status=404)
+    user_id = (request.data.get("user_id") or "").strip() if isinstance(request.data.get("user_id"), str) else ""
+    if len(user_id) < 4 or len(user_id) > 40:
+        return fail("Enter a valid betting user ID")
+    res = vtu_verify_customer(platform.service_id or f"{platform.code}-betting", user_id)
+    if res.get("success"):
+        name = str(res.get("customer_name") or "").strip()
+        return ok(success=True, account_name=name, name=name)
+    return fail(res.get("message", "Could not check this betting ID"), status=400)
 
 
 @api

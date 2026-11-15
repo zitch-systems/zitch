@@ -18,6 +18,8 @@ const mockClear = jest.fn();
 const mockWallet = { balance: 20000, phoneNumber: '+2348012345678', billPaymentsAvailable: true, reload: jest.fn() };
 const mockResponse = (body: unknown, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
 
+jest.mock('@/components/design/billkit');
+jest.mock('@/lib/recents');
 jest.mock('expo-router', () => ({ router: { back: jest.fn(), push: jest.fn(), replace: jest.fn() }, useLocalSearchParams: () => ({}) }));
 jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => mockGeneration }));
 jest.mock('@/lib/wallet', () => ({ useWallet: () => mockWallet }));
@@ -35,7 +37,7 @@ jest.mock('@/lib/api', () => ({
             : { exams: [{ code: 'waec', name: 'WAEC', description: 'Result checker', price: '1000' }] }),
 }));
 jest.mock('@/lib/services/bills', () => ({
-  bettingService: { fund: (...args: unknown[]) => mockSubmit('betting', args) },
+  bettingService: { fund: (...args: unknown[]) => mockSubmit('betting', args), verify: async () => ({ success: false }) },
   examsService: { buy: (...args: unknown[]) => mockSubmit('exam', args) },
 }));
 jest.mock('@/components/design/Notify', () => ({ notify: (...args: unknown[]) => mockNotify(...args) }));

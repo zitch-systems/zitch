@@ -9,6 +9,8 @@ import { bettingService } from '@/lib/services/bills';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, ProviderGrid, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { RecentField, Tick } from '@/components/design/billkit';
+import { useBillRecents, refreshBillRecents, shortDate } from '@/lib/recents';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -51,6 +53,32 @@ const Betting = () => {
     return () => { current = false; };
   }, [quoteRevision]);
 
+  // The ID field opens with the last ID used on the chosen platform; the name on
+  // the betting account shows once the ID is in, where the platform can be checked.
+  const recents = useBillRecents();
+  const idEdited = useRef(false);
+  const ids = recents.betting.filter((r) => r.platform === selected);
+  useEffect(() => {
+    if (idEdited.current || !selected) return;
+    const last = recents.betting.find((r) => r.platform === selected);
+    setUserId(last ? last.user_id : '');
+  }, [recents, selected]);
+  const [accountName, setAccountName] = useState({ key: '', name: '' });
+  const nameKey = `${selected}|${userId}`;
+  useEffect(() => {
+    if (!selected || userId.length < 6) return;
+    let live = true;
+    const key = `${selected}|${userId}`;
+    const t = setTimeout(() => {
+      bettingService.verify(selected, userId).then((r) => {
+        if (live && isCurrentSession() && r?.success && r.account_name) setAccountName({ key, name: String(r.account_name) });
+      }).catch(() => {});
+    }, 450);
+    return () => { live = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, userId]);
+  const shownName = accountName.key === nameKey ? accountName.name : '';
+
   const platform = platforms.find((p) => p.code === selected);
   const amount = Number(amt || 0);
   const valid = billPaymentsAvailable === true && !!platform && userId.length >= 4 && Number.isFinite(amount) && amount >= 100 && amount <= balance;
@@ -80,6 +108,7 @@ const Betting = () => {
         setTxnRef(String(res.reference || ''));
         setStep(null);
         setDone(true);
+        refreshBillRecents();
         reload();
       } else if (outcome === 'pending' || outcome === 'unknown') {
         setPending(true);
@@ -142,20 +171,35 @@ const Betting = () => {
       <Label>Select platform</Label>
       {catalogueLoading ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Loading available platforms…</Text> : platforms.length === 0 ? <View style={{ marginBottom: 16 }}><Text style={{ color: c.ink3, fontFamily: font.regular }}>No platforms are available right now.</Text><Btn label="Try again" variant="outline" onPress={() => setQuoteRevision((value) => value + 1)} /></View> : null}
 
-      <ProviderGrid items={platforms.map((p) => ({ id: p.code, name: p.name, color: p.color }))} value={selected} onPick={setSelected} cols={3} />
+      <ProviderGrid items={platforms.map((p) => ({ id: p.code, name: p.name, color: p.color }))} value={selected} onPick={(code) => { idEdited.current = false; setSelected(code); }} cols={3} borderless />
 
-      <Field
+      <RecentField
         label="User ID"
         value={userId}
-        onChangeText={(v) => setUserId(v.replace(/\s/g, '').slice(0, 20))}
+        onChangeText={(v) => { idEdited.current = true; setUserId(v.replace(/\s/g, '').slice(0, 20)); }}
+        onPick={(it) => { idEdited.current = true; setUserId(it.value); }}
+        items={ids.slice(0, 5).map((r) => ({ value: r.user_id, sub: `Last funded ${shortDate(r.last_used)}` }))}
+        menuTitle={`Recent ${platform?.name || 'betting'} IDs`}
+        anotherLabel="Use another ID"
+        tag={userId && ids.some((r) => r.user_id === userId) ? 'Last used' : undefined}
+        leading={<ZIcon name="dice" size={18} color={c.ink3} />}
+        keyboardType="default"
         placeholder="Enter betting ID"
-        prefix={<ZIcon name="dice" size={18} color={c.ink3} />}
+        maxLength={20}
+        below={shownName ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 9, paddingLeft: 4 }}>
+            <Tick size={16} bg="#00A01A" />
+            <Text style={{ fontSize: 13, fontFamily: font.extrabold, color: c.ink1, letterSpacing: 0.2 }}>{shownName}</Text>
+            <Text style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3 }}>· {platform?.name} account</Text>
+          </View>
+        ) : null}
       />
       <View style={{ height: 16 }} />
 
       <Label>Amount</Label>
       <QuickAmounts amounts={AMOUNTS} value={amt} onPick={setAmt} />
       <Field
+        tint
         value={amt}
         onChangeText={(v) => { const normalized = normalizeAmountInput(v); if (normalized !== null) setAmt(normalized); }}
         keyboardType="decimal-pad"

@@ -7,8 +7,10 @@ import { getSessionGeneration } from '@/lib/secureStore';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { EP } from '@/lib/endpoints';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
-import { Label, ProviderGrid, Segmented, PlanList, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { Screen, Header, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { NetworkCircles, NetDot, RecentField, PillTabs, PlanGrid, SectionTitle, NETWORK_LABELS, type RecentItem } from '@/components/design/billkit';
+import { useBillRecents, refreshBillRecents, shortDate, groupPhone, networkForPhone } from '@/lib/recents';
 import { notify } from '@/components/design/Notify';
 import Receipt from '@/components/design/Receipt';
 import { useTheme, font } from '@/lib/theme';
@@ -35,14 +37,38 @@ const BuyData = () => {
   const sessionGeneration = useRef(getSessionGeneration());
   const isCurrentSession = () => sessionGeneration.current === getSessionGeneration();
   const { balance, reload, billPaymentsAvailable, phoneNumber } = useWallet();
-  const [net, setNet] = useState('1');
+  const [phone, setPhone] = useState(() => purchasablePhoneNumber(phoneNumber));
+  const [net, setNet] = useState(() => networkForPhone(phone) || '1');
   const [planType, setPlanType] = useState('1');
   const [plan, setPlan] = useState('');
-  const [phone, setPhone] = useState(() => purchasablePhoneNumber(phoneNumber));
   const phoneEdited = useRef(false);
+  // As on Airtime: the network follows the number until the customer picks one.
+  const netPicked = useRef(false);
+  const recents = useBillRecents();
+  const own = purchasablePhoneNumber(phoneNumber);
   useEffect(() => {
-    if (!phoneEdited.current) setPhone((current) => current || purchasablePhoneNumber(phoneNumber));
-  }, [phoneNumber]);
+    if (!phoneEdited.current) setPhone((current) => current || own);
+  }, [own]);
+  const changePhone = (raw: string) => {
+    phoneEdited.current = true;
+    const next = purchasablePhoneNumber(raw) || raw.replace(/\D/g, '').slice(0, 15);
+    setPhone(next);
+    const known = recents.phones.find((r) => r.phone === next)?.network || networkForPhone(next);
+    if (known && !netPicked.current) setNet(known);
+  };
+  useEffect(() => {
+    const known = recents.phones.find((r) => r.phone === phone)?.network;
+    if (known && !netPicked.current) setNet(known);
+  }, [recents, phone]);
+  const ownNet = recents.phones.find((r) => r.phone === own)?.network || networkForPhone(own);
+  const phoneItems: RecentItem[] = [
+    ...(own ? [{ value: own, title: groupPhone(own), sub: [NETWORK_LABELS[ownNet], 'My number'].filter(Boolean).join(' · '), leading: <NetDot net={ownNet} size={34} /> }] : []),
+    ...recents.phones.filter((r) => r.phone !== own).slice(0, 5).map((r) => ({
+      value: r.phone, title: groupPhone(r.phone),
+      sub: `${NETWORK_LABELS[r.network] || ''} · Last topped up ${shortDate(r.last_used)}`,
+      leading: <NetDot net={r.network} size={34} />,
+    })),
+  ];
   const [price, setPrice] = useState('');
   const [quoteRevision, setQuoteRevision] = useState(0);
   const [priceFor, setPriceFor] = useState('');
@@ -149,6 +175,7 @@ const BuyData = () => {
         setStep(null);
         setDone(true);
         reload();
+        refreshBillRecents();
       } else if (outcome === 'pending' || outcome === 'unknown') {
         setPending(true);
         setPendingMessage(outcome === 'pending'
@@ -208,31 +235,37 @@ const BuyData = () => {
     <Screen>
       <Header title="Data" onBack={() => router.back()} />
 
-      <Label>Select network</Label>
-      <ProviderGrid items={NETWORKS} value={net} onPick={setNet} />
+      <SectionTitle>Select network</SectionTitle>
+      <NetworkCircles value={net} onPick={(id) => { netPicked.current = true; setNet(id); }} />
 
-      <Label>Plan type</Label>
-      <Segmented options={PLAN_TYPES} value={planType} onChange={setPlanType} />
+      <RecentField
+        label="Phone number"
+        value={phone}
+        onChangeText={changePhone}
+        onPick={(it) => changePhone(it.value)}
+        items={phoneItems}
+        menuTitle="Numbers you've topped up"
+        anotherLabel="Use another number"
+        tag={phone && phone === own ? 'My number' : undefined}
+        leading={<NetDot net={net} size={30} />}
+        format={groupPhone}
+        maxLength={15}
+        placeholder="0801 234 5678"
+      />
 
-      <Label>Select a data plan</Label>
+      <SectionTitle top={22}>Plan type</SectionTitle>
+      <PillTabs options={PLAN_TYPES} value={planType} onChange={setPlanType} />
+
+      <SectionTitle top={20}>Choose a plan</SectionTitle>
       {loadingPlans ? (
         <Loading full={false} />
       ) : currentPlans.length === 0 ? (
         <View><Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>No plans available for this selection.</Text><Btn label="Retry plans" variant="outline" onPress={() => setCatalogueRevision((value) => value + 1)} /></View>
       ) : (
-        <PlanList plans={currentPlans} value={plan} onPick={setPlan} />
+        <PlanGrid plans={currentPlans} value={plan} onPick={setPlan} />
       )}
       {!!planObj && !hasAuthoritativePrice ? <View style={{ marginVertical: 12 }}><Text style={{ color: c.ink3, fontFamily: font.regular }}>A confirmed price is needed before payment.</Text><Btn label="Refresh price" variant="outline" onPress={() => setQuoteRevision((value) => value + 1)} /></View> : null}
-      <View style={{ height: 16 }} />
-
-      <Field
-        label="Phone number"
-        value={phone}
-        onChangeText={(v) => { phoneEdited.current = true; setPhone(purchasablePhoneNumber(v) || v.replace(/\D/g, '').slice(0, 15)); }}
-        keyboardType="number-pad"
-        placeholder="0801 234 5678"
-      />
-      <View style={{ height: 10 }} />
+      <View style={{ height: 14 }} />
       <BalanceHint amount={amount} balance={balance} />
       {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 

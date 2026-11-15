@@ -16,4 +16,5 @@ urlpatterns = [
     path("buyelectricity/", views.buyelectricity),
     path("validate_rrr/", views.validate_rrr),
     path("payremita/", views.payremita),
+    path("recents/", views.bill_recents),
 ]

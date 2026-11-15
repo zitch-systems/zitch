@@ -67,6 +67,9 @@ export const EP = {
     buyElectricity: '/api/utility/buyelectricity/',
     validateIuc: '/api/utility/validate_iuc/',
     validateMeter: '/api/utility/validate_meter/',
+    // What this customer has paid for before: numbers, meters, smartcards,
+    // betting IDs (backend utility/views.py bill_recents).
+    recents: '/api/utility/recents/',
   },
   cards: {
     list: '/api/cards/list/',
@@ -85,7 +88,7 @@ export const EP = {
     request: '/api/loans/request/',
     repay: '/api/loans/repay/',
   },
-  betting: { fund: '/api/betting/fund/' },
+  betting: { fund: '/api/betting/fund/', verify: '/api/betting/verify/' },
   exams: { buy: '/api/exams/buy/' },
   convert: { fx: '/api/convert/fx/' },
 } as const;

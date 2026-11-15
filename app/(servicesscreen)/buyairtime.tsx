@@ -7,7 +7,9 @@ import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { EP } from '@/lib/endpoints';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
-import { Label, ProviderGrid, QuickAmounts, QUICK_AMOUNTS, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { NetworkCircles, NetDot, RecentField, AmountGrid, SectionTitle, NETWORK_LABELS, type RecentItem } from '@/components/design/billkit';
+import { useBillRecents, refreshBillRecents, shortDate, groupPhone, networkForPhone } from '@/lib/recents';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -22,6 +24,8 @@ const NETWORKS = [
   { id: '4', name: '9mobile', color: '#0A8A3D', logo: require('@/assets/images/providers/9mobile.png') },
 ];
 
+const AIRTIME_AMOUNTS = [100, 200, 500, 1000, 2000, 5000];
+
 type Step = null | 'confirm' | 'pin';
 
 const BuyAirtime = () => {
@@ -30,12 +34,38 @@ const BuyAirtime = () => {
   const isCurrentSession = () => sessionGeneration.current === getSessionGeneration();
   const { balance, reload, billPaymentsAvailable, phoneNumber } = useWallet();
   const params = useLocalSearchParams<{ phone?: string }>();
-  const [net, setNet] = useState('1');
   const [phone, setPhone] = useState(() => purchasablePhoneNumber(params.phone) || purchasablePhoneNumber(phoneNumber));
+  const [net, setNet] = useState(() => networkForPhone(phone) || '1');
   const phoneEdited = useRef(false);
+  // The network follows the number's prefix until the customer picks one
+  // themselves (numbers can be ported, so their choice always wins).
+  const netPicked = useRef(false);
+  const recents = useBillRecents();
+  const own = purchasablePhoneNumber(phoneNumber);
   useEffect(() => {
-    if (!phoneEdited.current) setPhone((current) => current || purchasablePhoneNumber(phoneNumber));
-  }, [phoneNumber]);
+    if (!phoneEdited.current) setPhone((current) => current || own);
+  }, [own]);
+  const changePhone = (raw: string) => {
+    phoneEdited.current = true;
+    const next = purchasablePhoneNumber(raw) || raw.replace(/\D/g, '').slice(0, 15);
+    setPhone(next);
+    const known = recents.phones.find((r) => r.phone === next)?.network || networkForPhone(next);
+    if (known && !netPicked.current) setNet(known);
+  };
+  useEffect(() => {
+    // A number bought for before keeps the network it was bought on.
+    const known = recents.phones.find((r) => r.phone === phone)?.network;
+    if (known && !netPicked.current) setNet(known);
+  }, [recents, phone]);
+  const ownNet = recents.phones.find((r) => r.phone === own)?.network || networkForPhone(own);
+  const phoneItems: RecentItem[] = [
+    ...(own ? [{ value: own, title: groupPhone(own), sub: [NETWORK_LABELS[ownNet], 'My number'].filter(Boolean).join(' · '), leading: <NetDot net={ownNet} size={34} /> }] : []),
+    ...recents.phones.filter((r) => r.phone !== own).slice(0, 5).map((r) => ({
+      value: r.phone, title: groupPhone(r.phone),
+      sub: `${NETWORK_LABELS[r.network] || ''} · Last topped up ${shortDate(r.last_used)}`,
+      leading: <NetDot net={r.network} size={34} />,
+    })),
+  ];
   const [amt, setAmt] = useState('');
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
@@ -85,6 +115,7 @@ const BuyAirtime = () => {
         setStep(null);
         setDone(true);
         reload();
+        refreshBillRecents();
       } else if (outcome === 'pending' || outcome === 'unknown') {
         // Retain the key: this is still the same unresolved attempt, and the
         // processing receipt prevents another authorization on this screen.
@@ -146,29 +177,37 @@ const BuyAirtime = () => {
     <Screen>
       <Header title="Airtime" onBack={() => router.back()} />
 
-      <Label>Select network</Label>
-      <ProviderGrid items={NETWORKS} value={net} onPick={setNet} />
+      <SectionTitle>Select network</SectionTitle>
+      <NetworkCircles value={net} onPick={(id) => { netPicked.current = true; setNet(id); }} />
 
-      <Field
+      <RecentField
         label="Phone number"
         value={phone}
-        onChangeText={(v) => { phoneEdited.current = true; setPhone(purchasablePhoneNumber(v) || v.replace(/\D/g, '').slice(0, 15)); }}
-        keyboardType="number-pad"
+        onChangeText={changePhone}
+        onPick={(it) => changePhone(it.value)}
+        items={phoneItems}
+        menuTitle="Numbers you've topped up"
+        anotherLabel="Use another number"
+        tag={phone && phone === own ? 'My number' : undefined}
+        leading={<NetDot net={net} size={30} />}
+        format={groupPhone}
+        maxLength={15}
         placeholder="0801 234 5678"
       />
-      <View style={{ height: 16 }} />
 
-      <Label>Choose amount</Label>
-      <QuickAmounts amounts={QUICK_AMOUNTS} value={amt} onPick={setAmt} />
+      <SectionTitle top={22}>Amount</SectionTitle>
+      <AmountGrid amounts={AIRTIME_AMOUNTS} value={amt} onPick={setAmt} />
+      <View style={{ height: 16 }} />
       <Field
+        tint
         label="Or enter amount"
         value={amt}
         onChangeText={(v) => { const normalized = normalizeAmountInput(v); if (normalized !== null) setAmt(normalized); }}
         keyboardType="decimal-pad"
-        placeholder="0.00"
+        placeholder="Enter amount"
         prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
       />
-      <View style={{ height: 6 }} />
+      <View style={{ height: 8 }} />
       <BalanceHint amount={amount} balance={balance} min={MIN_AIRTIME} />
       {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
