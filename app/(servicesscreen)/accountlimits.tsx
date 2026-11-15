@@ -3,7 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useFocusEffect } from 'expo-router';
-import { Screen, Header, Card, money, NText, Btn } from '@/components/design/ui';
+import { Screen, Header, Card, money, NText, Btn, Sheet } from '@/components/design/ui';
 import { Loading } from '@/components/design/Loading';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
@@ -22,7 +22,28 @@ type Status = {
   bank_tier?: number;
   bank_tier_limits?: { single_inflow?: string | null; daily_spend?: string | null; max_balance?: string | null };
   account_provider?: string;
+  address?: string;
+  address_verified?: boolean;
+  address_verification_pending?: boolean;
+  tier_ladder?: LadderTier[];
 };
+
+type LadderTier = { tier: number; name: string; per_transfer: string; daily_transfer: string; daily_bill: string };
+
+// Used only until a server without `tier_ladder` is updated; the server's
+// tables (accounts/models.py) are the source of truth.
+const LADDER_FALLBACK: LadderTier[] = [
+  { tier: 1, name: 'Verified', per_transfer: '50000', daily_transfer: '50000', daily_bill: '20000' },
+  { tier: 2, name: 'Enhanced', per_transfer: '200000', daily_transfer: '1000000', daily_bill: '100000' },
+  { tier: 3, name: 'Premium', per_transfer: '5000000', daily_transfer: '5000000', daily_bill: '500000' },
+];
+const NEEDS: Record<number, string> = {
+  1: 'BVN, verified when you signed up',
+  2: 'Your NIN and a face check',
+  3: 'The address you gave at sign-up',
+};
+
+type Tier3Sheet = null | { kind: 'progress' | 'done' | 'unavailable'; message?: string };
 
 const amountLabel = (value: unknown) => (typeof value === 'string' || typeof value === 'number')
   && String(value).trim() !== '' && Number.isFinite(Number(value)) && Number(value) >= 0
@@ -41,6 +62,8 @@ const AccountLimits = () => {
   const [loadError, setLoadError] = useState('');
   const [loading, setLoading] = useState(true);
   const loadGeneration = useRef(0);
+  const [tier3, setTier3] = useState<Tier3Sheet>(null);
+  const [tier3Busy, setTier3Busy] = useState(false);
 
   const loadAccount = useCallback(async () => {
     const generation = ++loadGeneration.current;
@@ -92,6 +115,34 @@ const AccountLimits = () => {
       notify('Copied', 'Your account number is on the clipboard.');
     } catch { notify('Could not copy', 'Please try again.'); }
   };
+
+  // Tier 3 is the address given at sign-up. The server only marks it verified
+  // when the bank confirms that address, so the answer here is whatever the
+  // server says: done, in progress, or not available yet. Nothing is assumed.
+  const verifyTier3 = async () => {
+    if (tier3Busy) return;
+    setTier3Busy(true);
+    try {
+      const r: any = await apiJson('/api/kyc/address/');
+      if (r?.success && r.address_verified) {
+        setStatus((s) => (s ? { ...s, ...r } : s));
+        setTier3({ kind: 'done' });
+      } else if (r?.pending || r?.address_verification_pending) {
+        setTier3({ kind: 'progress', message: r?.message });
+      } else if (r?.upgrade_required) {
+        notify('Verify Tier 2 first', r?.message || 'Complete Tier 2 before your address can be checked.');
+      } else {
+        setTier3({ kind: 'unavailable', message: r?.message });
+      }
+    } catch {
+      notify('Could not check', 'Check your connection and try again.');
+    } finally {
+      setTier3Busy(false);
+    }
+  };
+
+  const tint = theme === 'dark' ? 'rgba(234,251,247,0.07)' : 'rgba(6,110,102,0.06)';
+  const ladder = (status?.tier_ladder?.length ? status.tier_ladder : LADDER_FALLBACK).filter((t) => t.tier >= 1 && t.tier <= 3);
 
   const linkedId = status
     ? [status.bvn_verified && 'BVN', status.nin_verified && 'NIN'].filter(Boolean).join(' & ') || 'Not linked'
@@ -200,44 +251,130 @@ const AccountLimits = () => {
       {!!fundingState?.migration_message && <Card style={{ marginBottom: 14 }}>
         <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{fundingState.migration_message}</Text>
       </Card>}
-      {/* The backend transaction_limit is per transaction, not a daily limit. */}
+      {/* Today's daily caps as two tiles (review, Nov 2026: five rows became two). */}
       <Card style={{ marginBottom: 14 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-          <Text style={{ flex: 1, fontSize: 15.5, fontFamily: font.bold, color: c.ink1 }}>Per-transaction limit</Text>
-          <Pressable
-            onPress={() => router.push('/kyc')}
-            accessibilityRole="button"
-            accessibilityLabel="Raise your limit"
-            hitSlop={8}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
-          >
-            <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.brand }}>{tier >= 3 ? 'Details' : 'Raise'}</Text>
-            <ZIcon name="right" size={15} color={c.brand} />
-          </Pressable>
+        <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1, marginBottom: 10 }}>Current daily limits</Text>
+        <View style={{ flexDirection: 'row', gap: 10 }}>
+          {[['Transfers', amountLabel(status.daily_transfer_limit)], ['Bill payments', amountLabel(status.daily_bill_limit)]].map(([label, value]) => (
+            <View key={label} style={{ flex: 1, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 14, backgroundColor: tint }}>
+              <Text style={{ fontSize: 11.5, fontFamily: font.semibold, color: c.ink3, letterSpacing: 0.2 }}>{label}</Text>
+              <NText style={{ fontSize: 16, marginTop: 2, fontFamily: font.extrabold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{value}</NText>
+            </View>
+          ))}
         </View>
-        <View style={{ borderRadius: 16, backgroundColor: c.surface2, padding: 14 }}>
-          <NText style={{ fontSize: 20, fontFamily: font.bold, color: c.ink2 }}>{amountLabel(status.transaction_limit)}</NText>
-        </View>
+        <Text style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3, lineHeight: 17, marginTop: 10 }}>Your own limit and bank rules also apply.</Text>
       </Card>
-      <Card style={{ marginBottom: 14 }}>
-        <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1, marginBottom: 14 }}>Current daily limits</Text>
-        {[
-          ['Transfers', amountLabel(status.daily_transfer_limit)],
-          ['Bill payments', amountLabel(status.daily_bill_limit)],
-          ['Bank daily spending', amountLabel(status.bank_tier_limits?.daily_spend)],
-          ['Single incoming transfer', amountLabel(status.bank_tier_limits?.single_inflow)],
-          ['Account balance ceiling', amountLabel(status.bank_tier_limits?.max_balance)],
-        ].map(([label, value]) => <View key={label} style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12, paddingVertical: 9 }}>
-          <Text style={{ flex: 1, color: c.ink2, fontFamily: font.regular }}>{label}</Text>
-          <NText style={{ color: c.ink1, fontFamily: font.semibold }}>{value}</NText>
-        </View>)}
-        <Text style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3, lineHeight: 18, marginTop: 12 }}>These are your current confirmed limits. Your personal limit and bank restrictions also apply.</Text>
-      </Card>
+
+      {/* The tier ladder: what each tier needs and allows, where you are, and the next step. */}
       <Card style={{ marginBottom: 24 }}>
-        <Text style={{ fontSize: 15.5, fontFamily: font.bold, color: c.ink1, marginBottom: 14 }}>Verification steps</Text>
-        {['Tier 1 · BVN or NIN, verified by SMS code or face', 'Tier 2 · Prembly face verification and bank upgrade', 'Tier 3 · Address verification'].map((label) => <Text key={label} style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 22, marginBottom: 8 }}>{label}</Text>)}
-        <Btn label="View verification" variant="ghost" onPress={() => router.push('/kyc')} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <Text style={{ fontSize: 16, fontFamily: font.extrabold, color: c.ink1 }}>Account tiers</Text>
+          <Text style={{ fontSize: 12, fontFamily: font.medium, color: c.ink3 }}>Higher tier, higher limits</Text>
+        </View>
+        {ladder.map((t, i) => {
+          const done = t.tier <= tier;
+          const isCur = t.tier === tier;
+          const last = i === ladder.length - 1;
+          const isNext = t.tier === tier + 1;
+          const locked = !done && t.tier > tier + 1;
+          const pending = t.tier === 3 && !done && status.address_verification_pending;
+          return (
+            <View key={t.tier} style={{ flexDirection: 'row', gap: 14 }}>
+              <View style={{ alignItems: 'center', width: 36 }}>
+                {done ? (
+                  <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: isCur ? c.brand : '#00A01A', alignItems: 'center', justifyContent: 'center' }}>
+                    <ZIcon name="check" size={18} color="#fff" stroke={3} />
+                  </View>
+                ) : (
+                  <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: c.surface, borderWidth: 2, borderStyle: 'dashed', borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}>
+                    <Text style={{ fontSize: 14, fontFamily: font.extrabold, color: c.ink3 }}>{t.tier}</Text>
+                  </View>
+                )}
+                {last ? null : <View style={{ flex: 1, width: 2, marginVertical: 4, backgroundColor: t.tier < tier ? '#00A01A' : c.line }} />}
+              </View>
+              <View style={{ flex: 1, paddingBottom: last ? 0 : 20 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 36 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 15, fontFamily: font.extrabold, color: c.ink1 }}>Tier {t.tier} · {t.name}</Text>
+                    <Text style={{ fontSize: 12, marginTop: 2, fontFamily: font.regular, color: c.ink3 }}>{NEEDS[t.tier]}</Text>
+                  </View>
+                  {done ? (
+                    <View style={{ paddingVertical: 4, paddingHorizontal: 9, borderRadius: 999, backgroundColor: isCur ? 'rgba(6,110,102,0.12)' : 'rgba(0,160,26,0.10)' }}>
+                      <Text style={{ fontSize: 11.5, fontFamily: font.extrabold, color: isCur ? c.brand : '#15803D' }}>{isCur ? 'Your tier' : 'Verified'}</Text>
+                    </View>
+                  ) : pending ? (
+                    <View style={{ paddingVertical: 4, paddingHorizontal: 9, borderRadius: 999, backgroundColor: 'rgba(232,163,61,0.16)' }}>
+                      <Text style={{ fontSize: 11.5, fontFamily: font.extrabold, color: c.amber }}>Checking</Text>
+                    </View>
+                  ) : null}
+                </View>
+                <View style={{ flexDirection: 'row', marginTop: 10, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 14, backgroundColor: done ? tint : c.surface2 }}>
+                  {[['Per transfer', t.per_transfer], ['Daily', t.daily_transfer]].map(([label, value]) => (
+                    <View key={label} style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 11, fontFamily: font.semibold, color: c.ink3, letterSpacing: 0.2 }}>{label}</Text>
+                      <NText style={{ fontSize: 14, marginTop: 2, fontFamily: font.extrabold, color: done ? c.ink1 : c.ink2, fontVariant: ['tabular-nums'] }}>{amountLabel(value)}</NText>
+                    </View>
+                  ))}
+                </View>
+                {done ? null : locked ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 12, minHeight: 40, borderRadius: 999, backgroundColor: c.surface2 }}>
+                    <ZIcon name="lock" size={15} color={c.ink3} />
+                    <Text style={{ fontSize: 13, fontFamily: font.bold, color: c.ink3 }}>Unlocks after Tier {t.tier - 1}</Text>
+                  </View>
+                ) : (
+                  <Pressable
+                    onPress={() => (t.tier === 3 ? void verifyTier3() : router.push('/kyc'))}
+                    disabled={t.tier === 3 && tier3Busy}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Verify Tier ${t.tier}`}
+                    style={({ pressed }) => ({ marginTop: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 44, borderRadius: 999, backgroundColor: isNext ? c.brand : c.surface, borderWidth: isNext ? 0 : 1.5, borderColor: c.brand, opacity: pressed || (t.tier === 3 && tier3Busy) ? 0.8 : 1 })}
+                  >
+                    <ZIcon name="shield" size={17} color={isNext ? '#fff' : c.brand} />
+                    <Text style={{ fontSize: 14, fontFamily: font.bold, color: isNext ? '#fff' : c.brand }}>{t.tier === 3 && tier3Busy ? 'Checking…' : `Verify Tier ${t.tier}`}</Text>
+                  </Pressable>
+                )}
+              </View>
+            </View>
+          );
+        })}
       </Card>
+
+      <Sheet open={tier3 !== null} onClose={() => setTier3(null)}>
+        <View style={{ alignItems: 'center', paddingTop: 4 }}>
+          <View style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: tier3?.kind === 'done' ? 'rgba(0,160,26,0.12)' : 'rgba(232,163,61,0.14)', alignItems: 'center', justifyContent: 'center' }}>
+            <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: tier3?.kind === 'done' ? '#00A01A' : '#E8A33D', alignItems: 'center', justifyContent: 'center' }}>
+              <ZIcon name={tier3?.kind === 'done' ? 'check' : tier3?.kind === 'progress' ? 'history' : 'help'} size={24} color="#fff" stroke={3} />
+            </View>
+          </View>
+          <Text style={{ fontSize: 21, fontFamily: font.extrabold, color: c.ink1, marginTop: 18, textAlign: 'center' }}>
+            {tier3?.kind === 'done' ? 'You\u2019re now Tier 3' : tier3?.kind === 'progress' ? 'Tier 3 is in progress' : 'Address checks aren\u2019t open yet'}
+          </Text>
+          <Text style={{ fontSize: 14, fontFamily: font.regular, color: c.ink3, marginTop: 8, lineHeight: 21, textAlign: 'center', paddingHorizontal: 4 }}>
+            {tier3?.kind === 'done'
+              ? 'Your address check has come through, so your new limits apply right away.'
+              : tier3?.kind === 'progress'
+                ? 'We\u2019re checking the address you gave when you signed up. We\u2019ll let you know when it\u2019s done. There\u2019s nothing else to do.'
+                : tier3?.message || 'We can\u2019t check addresses with the bank yet. Your address is saved, and we\u2019ll let you know when Tier 3 opens.'}
+          </Text>
+          {status.address ? (
+            <View style={{ alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 16, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16, backgroundColor: c.surface2 }}>
+              <ZIcon name="home" size={18} color={c.ink2} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 11.5, fontFamily: font.semibold, color: c.ink3, letterSpacing: 0.2 }}>Address</Text>
+                <Text style={{ fontSize: 13.5, marginTop: 2, fontFamily: font.bold, color: c.ink1 }}>{status.address}</Text>
+              </View>
+              {tier3?.kind === 'unavailable' ? null : (
+                <View style={{ paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999, backgroundColor: tier3?.kind === 'done' ? 'rgba(0,160,26,0.10)' : 'rgba(232,163,61,0.16)' }}>
+                  <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: tier3?.kind === 'done' ? '#15803D' : c.amber }}>{tier3?.kind === 'done' ? 'Verified' : 'Checking'}</Text>
+                </View>
+              )}
+            </View>
+          ) : null}
+          <View style={{ alignSelf: 'stretch', marginTop: 20 }}>
+            <Btn label={tier3?.kind === 'done' ? 'Done' : 'OK, got it'} onPress={() => { setTier3(null); void loadAccount(); }} />
+          </View>
+        </View>
+      </Sheet>
       </>}
     </Screen>
   );
