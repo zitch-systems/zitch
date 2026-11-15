@@ -8,6 +8,8 @@ import { Screen, Btn, Sheet, money, NText, type Txn } from '@/components/design/
 import { ServiceTile } from '@/components/design/widgets';
 import SmartPaste from '@/components/design/SmartPaste';
 import { ZCoil } from '@/components/design/Loading';
+import { useTabInk } from '@/components/design/BottomNav';
+import { whenLabel } from '@/lib/format';
 import { useTheme, fontA, palette, ICON_COLORS, iconTint } from '@/lib/theme';
 import { transactionParams, useWallet } from '@/lib/wallet';
 import { transactionStatusPresentation } from '@/lib/transactionStatus';
@@ -85,6 +87,7 @@ export const useHomeProducts = () => {
 
 const IconButton = ({ icon, label, onPress, dot }: { icon: string; label: string; onPress: () => void; dot?: boolean }) => {
   const { c } = useTheme();
+  const ink = useTabInk();
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} hitSlop={4}
       style={{ width: 42, height: 42, borderRadius: 14, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}>
@@ -101,7 +104,7 @@ const QuickTile = ({ icon, label, color, onPress }: { icon: string; label: strin
       style={({ pressed }) => ({ flex: 1, minWidth: 0, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, borderRadius: 18,
         paddingTop: 14, paddingBottom: 11, paddingHorizontal: 4, alignItems: 'center', gap: 9, transform: [{ scale: pressed ? 0.96 : 1 }] })}>
       <ZIcon name={icon} size={24} color={color} stroke={2} />
-      <Text numberOfLines={1} style={{ fontSize: 11, fontFamily: fontA.bodyMed, color: c.ink2 }}>{label}</Text>
+      <Text numberOfLines={1} style={{ fontSize: 12, fontFamily: fontA.bodySemi, color: ink }}>{label}</Text>
     </Pressable>
   );
 };
@@ -109,6 +112,7 @@ const QuickTile = ({ icon, label, color, onPress }: { icon: string; label: strin
 const BillTile = ({ tile, onPress }: { tile: Tile; onPress: () => void }) => {
   const { c, theme } = useTheme();
   const tint = tile.more ? c.surface3 : iconTint(tile.color, theme === 'dark');
+  const ink = useTabInk();
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={tile.label} onPress={onPress}
       style={({ pressed }) => ({ width: '25%', alignItems: 'center', gap: 8, marginBottom: 12, transform: [{ scale: pressed ? 0.96 : 1 }] })}>
@@ -120,7 +124,7 @@ const BillTile = ({ tile, onPress }: { tile: Tile; onPress: () => void }) => {
           </View>
         ) : null}
       </View>
-      <Text numberOfLines={1} style={{ fontSize: 11, fontFamily: fontA.bodyMed, color: c.ink2, textAlign: 'center' }}>{tile.label}</Text>
+      <Text numberOfLines={1} style={{ fontSize: 12, fontFamily: fontA.bodySemi, color: ink, textAlign: 'center' }}>{tile.label}</Text>
     </Pressable>
   );
 };
@@ -148,15 +152,17 @@ const ActivityRow = React.memo(({ txn, first, onSelect }: { txn: Txn; first: boo
   const { state, label } = transactionStatusPresentation(txn.status);
   const tone = state === 'failed' ? c.red : state === 'pending' ? c.amber : c.ink3;
   const amount = (inflow ? '+' : '-') + money(Math.abs(txn.amount));
+  // "Today · 9:14am", not the server's raw "2026-11-15 08:14".
+  const when = txn.ts != null ? whenLabel(txn.ts) : txn.detail;
   return (
-    <Pressable onPress={() => onSelect(txn)} accessibilityRole="button" accessibilityLabel={`${txn.type}, ${amount}, ${label}, ${txn.detail}`}
+    <Pressable onPress={() => onSelect(txn)} accessibilityRole="button" accessibilityLabel={`${txn.type}, ${amount}, ${label}, ${when}`}
       style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13, borderTopWidth: first ? 0 : 1, borderTopColor: c.line }}>
       <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: tint, alignItems: 'center', justifyContent: 'center' }}>
         <ZIcon name={txn.icon} size={17} color={color} stroke={2} />
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text numberOfLines={1} style={{ fontSize: 13.5, fontFamily: fontA.bodySemi, color: c.ink1 }}>{txn.type}</Text>
-        <Text numberOfLines={1} style={{ fontSize: 11, fontFamily: fontA.body, color: c.ink3, marginTop: 2 }}>{txn.detail}</Text>
+        <Text numberOfLines={1} style={{ fontSize: 11, fontFamily: fontA.body, color: c.ink3, marginTop: 2 }}>{when}</Text>
       </View>
       <View style={{ alignItems: 'flex-end', maxWidth: '45%' }}>
         <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}

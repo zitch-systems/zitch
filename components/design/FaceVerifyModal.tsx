@@ -45,10 +45,19 @@ const FaceVerifyModal = ({
   url,
   visible,
   onClose,
+  title = 'Face verification',
+  subtitle = 'Secure verification page',
+  footer = 'Your photo is used only to match your BVN and is never stored by Zitch.',
 }: {
   url: string;
   visible: boolean;
   onClose: () => void;
+  /** Header line; "Face check" for the sign-in check. */
+  title?: string;
+  /** Under the title. Never names the partner bank (review, Nov 2026). */
+  subtitle?: string;
+  /** The line at the bottom: what happens to the photo. */
+  footer?: string;
 }) => {
   const { c } = useTheme();
   const [loading, setLoading] = useState(true);
@@ -113,12 +122,12 @@ const FaceVerifyModal = ({
           </Pressable>
           <View style={{ flex: 1 }}>
             <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 15 }}>
-              Face verification
+              {title}
             </Text>
             {/* Named, every time. The customer is about to show their face to a page
                 we did not write; they are entitled to know whose it is. */}
             <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12 }}>
-              Secure page provided by your bank
+              {subtitle}
             </Text>
           </View>
           <ZIcon name="shield" size={18} color={c.brand} stroke={2} />
@@ -200,14 +209,14 @@ const FaceVerifyModal = ({
           }}>
             <Loading full={false} />
             <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13, marginTop: 12 }}>
-              Opening your bank&apos;s secure page…
+              Opening the secure verification page…
             </Text>
           </View>
         ) : null}
 
         <View style={{ paddingHorizontal: 20, paddingVertical: 12, borderTopWidth: 1, borderTopColor: c.line }}>
           <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 11.5, lineHeight: 17, textAlign: 'center' }}>
-            Your photo is captured by your bank and is never stored by Zitch.
+            {footer}
             {Platform.OS === 'ios' ? ' Allow camera and location access when asked.' : ''}
           </Text>
         </View>
