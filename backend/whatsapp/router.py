@@ -2820,8 +2820,21 @@ def _do_history(user, msisdn: str, count=None, *, amount=None, days_ago=None,
         try:
             from .receipt import render_statement_pdf
 
-            pdf = render_statement_pdf(pdf_rows, balance=balance, generated=generated)
-            filename = f"Zitch-Statement-{timezone.now():%Y%m%d%H%M%S}.pdf"
+            # The same identity block as the app's statement (wallet/views.py
+            # statement_request): whose account, its number, and the window,
+            # over the last 30 days. The window reaches back further only if a
+            # listed row is older, so the sheet never lists a payment outside
+            # the period it states.
+            today = timezone.localdate()
+            oldest = min(timezone.localtime(t.created).date() for t in rows)
+            date_from = min(today - timedelta(days=30), oldest).strftime("%Y-%m-%d")
+            date_to = today.strftime("%Y-%m-%d")
+            pdf = render_statement_pdf(
+                pdf_rows, balance=balance, generated=generated,
+                holder=(user.get_full_name() or "").strip() or user.email or "",
+                account=get_or_create_wallet(user).account_number or "",
+                period=f"{date_from} to {date_to}")
+            filename = f"Zitch-Statement-{date_from}_{date_to}.pdf"
             media_id = upload_media(pdf, "application/pdf", filename)
             if media_id:
                 sent = send_document(msisdn, media_id, filename, caption=caption).get("success", False)
