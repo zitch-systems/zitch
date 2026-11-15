@@ -928,8 +928,11 @@ def _prepare_alert(pk):
         if (row.channel == "whatsapp" and row.error_code == "template_unconfigured"
                 and not (getattr(settings, "WHATSAPP", {}) or {}).get("TXN_ALERT_TEMPLATE")):
             reason = "template_unconfigured"
-        if (reason and reason.endswith("_unconfigured")
+        if reason == "channel_disabled" or (
+                reason and reason.endswith("_unconfigured")
                 and row.created <= now - CHANNEL_SETUP_WAIT):
+            # Switched off (TXN_ALERTS_SMS=false and the like): the operator chose
+            # not to send these, so they are dropped now, not re-checked forever.
             row.state, row.error_code = row.SKIPPED, reason
             row.save(update_fields=["state", "error_code", "updated"])
             return None

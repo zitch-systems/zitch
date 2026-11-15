@@ -342,6 +342,15 @@ class TransactionAlertOutboxTests(TestCase):
         row.refresh_from_db()
         self.assertEqual((row.state, row.error_code), (Delivery.SKIPPED, "sms_unconfigured"))
 
+    def test_alerts_waiting_on_a_channel_that_is_switched_off_are_dropped(self):
+        txn = self.movement()
+        row = txn.alert_deliveries.get(channel="sms")
+        with override_settings(TXN_ALERTS={"EMAIL": True, "SMS": False, "WHATSAPP": True, "PUSH": False}):
+            self.assertFalse(_dispatch_alert(row.pk))
+        row.refresh_from_db()
+        self.assertEqual((row.state, row.error_code), (Delivery.SKIPPED, "channel_disabled"))
+        self.sms.assert_not_called()
+
     def test_the_operator_command_lists_then_requeues_alerts_that_need_review(self):
         txn = self.movement()
         row = txn.alert_deliveries.get(channel="email")
