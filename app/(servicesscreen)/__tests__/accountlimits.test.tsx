@@ -1,5 +1,6 @@
 import React, { type ReactNode } from 'react';
 import renderer, { act } from 'react-test-renderer';
+import { router } from 'expo-router';
 import AccountLimits from '@/app/(servicesscreen)/accountlimits';
 
 const mockApiJson = jest.fn();
@@ -31,7 +32,7 @@ jest.mock('@/components/design/ui', () => {
   const { Text, View, Pressable } = jest.requireActual<typeof import('react-native')>('react-native');
   const Container = ({ children }: { children: ReactNode }) => ReactActual.createElement(View, null, children);
   const Sheet = ({ open, children }: { open: boolean; children: ReactNode }) => (open ? ReactActual.createElement(View, null, children) : null);
-  return { Screen: Container, Card: Container, Sheet, NText: Text, Header: () => null, Progress: () => null, money: (value: number) => `₦${value}`,
+  return { Screen: Container, Card: Container, Sheet, NText: Text, Header: ({ title }: { title: string }) => ReactActual.createElement(Text, null, `header:${title}`), Progress: () => null, money: (value: number) => `₦${value}`,
     Btn: ({ label, onPress }: { label: string; onPress: () => void }) => ReactActual.createElement(Pressable, { accessibilityLabel: label, onPress }, ReactActual.createElement(Text, null, label)) };
 });
 
@@ -183,5 +184,50 @@ it('shows the tier ladder from the server and answers Verify Tier 3 with what th
   expect(output).not.toContain('now Tier 3');
   expect(output).toContain('Address verification is not available yet.');
   expect(output).toContain('12 Allen Avenue, Ikeja, Lagos');
+  act(() => tree.unmount());
+});
+
+const ready = { success: true, provider: 'partnership', account_number: '0454243073', account_name: 'Current Account', has_account: true, available: true, can_fund: true, account_setup_state: 'ready' };
+
+it('titles the error state Account Limits', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : { success: false });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  expect(JSON.stringify(tree.toJSON())).toContain('header:Account Limits');
+  act(() => tree.unmount());
+});
+
+it('sends Verify Tier 2 to the Tier 2 page', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : ready);
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  act(() => { tree.root.findByProps({ accessibilityLabel: 'Verify Tier 2' }).props.onPress(); });
+  expect(router.push).toHaveBeenCalledWith('/tier2?from=limits');
+  act(() => tree.unmount());
+});
+
+it('shows Tier 3 in progress as a status, not a button, and drops the Checking pill', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/'
+    ? { ...state, tier: 2, nin_verified: true, address_verification_pending: true } : ready);
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  const output = JSON.stringify(tree.toJSON());
+  expect(output).toContain('In progress');
+  expect(output).not.toContain('Checking');
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Verify Tier 3' })).toHaveLength(0);
+  act(() => tree.unmount());
+});
+
+it('shows the Tier 3 limits when the address check had already come through', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/'
+    ? { ...state, tier: 2, nin_verified: true, address: '12 Allen Avenue, Ikeja, Lagos' }
+    : path === '/api/kyc/address/' ? { success: true, address_verified: true, tier: 3 } : ready);
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Verify Tier 3' }).props.onPress(); });
+  const output = JSON.stringify(tree.toJSON());
+  expect(output).toContain('You’re now Tier 3');
+  expect(output).toContain('Your address check had already come through, so your new limits apply right away.');
+  expect(output.match(/₦5000000/g)?.length).toBeGreaterThanOrEqual(4);
   act(() => tree.unmount());
 });

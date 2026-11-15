@@ -9,15 +9,16 @@ const mockParams = { verify_identity: 'bvn' };
 const mockGetToken = jest.fn();
 const mockSessionLocked = jest.fn();
 const mockRedirect = jest.fn();
+const mockPush = jest.fn();
 const mockNotify = jest.fn();
 const mockPick = jest.fn();
-const mockOpenBrowser = jest.fn();
+const mockFaceSheet = jest.fn();
 let mockGeneration = 0;
 let mockBlur: (() => void) | undefined;
 jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args) }));
 jest.mock('@/lib/secureStore', () => ({ getToken: () => mockGetToken(), getSessionGeneration: () => mockGeneration }));
 jest.mock('expo-router', () => ({
-  router: { back: jest.fn() }, useLocalSearchParams: () => mockParams,
+  router: { back: jest.fn(), push: (...args: unknown[]) => mockPush(...args) }, useLocalSearchParams: () => mockParams,
   Redirect: (props: { href: string }) => { mockRedirect(props.href); return null; },
   useFocusEffect: (callback: () => (() => void) | void) => {
     const ReactActual = jest.requireActual<typeof import('react')>('react');
@@ -33,7 +34,7 @@ jest.mock('expo-image-picker', () => ({
   launchImageLibraryAsync: (...args: unknown[]) => mockPick(...args),
   MediaTypeOptions: { Images: 'Images' },
 }));
-jest.mock('expo-web-browser', () => ({ openBrowserAsync: (...args: unknown[]) => mockOpenBrowser(...args) }));
+jest.mock('@/components/design/FaceVerifyModal', () => (props: unknown) => { mockFaceSheet(props); return null; });
 jest.mock('@/lib/session', () => ({
   beginExternalActivity: jest.fn(), endExternalActivity: jest.fn(),
   isSessionLocked: () => mockSessionLocked(),
@@ -438,22 +439,15 @@ it('releases an abandoned KYC action on route blur so the preserved form can be 
   act(() => tree.unmount());
 });
 
-it.each([undefined, null, false, true, '', ' ', 'invalid', -1])('does not invent a confirmed transaction limit from %j', async (limit) => {
+it.each([undefined, '0', '50000.00'])('leaves the per-transaction limit off the tier card (%j)', async (limit) => {
   mockParams.verify_identity = '';
   mockApiJson.mockResolvedValue({ ...state, transaction_limit: limit });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  expect(JSON.stringify(tree.toJSON())).toContain('Not confirmed');
-  act(() => tree.unmount());
-});
-
-it.each([0, '0', '50000.00'])('preserves an explicitly confirmed transaction limit of %j', async (limit) => {
-  mockParams.verify_identity = '';
-  mockApiJson.mockResolvedValue({ ...state, transaction_limit: limit });
-  let tree!: renderer.ReactTestRenderer;
-  await act(async () => { tree = renderer.create(<Kyc />); });
-  expect(JSON.stringify(tree.toJSON())).not.toContain('Not confirmed');
-  expect(tree.root.findAllByType(Text).some(node => node.props.children === String(Number(limit)))).toBe(true);
+  const output = JSON.stringify(tree.toJSON());
+  expect(output).toContain('Current tier');
+  expect(output).not.toContain('Per-transaction limit');
+  expect(output).not.toContain('Not confirmed');
   act(() => tree.unmount());
 });
 
@@ -479,7 +473,23 @@ it('Tier 2 on the bank rail asks a verified customer for a selfie only', async (
   act(() => { tree.root.findByProps({ testID: 'face-capture' }).props.onCapture('SELFIE64'); });
   await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Finish verification' }).props.onPress(); });
   expect(mockApiJson).toHaveBeenCalledWith(EP.wallet.wemaUpgradeTier2, { bvn: '', nin: '', live_image: 'SELFIE64' });
-  expect(mockOpenBrowser).not.toHaveBeenCalled();
   expect(mockNotify).toHaveBeenCalledWith('Tier 2 verified', undefined, 'success');
+  await act(async () => tree.unmount());
+});
+
+it('sends a BVN-verified customer to the Tier 2 page without using the bank upgrade', async () => {
+  mockParams.verify_identity = '';
+  const verified = { ...state, bvn_verified: true, email_verified: true, phone_verified: true,
+    tier: 1, bank_upgrade_required: true, tier2_face_flow: 'prembly_sdk', tier2_face_available: true };
+  mockApiJson.mockImplementation(async (path: string) => {
+    if (path === EP.kyc.status) return verified;
+    throw new Error(`Unexpected API call: ${path}`);
+  });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Prembly');
+  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Face verification, Tier 2' }).props.onPress(); });
+  expect(mockPush).toHaveBeenCalledWith('/tier2');
+  expect(mockApiJson.mock.calls.map(([path]) => path)).not.toContain(EP.wallet.wemaUpgradeTier2);
   await act(async () => tree.unmount());
 });

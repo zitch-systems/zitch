@@ -8,7 +8,7 @@ import {
 import { SkeletonRow } from '@/components/design/Skeleton';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
-import { useWallet } from '@/lib/wallet';
+import { useWallet, transactionParams } from '@/lib/wallet';
 import { monthKey, monthLabel, txnDate } from '@/lib/format';
 
 // Category is derived from the icon the wallet mapper already assigned, so the
@@ -59,14 +59,7 @@ const History = () => {
   // TxnRow is memoized, and a new function per render would defeat that on every
   // state change (balance arriving, pull-to-refresh, a filter toggle).
   const openTxn = useCallback((x: any) => {
-    router.push({ pathname: '/txndetail', params: {
-      type: x.type, amount: String(x.amount), status: x.status, dir: x.dir,
-      detail: x.detail, reference: x.reference, icon: x.icon,
-      narration: x.narration ?? '',
-      underReview: x.underReview ? '1' : '',
-      statusMessage: x.statusMessage ?? '',
-      reviewKind: x.reviewKind ?? '',
-    } });
+    router.push({ pathname: '/txndetail', params: transactionParams(x) });
   }, []);
 
 

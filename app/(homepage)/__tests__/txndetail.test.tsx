@@ -124,7 +124,9 @@ describe('transaction-detail pending refresh', () => {
         'recipient-key|1000',
         'durable-key',
       );
-      expect(JSON.stringify(tree.toJSON())).toContain(terminalStatus);
+      // A successful receipt shows its headline, not a status pill (Live UI);
+      // a failed one keeps the pill.
+      expect(JSON.stringify(tree.toJSON())).toContain(terminalStatus === 'SUCCESSFUL' ? 'Money sent' : terminalStatus);
       act(() => tree.unmount());
       jest.advanceTimersByTime(20000);
       expect(mockApiJson).toHaveBeenCalledTimes(2);
@@ -193,7 +195,7 @@ describe('transaction-detail pending refresh', () => {
     await act(async () => {
       await tree.root.findByProps({ accessibilityLabel: 'Refresh status' }).props.onPress();
     });
-    expect(JSON.stringify(tree.toJSON())).toContain('SUCCESSFUL');
+    expect(JSON.stringify(tree.toJSON())).toContain('Money sent');
 
     await act(async () => {
       resolveInitial(transaction('PENDING'));
@@ -201,7 +203,7 @@ describe('transaction-detail pending refresh', () => {
       await Promise.resolve();
     });
 
-    expect(JSON.stringify(tree.toJSON())).toContain('SUCCESSFUL');
+    expect(JSON.stringify(tree.toJSON())).toContain('Money sent');
     expect(JSON.stringify(tree.toJSON())).not.toContain('PENDING');
     expect(mockClearSpendAttempt).toHaveBeenCalledTimes(1);
     act(() => tree.unmount());
@@ -281,4 +283,17 @@ describe('transaction-detail pending refresh', () => {
     act(() => tree.unmount());
   });
 
+});
+
+describe('receiptWhen', () => {
+  const { receiptWhen } = require('../txndetail');
+  it('formats the server date as day, month, year and a 12-hour time', () => {
+    expect(receiptWhen('', '2026-11-14 18:40')).toBe('14 Nov 2026, 6:40 PM');
+  });
+  it('prefers the row timestamp when it is given', () => {
+    expect(receiptWhen(String(new Date(2026, 10, 14, 9, 5).getTime()), 'ignored')).toBe('14 Nov 2026, 9:05 AM');
+  });
+  it('leaves an unreadable date as it came', () => {
+    expect(receiptWhen('', 'Today')).toBe('Today');
+  });
 });

@@ -57,12 +57,23 @@ const BuyCable = () => {
   const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
   const validationGeneration = useRef(0);
-  // The smartcard field opens with the last one used on this provider.
+  // The screen opens on the provider of the last smartcard paid (GoTV when
+  // there is none), and the smartcard field with the last one used on it.
   const recents = useBillRecents();
   const iucEdited = useRef(false);
+  const providerChosen = useRef(false);
   const cards = recents.smartcards.filter((r) => r.provider === prov);
   useEffect(() => {
     if (iucEdited.current) return;
+    if (!providerChosen.current && recents.smartcards.length) {
+      providerChosen.current = true;
+      const lastProvider = recents.smartcards[0].provider;
+      if (lastProvider !== prov && PROVIDERS.some((p) => p.id === lastProvider)) {
+        // The effect runs again for the new provider and fills its last card.
+        setProv(lastProvider);
+        return;
+      }
+    }
     const last = recents.smartcards.find((r) => r.provider === prov);
     setIuc(last ? last.iuc : '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -130,10 +141,13 @@ const BuyCable = () => {
   // keystroke or while a request is already in flight.
   const attemptedRef = useRef('');
   useEffect(() => {
-    if (iuc.length >= 10 && !verifiedName && !validating && attemptedRef.current !== `${prov}:${iuc}`) {
-      attemptedRef.current = `${prov}:${iuc}`;
-      validateIuc();
-    }
+    if (iuc.length < 8 || verifiedName || validating || attemptedRef.current === `${prov}:${iuc}`) return undefined;
+    // Checked as soon as the number is in: at once from 10 digits, after a short
+    // pause for 8-9 (so a longer number is not checked half-typed).
+    const run = () => { attemptedRef.current = `${prov}:${iuc}`; validateIuc(); };
+    if (iuc.length >= 10) { run(); return undefined; }
+    const timer = setTimeout(run, 700);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [iuc, prov, verifiedName, validating]);
 
@@ -168,6 +182,7 @@ const BuyCable = () => {
   };
 
   const changeProvider = (value: string) => {
+    providerChosen.current = true;
     validationGeneration.current += 1;
     setValidating(false);
     setValidatedName('');
@@ -297,9 +312,11 @@ const BuyCable = () => {
       <View style={{ marginTop: 8, marginBottom: 8 }}>
         {verifiedName ? (
           <Text style={{ color: c.brandDeep, fontFamily: font.semibold, fontSize: 12.5 }}>✓ {verifiedName}</Text>
-        ) : iuc.length >= 8 ? (
-          // Names resolve on their own once the number is complete; this is the retry.
-          <Btn label={validating ? 'Validating…' : 'Validate IUC'} variant="outline" size="sm" full={false} onPress={validateIuc} disabled={validating} />
+        ) : validating ? (
+          <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12.5 }}>Checking…</Text>
+        ) : iuc.length >= 8 && attemptedRef.current === `${prov}:${iuc}` ? (
+          // The automatic check ran and found no name: offer a retry.
+          <Btn label="Try again" variant="ghost" size="sm" full={false} onPress={validateIuc} style={{ backgroundColor: 'transparent', alignSelf: 'flex-start', paddingHorizontal: 0 }} />
         ) : null}
       </View>
 
@@ -316,7 +333,7 @@ const BuyCable = () => {
       {amount > 0 ? <BalanceHint amount={amount} balance={balance} /> : null}
       {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
-      <Btn label={amount > 0 ? `Continue · ${money(amount)}` : 'Continue'} disabled={!valid} onPress={() => setStep('confirm')} />
+      <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
 
       <ConfirmSheet
         open={step === 'confirm'}

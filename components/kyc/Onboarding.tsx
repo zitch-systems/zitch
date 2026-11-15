@@ -4,6 +4,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { Field, Btn } from '@/components/design/ui';
 import { kycService } from '@/lib/services/kyc';
+import { lgasFor, exactLga } from '@/lib/data/lgas';
 import { useTheme, font } from '@/lib/theme';
 
 /**
@@ -97,6 +98,7 @@ export const OnboardingAddress = ({ savedAddress, onDone }: { savedAddress?: str
   const [state, setState] = useState('');
   const [lga, setLga] = useState('');
   const [stateOpen, setStateOpen] = useState(false);
+  const [lgaOpen, setLgaOpen] = useState(false);
   const [editing, setEditing] = useState(!savedAddress);
   const [saving, setSaving] = useState(false);
   const inFlight = useRef(false);
@@ -106,6 +108,12 @@ export const OnboardingAddress = ({ savedAddress, onDone }: { savedAddress?: str
   const suggestions = stateOpen && !matched
     ? NIGERIAN_STATES.filter((s) => !typed || s.toLowerCase().includes(typed)).slice(0, 6)
     : [];
+  // The LGA list only suggests: a value typed that is not on it is still taken.
+  const lgaMatched = exactLga(matched, lga);
+  const lgaTyped = lga.trim().toLowerCase();
+  const lgaSuggestions = lgaOpen && !lgaMatched
+    ? lgasFor(matched).filter((l) => !lgaTyped || l.toLowerCase().includes(lgaTyped)).slice(0, 6)
+    : [];
   const ready = !!house.trim() && !!street.trim() && !!matched && !!lga.trim();
 
   const save = async () => {
@@ -113,7 +121,7 @@ export const OnboardingAddress = ({ savedAddress, onDone }: { savedAddress?: str
     inFlight.current = true;
     setSaving(true);
     try {
-      const res = await kycService.saveAddress({ house_number: house.trim(), street: street.trim(), state: matched, lga: lga.trim() });
+      const res = await kycService.saveAddress({ house_number: house.trim(), street: street.trim(), state: matched, lga: lgaMatched || lga.trim() });
       if (res.success) {
         notify('Address saved', undefined, 'success');
         onDone();
@@ -155,7 +163,7 @@ export const OnboardingAddress = ({ savedAddress, onDone }: { savedAddress?: str
           <View style={{ flexDirection: 'row', gap: 12 }}>
             <View style={{ width: 118 }}>
               <Field label="House number" value={house} onChangeText={(v) => setHouse(v.slice(0, 20))} placeholder="e.g. 12"
-                keyboardType="numbers-and-punctuation" returnKeyType="next" editable={!saving} />
+                keyboardType="number-pad" returnKeyType="next" editable={!saving} />
             </View>
             <View style={{ flex: 1, minWidth: 0 }}>
               <Field label="Street address" value={street} onChangeText={(v) => setStreet(v.slice(0, 120))} placeholder="Street name and area"
@@ -188,8 +196,31 @@ export const OnboardingAddress = ({ savedAddress, onDone }: { savedAddress?: str
               <Text style={{ fontSize: 12, color: c.red, marginTop: 6, marginLeft: 2, fontFamily: font.regular }}>Choose your state from the list</Text>
             )}
           </View>
-          <Field label="Local government area" value={lga} onChangeText={(v) => setLga(v.slice(0, 60))} placeholder="e.g. Ikeja"
-            autoCapitalize="words" editable={!saving} returnKeyType="done" onSubmitEditing={() => void save()} />
+          <View>
+            <Field
+              label="Local government area"
+              value={lga}
+              onChangeText={(v) => { setLga(v.slice(0, 60)); setLgaOpen(true); }}
+              onFocus={() => setLgaOpen(true)}
+              onBlur={() => setTimeout(() => setLgaOpen(false), 150)}
+              placeholder="Select or type your LGA"
+              autoCapitalize="words"
+              editable={!saving}
+              returnKeyType="done"
+              onSubmitEditing={() => void save()}
+              suffix={lgaMatched ? <ZIcon name="check" size={18} color={GREEN} stroke={2.6} /> : <ZIcon name="down" size={18} color={c.ink3} />}
+            />
+            {lgaSuggestions.length > 0 && (
+              <View accessibilityRole="list" style={{ marginTop: 6, borderRadius: 18, backgroundColor: c.surface, padding: 6, borderWidth: 1, borderColor: c.line }}>
+                {lgaSuggestions.map((l) => (
+                  <Pressable key={l} onPress={() => { setLga(l); setLgaOpen(false); }} accessibilityRole="button" accessibilityLabel={l}
+                    style={{ paddingVertical: 12, paddingHorizontal: 12, borderRadius: 12 }}>
+                    <Text style={{ fontSize: 15, fontFamily: font.medium, color: c.ink1 }}>{l}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+          </View>
         </View>
       )}
 

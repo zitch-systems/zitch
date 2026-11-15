@@ -122,6 +122,7 @@ export const RecentField = ({
   format,
   accessibilityLabel,
   below,
+  onContacts,
 }: {
   label: string;
   value: string;
@@ -140,6 +141,8 @@ export const RecentField = ({
   accessibilityLabel?: string;
   /** Shown under the field (a resolved name, an error). */
   below?: React.ReactNode;
+  /** Shows a contacts button after the field; the caller asks for permission. */
+  onContacts?: () => void;
 }) => {
   const { c } = useTheme();
   const tint = useFieldTint();
@@ -152,7 +155,7 @@ export const RecentField = ({
     <View style={{ marginBottom: 4 }}>
       <SectionTitle>{label}</SectionTitle>
       <View style={{
-        flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 58, paddingLeft: leading ? 12 : 16, paddingRight: items.length ? 6 : 16,
+        flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 58, paddingLeft: leading ? 12 : 16, paddingRight: items.length || onContacts ? 6 : 16,
         borderRadius: 18, backgroundColor: active ? c.surface : tint, borderWidth: 2, borderColor: active ? c.brand : 'transparent',
       }}>
         {leading}
@@ -187,6 +190,20 @@ export const RecentField = ({
           >
             <ZIcon name={open ? 'up' : 'down'} size={20} color={c.ink1} />
           </Pressable>
+        ) : null}
+        {onContacts ? (
+          <>
+            <View style={{ width: 1, height: 24, backgroundColor: c.line }} />
+            <Pressable
+              onPress={() => { input.current?.blur(); setOpen(false); onContacts(); }}
+              accessibilityRole="button"
+              accessibilityLabel="Choose from contacts"
+              hitSlop={4}
+              style={{ width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center' }}
+            >
+              <ZIcon name="contacts" size={20} color={c.brand} />
+            </Pressable>
+          </>
         ) : null}
       </View>
       {below}

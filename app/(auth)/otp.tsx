@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { View, Text, TextInput, Pressable } from 'react-native';
+import { View, Text, Pressable } from 'react-native';
 import { notify } from '@/components/design/Notify';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -12,9 +12,12 @@ import ZIcon from '@/components/design/ZIcon';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Btn, Field } from '@/components/design/ui';
 import { Stepper } from '@/components/design/Stepper';
+import { CodeBoxes, resendLabel, type CodeBoxesHandle } from '@/components/design/CodeBoxes';
 import { useTheme, font } from '@/lib/theme';
 
 const OTP_LEN = 6;
+/** Seconds before another SMS can be asked for (design: 30s). */
+const RESEND_SECONDS = 30;
 
 /** The server's password rules (accounts.models password checks), shown as chips. */
 export const passwordRules = (pw: string) => [
@@ -42,8 +45,8 @@ const OTPVerification = () => {
   const [isResending, setIsResending] = useState(false);
   const [userPhone, setUserPhone] = useState('');
   const [phoneLoaded, setPhoneLoaded] = useState(false);
-  const [seconds, setSeconds] = useState(24);
-  const inputRef = useRef<TextInput>(null);
+  const [seconds, setSeconds] = useState(RESEND_SECONDS);
+  const inputRef = useRef<CodeBoxesHandle>(null);
   const mounted = useRef(true);
   const resending = useRef(false);
   const verifying = useRef(false);
@@ -154,7 +157,7 @@ const OTPVerification = () => {
         // typing and Android/iOS SMS autofill work immediately.
         setOtp('');
         submittedRef.current = '';
-        setSeconds(24);
+        setSeconds(RESEND_SECONDS);
         requestAnimationFrame(() => inputRef.current?.focus());
         notify('Code sent', 'A new verification code has been sent by SMS.');
       } else {
@@ -296,66 +299,39 @@ const OTPVerification = () => {
       <Stepper step={2} total={4} label="Step 2 of 4 · Phone and password" />
       <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Verify your phone</Text>
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, fontFamily: font.regular }}>
-        Enter the {OTP_LEN}-digit SMS code sent to <Text style={{ fontFamily: font.bold, color: c.ink1 }}>{masked}</Text>
+        We’ve sent a {OTP_LEN}-digit code to your number by SMS.
       </Text>
-      <Pressable
-        onPress={() => leave('/register')}
-        accessibilityRole="button"
-        accessibilityLabel="Edit phone number"
-        hitSlop={8}
-        style={{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: 'rgba(6,110,102,0.10)' }}
-      >
-        <Text style={{ fontSize: 13, fontFamily: font.bold, color: c.brand }}>Edit number</Text>
-      </Pressable>
+      <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2, marginTop: 20, marginBottom: 8 }}>Phone number</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 56, paddingHorizontal: 16, borderRadius: 18, backgroundColor: c.surface }}>
+        <ZIcon name="phone" size={18} color={c.ink3} />
+        <Text style={{ flex: 1, fontSize: 16, fontFamily: font.semibold, color: c.ink1 }}>{masked}</Text>
+        <Pressable
+          onPress={() => leave('/register')}
+          accessibilityRole="button"
+          accessibilityLabel="Edit phone number"
+          hitSlop={8}
+          style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: 'rgba(6,110,102,0.10)' }}
+        >
+          <Text style={{ fontSize: 13, fontFamily: font.bold, color: c.brand }}>Edit</Text>
+        </Pressable>
+      </View>
 
-      {/* The boxes are display-only; a hidden numeric TextInput captures input
-          from the device keypad (and OS SMS autofill). Tapping the boxes focuses it. */}
-      <Pressable onPress={() => inputRef.current?.focus()}>
-        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ flexDirection: 'row', gap: 10, marginTop: 22, marginBottom: 18 }}>
-          {Array.from({ length: OTP_LEN }).map((_, k) => (
-            <View
-              key={k}
-              style={{
-                flex: 1,
-                height: 58,
-                borderRadius: 14,
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: c.surface,
-                borderWidth: 2,
-                borderColor: otp.length === k ? c.brand : c.line,
-              }}
-            >
-              <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1 }}>{otp[k] || ''}</Text>
-            </View>
-          ))}
-        </View>
+      <Text style={{ fontSize: 15, fontFamily: font.extrabold, color: c.ink1, marginTop: 22 }}>Enter the code</Text>
+      <CodeBoxes
+        ref={inputRef}
+        value={otp}
+        onChange={setOtp}
+        length={OTP_LEN}
+        autoFocus
+        editable={!isCheckingOtp && !isResending}
+        accessibilityLabel="6-digit SMS verification code"
+        accessibilityHint="Your code is verified automatically when all six digits are entered."
+        marginTop={12}
+      />
 
-        <TextInput
-          ref={inputRef}
-          accessibilityLabel="6-digit SMS verification code"
-          accessibilityHint="Your code is verified automatically when all six digits are entered."
-          value={otp}
-          onChangeText={(t) => setOtp(t.replace(/\D/g, '').slice(0, OTP_LEN))}
-          keyboardType="number-pad"
-          inputMode="numeric"
-          maxLength={OTP_LEN}
-          autoFocus
-          caretHidden
-          editable={!isCheckingOtp && !isResending}
-          textContentType="oneTimeCode"
-          autoComplete="sms-otp"
-          importantForAutofill="yes"
-          // Cover the boxes so taps focus it; invisible so only the boxes show.
-          // Keep the native field visually hidden without opacity:0. Some Android
-          // autofill services ignore a fully transparent OTP target after resend.
-          style={{ position: 'absolute', top: 22, left: 0, right: 0, height: 58, color: 'transparent', backgroundColor: 'transparent' }}
-        />
-      </Pressable>
-
-      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-        <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular }}>
-          Didn’t get it?{' '}
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+        <Text style={{ flex: 1, fontSize: 13, color: c.ink3, fontFamily: font.regular }}>
+          Didn’t get it? Check the number above.
         </Text>
         <Pressable
           onPress={handleResendOtp}
@@ -365,8 +341,8 @@ const OTPVerification = () => {
           accessibilityLabel="Resend verification code"
           accessibilityState={{ disabled: seconds > 0 || isResending || !userPhone }}
         >
-          <Text style={{ color: seconds > 0 || isResending || !userPhone ? c.ink3 : c.brand, fontFamily: font.bold, fontSize: 13.5 }}>
-            {isResending ? 'Sending…' : seconds > 0 ? `Resend in 0:${String(seconds).padStart(2, '0')}` : 'Resend code'}
+          <Text style={{ color: seconds > 0 || isResending || !userPhone ? c.ink3 : c.brand, fontFamily: font.bold, fontSize: 13 }}>
+            {isResending ? 'Sending…' : seconds > 0 ? resendLabel(seconds) : 'Resend code'}
           </Text>
         </Pressable>
       </View>

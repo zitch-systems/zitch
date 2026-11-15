@@ -1,15 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import * as WebBrowser from 'expo-web-browser';
 import * as Device from 'expo-device';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Btn } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
+import FaceVerifyModal from '@/components/design/FaceVerifyModal';
 import { publicPost } from '@/lib/api';
 import { storeSession, rememberIdentifier, getSessionGeneration } from '@/lib/secureStore';
-import { unlockSession, beginExternalActivity, endExternalActivity } from '@/lib/session';
-import { registerForPushNotifications } from '@/lib/notifications';
+import { enterAccount } from '@/lib/enterAccount';
 import { useTheme, font } from '@/lib/theme';
 
 /**
@@ -20,13 +19,21 @@ import { useTheme, font } from '@/lib/theme';
  */
 const PREMBLY_ORIGIN = 'https://sdk-live.prembly.com';
 
+/** How often the open face page asks our server whether Prembly has confirmed. */
+const POLL_MS = 3000;
+
 const NewDevice = () => {
   const { c } = useTheme();
   const params = useLocalSearchParams<{ challenge?: string; id?: string }>();
   const challenge = String(params.challenge || '');
   const [busy, setBusy] = useState(false);
   const [session, setSession] = useState('');
+  // The Prembly page, held in the app while it is up.
+  const [faceUrl, setFaceUrl] = useState('');
   const mounted = useRef(true);
+  const checking = useRef(false);
+  const done = useRef(false);
+  const flowGeneration = useRef(0);
   useEffect(() => () => { mounted.current = false; }, []);
 
   useEffect(() => {
@@ -38,60 +45,83 @@ const NewDevice = () => {
     router.replace('/signin');
   };
 
-  // Poll a few times: the result reaches our server from Prembly, not the browser.
-  const finish = async (state: string, generation: number) => {
-    for (let attempt = 0; attempt < 6; attempt += 1) {
+  /**
+   * Ask once whether the face check has opened this sign-in. The result reaches
+   * our server from Prembly, not from the page, so this is the only signal.
+   * `final` is the check made when the customer closes the page: it is the one
+   * that says "still checking" when nothing has arrived yet.
+   */
+  const check = async (state: string, generation: number, final: boolean) => {
+    if (done.current || (checking.current && !final)) return;
+    checking.current = true;
+    try {
       const response = await publicPost('/api/signin/face/status/', { challenge, session: state });
       const result = await response.json().catch(() => ({}));
-      if (!mounted.current || generation !== getSessionGeneration()) return;
+      if (done.current || !mounted.current || generation !== getSessionGeneration()) return;
       if (response.ok && result.access_token) {
+        done.current = true;
+        setFaceUrl('');
         await storeSession(result, generation);
         const authenticated = getSessionGeneration();
         if (params.id) await rememberIdentifier(String(params.id), authenticated);
-        await unlockSession();
-        registerForPushNotifications(false).catch(() => {});
-        router.replace('/home');
+        await enterAccount(() => mounted.current && authenticated === getSessionGeneration());
         return;
       }
-      if (response.status === 401) { expired(result.message); return; }
+      if (response.status === 401) { done.current = true; setFaceUrl(''); expired(result.message); return; }
       if (result.status === 'failed' || response.status === 409) {
+        setFaceUrl('');
         setSession('');
         notify('Face check not confirmed', result.message || 'We could not confirm it was you. Try the face check again.');
         return;
       }
-      await new Promise((resolve) => setTimeout(resolve, 2500));
+      if (final) notify('Still checking', 'Prembly has not confirmed your face check yet. Tap Check again in a moment.', 'info');
+    } catch {
+      if (final && mounted.current) notify('Face check', 'Something went wrong. Check your connection and try again.');
+    } finally {
+      checking.current = false;
     }
-    notify('Still checking', 'Prembly has not confirmed your face check yet. Tap Check again in a moment.', 'info');
+  };
+
+  // While the page is up, keep asking; close it the moment the server confirms.
+  useEffect(() => {
+    if (!faceUrl || !session) return;
+    const generation = flowGeneration.current;
+    const timer = setInterval(() => { void check(session, generation, false); }, POLL_MS);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [faceUrl, session]);
+
+  const closeFace = () => {
+    setFaceUrl('');
+    if (session && !done.current) void check(session, flowGeneration.current, true);
   };
 
   const start = async () => {
     if (busy || !challenge) return;
     setBusy(true);
     const generation = getSessionGeneration();
+    flowGeneration.current = generation;
     try {
-      let state = session;
-      if (!state) {
-        const response = await publicPost('/api/signin/face/start/', { challenge });
-        const started = await response.json().catch(() => ({}));
-        if (!mounted.current) return;
-        if (response.status === 401) { expired(started.message); return; }
-        if (!response.ok || !started.session || !started.url) {
-          notify('Face check', started.message || 'Could not start the face check. Please try again.', 'info');
-          return;
-        }
-        const target = new URL(String(started.url));
-        if (target.origin !== PREMBLY_ORIGIN || target.username || target.password) {
-          notify('Face check unavailable', 'The face check link could not be confirmed.');
-          return;
-        }
-        state = String(started.session);
-        setSession(state);
-        beginExternalActivity();
-        try { await WebBrowser.openBrowserAsync(target.toString()); }
-        finally { endExternalActivity(); }
+      if (session) {
+        // A face check is already under way: "Check again" just asks.
+        await check(session, generation, true);
+        return;
       }
+      const response = await publicPost('/api/signin/face/start/', { challenge });
+      const started = await response.json().catch(() => ({}));
       if (!mounted.current) return;
-      await finish(state, generation);
+      if (response.status === 401) { expired(started.message); return; }
+      if (!response.ok || !started.session || !started.url) {
+        notify('Face check', started.message || 'Could not start the face check. Please try again.', 'info');
+        return;
+      }
+      const target = new URL(String(started.url));
+      if (target.origin !== PREMBLY_ORIGIN || target.username || target.password) {
+        notify('Face check unavailable', 'The face check link could not be confirmed.');
+        return;
+      }
+      setSession(String(started.session));
+      setFaceUrl(target.toString());
     } catch {
       if (mounted.current) notify('Face check', 'Something went wrong. Check your connection and try again.');
     } finally {
@@ -106,6 +136,7 @@ const NewDevice = () => {
   ];
 
   return (
+    <>
     <Screen>
       <Header onBack={() => router.replace('/signin')} />
       <View style={{ alignItems: 'center', marginTop: 8 }}>
@@ -154,6 +185,15 @@ const NewDevice = () => {
         <Text style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3 }}>Face check by Prembly, matched to your BVN</Text>
       </View>
     </Screen>
+    <FaceVerifyModal
+      url={faceUrl}
+      visible={!!faceUrl}
+      onClose={closeFace}
+      title="Face check"
+      subtitle="Secure verification page"
+      footer="Secured by Prembly · matched to your BVN photo"
+    />
+    </>
   );
 };
 
