@@ -169,8 +169,8 @@ describe('BuyCable response binding', () => {
     expect(control(tree, 'Continue').props.disabled).toBe(false);
 
     expect(mockApiPost.mock.calls.map((call) => call[1])).toEqual([
-      { iuc: '11111111', cablenetwork: '2' },
-      { iuc: '22222222', cablenetwork: '2' },
+      { iuc: '1111111111', cablenetwork: '2' },
+      { iuc: '2222222222', cablenetwork: '2' },
     ]);
   });
 
