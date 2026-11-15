@@ -73,8 +73,8 @@ const tap = async (tree: renderer.ReactTestRenderer, label: string) => act(async
 const cases: [string, React.ComponentType, (tree: renderer.ReactTestRenderer) => Promise<void>, boolean][] = [
   ['airtime', BuyAirtime, async (t) => { await type(t, 'Or enter amount', '1000'); }, true],
   ['data', BuyData, async (t) => { await tap(t, 'Data plan'); }, true],
-  ['cable', BuyCable, async (t) => { await type(t, 'Smartcard / IUC number', '12345678'); await tap(t, 'Validate IUC'); await tap(t, 'TV plan'); }, true],
-  ['electricity', BuyElectricity, async (t) => { await type(t, 'Meter number', '12345678'); await tap(t, 'Validate meter'); await type(t, 'Enter amount (min 500)', '1000'); }, true],
+  ['cable', BuyCable, async (t) => { await type(t, 'Smartcard / IUC number', '1234567890'); await tap(t, 'TV plan'); }, true],
+  ['electricity', BuyElectricity, async (t) => { await type(t, 'Meter number', '1234567890'); await type(t, 'Enter amount (min 500)', '1000'); }, true],
   ['betting', Betting, async (t) => { await type(t, 'User ID', '123456'); await type(t, 'Enter amount', '1000'); }, false],
   ['exams', Exams, async () => {}, false],
   ['remita', Remita, async (t) => { await type(t, 'Enter the RRR on your bill', '123456789012'); await tap(t, 'Verify RRR'); }, false],
@@ -133,7 +133,7 @@ it.each([['data', BuyData, 'Data plan'], ['cable', BuyCable, 'TV plan']] as cons
   mockSubmit.mockResolvedValue(mockResponse({ success: false, code: 'price_changed', current_price: '1200' }, 409));
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Component />); });
-  if (name === 'cable') { await type(tree, 'Smartcard / IUC number', '12345678'); await tap(tree, 'Validate IUC'); }
+  if (name === 'cable') { await type(tree, 'Smartcard / IUC number', '1234567890'); }
   await tap(tree, plan);
   await tap(tree, 'Authorize');
   expect(mockSubmit).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ expected_amount: '1000', idempotency_key: 'durable-attempt' }));

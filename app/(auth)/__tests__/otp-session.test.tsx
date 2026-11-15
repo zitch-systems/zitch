@@ -149,7 +149,7 @@ it('sends only one resend request and suppresses a late SMS notice after account
   mockPost.mockReturnValue(new Promise(resolve => { finish = resolve; }));
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<OTPVerification />); });
-  for (let i = 0; i < 24; i++) await act(async () => { jest.advanceTimersByTime(1000); });
+  for (let i = 0; i < 30; i++) await act(async () => { jest.advanceTimersByTime(1000); });
   const resend = tree.root.findByProps({ accessibilityLabel: 'Resend verification code' });
   expect(resend.props.disabled).toBe(false);
   let sending!: Promise<void>;
@@ -159,5 +159,17 @@ it('sends only one resend request and suppresses a late SMS notice after account
   mockGeneration += 1;
   await act(async () => { finish({ ok: true, json: async () => ({}) }); await sending; });
   expect(mockNotify).not.toHaveBeenCalled();
+  act(() => tree.unmount());
+});
+
+it('waits 30 seconds before a new code can be asked for', async () => {
+  mockPost.mockReturnValue(new Promise(() => {}));
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<OTPVerification />); });
+  const resend = () => tree.root.findByProps({ accessibilityLabel: 'Resend verification code' });
+  for (let i = 0; i < 29; i++) await act(async () => { jest.advanceTimersByTime(1000); });
+  expect(resend().props.disabled).toBe(true);
+  await act(async () => { jest.advanceTimersByTime(1000); });
+  expect(resend().props.disabled).toBe(false);
   act(() => tree.unmount());
 });

@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Animated, Easing, Pressable } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import * as WebBrowser from 'expo-web-browser';
 import Svg, { Circle } from 'react-native-svg';
 import { notify } from '@/components/design/Notify';
 import { getSessionGeneration, getToken } from '@/lib/secureStore';
@@ -10,9 +9,11 @@ import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { classifyKycResponse, isAccountOtpPending, kycService, resolveIdentityOtpRoute, resolveOwnershipOtpRoute, type KycStatus, type KycVerificationFlag, type ResidentialAddress } from '@/lib/services/kyc';
 import type { FundingAccount } from '@/lib/services/wallet';
 import FaceLivenessModal from '@/components/design/FaceLivenessModal';
+import FaceVerifyModal from '@/components/design/FaceVerifyModal';
+import { CodeBoxes, resendLabel } from '@/components/design/CodeBoxes';
 import AuthGuard from '@/components/AuthGuard';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, Header, Field, Btn, Tap, money } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, Tap } from '@/components/design/ui';
 import { AddressWaits, LaterLink, OnboardingAddress, OnboardingHeading, StepTitle, ViaOption } from '@/components/kyc/Onboarding';
 import { useTheme, font } from '@/lib/theme';
 
@@ -61,15 +62,31 @@ const C_BVN = '#0FA295';
 const C_NIN = '#2D7FF9';
 const C_SELFIE = '#7A5CFF';
 
-const transactionLimitLabel = (value: unknown) => (
-  (typeof value === 'number' || (typeof value === 'string' && value.trim() !== ''))
-  && Number.isFinite(Number(value)) && Number(value) >= 0
-) ? money(Number(value)) : 'Not confirmed';
-
 const EMPTY_ADDRESS: ResidentialAddress = {
   buildingNumber: '', apartment: '', street: '', city: '', town: '', state: '',
   lga: '', lcda: '', landmark: '', additionalInformation: '', country: 'Nigeria',
   fullAddress: '', postalCode: '',
+};
+
+/** How often an open face page asks our server for the result. */
+const FACE_POLL_MS = 3000;
+/** Seconds before the BVN code can be sent again (design 09). */
+const BVN_RESEND_SECONDS = 60;
+const PREMBLY_ORIGIN = 'https://sdk-live.prembly.com';
+
+/**
+ * A face page held in the app (FaceVerifyModal). It reports nothing itself: the
+ * result reaches our server from the provider, so while it is up the screen
+ * polls, and it checks once more when the customer closes it. `done` is set by
+ * whichever check handled the outcome first, so a poll and the closing check
+ * that land together cannot both act on it.
+ */
+type FaceSheet = {
+  kind: 'identity' | 'prembly';
+  url: string;
+  session: string;
+  isCurrent: () => boolean;
+  done: boolean;
 };
 
 const cardShadow = {
@@ -130,6 +147,9 @@ const Kyc = () => {
   const [busy, setBusy] = useState(false);
   const [bvnVia, setBvnVia] = useState<'sms' | 'face'>('sms');
   const [premblySession, setPremblySession] = useState('');
+  const [faceSheet, setFaceSheet] = useState<FaceSheet | null>(null);
+  const faceChecking = useRef(false);
+  const [bvnResendIn, setBvnResendIn] = useState(0);
   const [address, setAddress] = useState<ResidentialAddress>(EMPTY_ADDRESS);
   const [addressDocument, setAddressDocument] = useState('');
   const [upgradeCameraOpen, setUpgradeCameraOpen] = useState(false);
@@ -228,10 +248,18 @@ const Kyc = () => {
       setBusy(false);
       setScanning(false);
       setUpgradeCameraOpen(false);
+      setFaceSheet(null);
       if (selfieTimer.current) clearTimeout(selfieTimer.current);
       spin.stopAnimation();
     };
   }, [load, spin]));
+
+  // The BVN code's resend countdown.
+  useEffect(() => {
+    if (bvnResendIn <= 0) return;
+    const timer = setTimeout(() => setBvnResendIn((value) => value - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [bvnResendIn]);
 
   // Return to the method menu and clear any in-flight sub-flow state.
   const goMenu = () => {
@@ -255,6 +283,7 @@ const Kyc = () => {
     setAddress(EMPTY_ADDRESS);
     setAddressDocument('');
     setUpgradeCameraOpen(false);
+    setFaceSheet(null);
     setScanning(false);
     setBusy(false);
     spin.stopAnimation();
@@ -399,6 +428,7 @@ const Kyc = () => {
           setBvnOtpDestination(res.delivery || res.otp_destination || '');
           setBvnDeliveryNotice(res.delivery_notice || '');
           setBvnSent(true);
+          setBvnResendIn(BVN_RESEND_SECONDS);
           notify('BVN code requested', res.message || 'Enter the verification code to finish.', 'success');
         }
       } else if (res.identity_review_required) {
@@ -435,6 +465,7 @@ const Kyc = () => {
         setBvnOtp('');
         setBvnOtpDestination(res.delivery || res.otp_destination || '');
         setBvnDeliveryNotice(res.delivery_notice || '');
+        setBvnResendIn(BVN_RESEND_SECONDS);
         notify('BVN code resent', res.message || 'Enter the latest verification code.', 'success');
       } else if (res.pending) {
         notify('Verification processing', res.message || 'Your BVN verification is still processing. Check your status again shortly.', 'info');
@@ -446,6 +477,7 @@ const Kyc = () => {
 
   const startIdentityFaceVerification = async (identity: { bvn?: string; nin?: string }) => {
     if (!beginAction()) return;
+    let handedOff = false;
     const generation = ++facePollGeneration.current;
     const isCurrent = () => mounted.current && screenGeneration === getSessionGeneration() && facePollGeneration.current === generation;
     try {
@@ -463,6 +495,8 @@ const Kyc = () => {
           setBvnDeliveryNotice(started.delivery_notice || '');
           setBvnOtp('');
           setBvnSent(true);
+          setBvnResendIn(BVN_RESEND_SECONDS);
+          setBvnVia('sms');
           setMethod('bvn');
         } else {
           setNinTrackingId(otpRoute.trackingId);
@@ -491,72 +525,133 @@ const Kyc = () => {
         notify('Face verification unavailable', started.message || 'Please use the SMS code for now.');
         return;
       }
-      beginExternalActivity();
-      try { await WebBrowser.openBrowserAsync(started.url); }
-      finally { endExternalActivity(); }
-      if (!isCurrent()) return;
-      for (let attempt = 0; attempt < 15; attempt += 1) {
-        const result = await kycService.getIdentityFaceStatus(started.session);
-        if (!isCurrent()) return;
+      // The page opens inside the app; polling and the closing check finish it.
+      // The action stays in flight until then, so nothing else starts under it.
+      handedOff = true;
+      setFaceSheet({ kind: 'identity', url: started.url, session: started.session, isCurrent, done: false });
+    } catch { if (isCurrent()) notify('Error', 'Could not complete face verification. Please use the SMS code or try again.'); }
+    finally { if (!handedOff) endAction(isCurrent); }
+  };
+
+  /**
+   * One status check for the open face page. Returns once the outcome is known
+   * or still pending; `final` is the check made as the page closes, and only it
+   * tells the customer "still processing".
+   */
+  const checkFace = async (sheet: FaceSheet, final: boolean) => {
+    if (sheet.done || (faceChecking.current && !final)) return;
+    faceChecking.current = true;
+    const finish = () => {
+      sheet.done = true;
+      setFaceSheet((open) => (open === sheet ? null : open));
+      endAction(sheet.isCurrent);
+    };
+    try {
+      if (sheet.kind === 'identity') {
+        const result = await kycService.getIdentityFaceStatus(sheet.session);
+        if (sheet.done || !sheet.isCurrent()) return;
         if (result.status === 'verified') {
+          finish();
           setStatus(result);
           setBvn(''); setBvnOtp(''); setBvnSent(false); setBvnTrackingId(''); setBvnOtpDestination('');
           setNin(''); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); setNinSent(false);
           setMethod('menu');
-          notify('Identity verified', result.message || 'Your bank confirmed the face check.', 'success');
+          notify('Identity verified', result.message || 'Your face check is confirmed.', 'success');
           return;
         }
         if (result.status === 'failed' || result.status === 'expired') {
-          notify('Face verification incomplete', 'The bank did not confirm the check. You can retry or use SMS.');
+          finish();
+          notify('Face verification incomplete', 'The face check was not confirmed. You can retry or use SMS.');
           return;
         }
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        if (!isCurrent()) return;
+        if (final) {
+          finish();
+          notify('Still processing', 'Your face check is still being confirmed. This page will refresh when you return.');
+          await load();
+        }
+      } else {
+        const result = await kycService.getLivenessStatus(sheet.session);
+        if (sheet.done || !sheet.isCurrent()) return;
+        if (result.success && result.face_verified && result.status === 'verified') {
+          finish();
+          setStatus(result);
+          setPremblySession('');
+          setMethod('menu');
+          notify('Tier 2 verified', 'Your Prembly live face check is complete.', 'success');
+          return;
+        }
+        if (result.status === 'failed' || result.status === 'expired') {
+          finish();
+          setPremblySession('');
+          notify('Face verification', result.message || 'The face check was not confirmed. Please try again.', 'info');
+          return;
+        }
+        if (final) {
+          finish();
+          notify('Face verification', result.message || 'Your result is still being checked. Tap Check verification to refresh.', 'info');
+        }
       }
-      notify('Still processing', 'Your bank is still confirming the check. This page will refresh when you return.');
-      await load();
-    } catch { if (isCurrent()) notify('Error', 'Could not complete face verification. Please use the SMS code or try again.'); }
-    finally { endAction(isCurrent); }
+    } catch {
+      if (final && !sheet.done && sheet.isCurrent()) {
+        finish();
+        notify('Face verification', 'Could not check your verification. Please try again.');
+      }
+    } finally {
+      faceChecking.current = false;
+    }
+  };
+
+  // While a face page is up, ask every few seconds; it closes itself on a result.
+  useEffect(() => {
+    if (!faceSheet) return;
+    const sheet = faceSheet;
+    const timer = setInterval(() => { void checkFace(sheet, false); }, FACE_POLL_MS);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [faceSheet]);
+
+  const closeFaceSheet = () => {
+    const sheet = faceSheet;
+    setFaceSheet(null);
+    if (sheet && !sheet.done) void checkFace(sheet, true);
   };
 
   const runPrembly = async (checkOnly = false) => {
     if (!beginAction()) return;
     const isCurrent = bindFlow();
+    let handedOff = false;
     try {
-      let session = premblySession;
-      if (!checkOnly || !session) {
-        const started = await kycService.startLiveness();
+      if (checkOnly && premblySession) {
+        const result = await kycService.getLivenessStatus(premblySession);
         if (!isCurrent()) return;
-        if (!started.success || !started.session || !started.url) {
-          notify('Face verification', started.message || 'Could not start the live face check.', 'info');
-          return;
+        if (result.success && result.face_verified && result.status === 'verified') {
+          setStatus(result);
+          setPremblySession('');
+          setMethod('menu');
+          notify('Tier 2 verified', 'Your Prembly live face check is complete.', 'success');
+        } else {
+          if (result.status === 'failed' || result.status === 'expired') setPremblySession('');
+          notify('Face verification', result.message || 'Your result is still being checked. Tap Check verification to refresh.', 'info');
         }
-        const target = new URL(started.url);
-        if (target.origin !== 'https://sdk-live.prembly.com' || target.username || target.password) {
-          notify('Face verification unavailable', 'The verification link could not be confirmed.');
-          return;
-        }
-        session = started.session;
-        setPremblySession(session);
-        beginExternalActivity();
-        try { await WebBrowser.openBrowserAsync(started.url); }
-        finally { endExternalActivity(); }
-        if (!isCurrent()) return;
+        return;
       }
-      const result = await kycService.getLivenessStatus(session);
+      const started = await kycService.startLiveness();
       if (!isCurrent()) return;
-      if (result.success && result.face_verified && result.status === 'verified') {
-        setStatus(result);
-        setPremblySession('');
-        setMethod('menu');
-        notify('Tier 2 verified', 'Your Prembly live face check is complete.', 'success');
-      } else {
-        if (result.status === 'failed' || result.status === 'expired') setPremblySession('');
-        notify('Face verification', result.message || 'Your result is still being checked. Tap Check verification to refresh.', 'info');
+      if (!started.success || !started.session || !started.url) {
+        notify('Face verification', started.message || 'Could not start the live face check.', 'info');
+        return;
       }
+      const target = new URL(started.url);
+      if (target.origin !== PREMBLY_ORIGIN || target.username || target.password) {
+        notify('Face verification unavailable', 'The verification link could not be confirmed.');
+        return;
+      }
+      setPremblySession(started.session);
+      handedOff = true;
+      setFaceSheet({ kind: 'prembly', url: target.toString(), session: started.session, isCurrent, done: false });
     } catch {
       if (isCurrent()) notify('Face verification', 'Could not check your verification. Please try again.');
-    } finally { endAction(isCurrent); }
+    } finally { if (!handedOff) endAction(isCurrent); }
   };
 
   // --- NIN: the server selects identity lookup and its ownership challenge ---
@@ -730,8 +825,8 @@ const Kyc = () => {
     </View>
   );
 
-  const MethodCard = ({ id, icon, color, title, sub, badge, done }: { id: Method; icon: string; color: string; title: string; sub: string; badge?: string; done?: boolean }) => (
-    <Tap accessibilityLabel={`${title}, ${done ? 'Verified' : sub}`} disabled={!!done || busy} onPress={() => { if (!done) setMethod(id); }} style={{ marginTop: 12 }}>
+  const MethodCard = ({ id, icon, color, title, sub, badge, done, onPress }: { id: Method; icon: string; color: string; title: string; sub: string; badge?: string; done?: boolean; onPress?: () => void }) => (
+    <Tap accessibilityLabel={`${title}, ${done ? 'Verified' : sub}`} disabled={!!done || busy} onPress={() => { if (!done) { if (onPress) onPress(); else setMethod(id); } }} style={{ marginTop: 12 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13, padding: 15, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, ...cardShadow }}>
         <View style={{ width: 46, height: 46, borderRadius: 13, backgroundColor: color + '22', alignItems: 'center', justifyContent: 'center' }}>
           <ZIcon name={icon} size={22} color={color} stroke={1.9} />
@@ -822,12 +917,6 @@ const Kyc = () => {
                 <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Current tier</Text>
                 <Text style={{ fontSize: 20, fontFamily: font.extrabold, color: c.ink1 }}>Tier {status.tier}</Text>
               </View>
-              {status.account_provider === 'partnership' && (
-                <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Per-transaction limit</Text>
-                  <Text style={{ fontSize: 16, fontFamily: font.bold, color: c.brand, fontVariant: ['tabular-nums'] }}>{transactionLimitLabel(status.transaction_limit)}</Text>
-                </View>
-              )}
             </View>
           )}
 
@@ -853,7 +942,9 @@ const Kyc = () => {
           {status.email_verified && hasTier1Identity && (tier2Unavailable && (needsBankUpgrade || !status.face_verified)
             ? <Tier2Unavailable /> : needsBankUpgrade
             ? <MethodCard id="upgrade" icon="user" color={C_SELFIE} title="Tier 2 · Face verification" sub="Confirm your identity details and take a selfie" />
-            : <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Selfie verification" sub="Tier 2 · Prembly verification" done={!!status.face_verified} />)}
+            : <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Selfie verification" sub="Tier 2 · NIN and a face check" done={!!status.face_verified}
+                // The live face check (and the NIN beside it) has its own page now.
+                onPress={sdkFlow ? () => router.push('/tier2') : undefined} />)}
           {addressVerificationAvailable && status?.tier !== undefined && status.tier >= 2 && (addressPending
             ? <AddressPending /> : tier3Unavailable && !status.address_verified
               ? <Tier3Unavailable /> : <MethodCard id="address" icon="home" color={C_BVN} title="Address verification" sub="Tier 3" done={!!status?.address_verified} />)}
@@ -906,17 +997,26 @@ const Kyc = () => {
         </View>
       )}
 
-      {method === 'bvn' && !bvnSent && onboarding && (
+      {/* Sign-up keeps the whole BVN step on one page (design 09): the number,
+          the SMS-or-face choice and, once a code is sent, the boxes for it. */}
+      {method === 'bvn' && onboarding && (
         <View>
           <OnboardingHeading sub="Verify your BVN, then add the address where you live." />
           <StepTitle n={1} title="Your BVN" />
           <View style={{ marginTop: 14 }}>
             <Field editable={!busy} label="Bank Verification Number (BVN)" placeholder="11 digits" keyboardType="number-pad" value={bvn}
-              onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
-              <ZIcon name="help" size={14} color={c.amber} />
-              <Text style={{ flex: 1, color: c.ink3, fontSize: 12.5, fontFamily: font.regular }}>Dial *565*0# on your registered line to get your BVN.</Text>
-            </View>
+              onChangeText={(v) => {
+                const next = v.replace(/\D/g, '').slice(0, 11);
+                // A different BVN needs its own code.
+                if (bvnSent && next !== bvn) { setBvnSent(false); setBvnOtp(''); setBvnTrackingId(''); setBvnOtpDestination(''); setBvnDeliveryNotice(''); }
+                setBvn(next);
+              }} prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
+            {!bvnSent && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                <ZIcon name="help" size={14} color={c.amber} />
+                <Text style={{ flex: 1, color: c.ink3, fontSize: 12.5, fontFamily: font.regular }}>Dial *565*0# on your registered line to get your BVN.</Text>
+              </View>
+            )}
             {status.identity_face_available && (
               <View style={{ marginTop: 16 }}>
                 <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2, marginBottom: 8 }}>Verify with</Text>
@@ -926,10 +1026,40 @@ const Kyc = () => {
                 </View>
               </View>
             )}
-            <View style={{ height: 22 }} />
-            {status.identity_face_available && bvnVia === 'face'
-              ? <Btn label={busy ? 'Opening face check…' : 'Start face check'} icon="scan" disabled={busy || bvn.length !== 11} onPress={() => startIdentityFaceVerification({ bvn })} />
-              : <Btn label={busy ? 'Sending code…' : 'Send code'} disabled={busy || bvn.length !== 11} onPress={startBvn} />}
+            {bvnSent && (!status.identity_face_available || bvnVia === 'sms') ? (
+              <View style={{ marginTop: 18 }}>
+                <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2 }}>
+                  Enter the code sent to {bvnOtpDestination || 'the phone on your BVN'}
+                </Text>
+                {!!bvnDeliveryNotice && <Text accessibilityRole="alert" style={{ marginTop: 8, color: c.ink2, fontFamily: font.regular }}>{bvnDeliveryNotice}</Text>}
+                <CodeBoxes
+                  value={bvnOtp}
+                  onChange={setBvnOtp}
+                  editable={!busy}
+                  autoFocus
+                  accessibilityLabel="6-digit BVN verification code"
+                  marginTop={10}
+                  marginBottom={10}
+                />
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                  <Text style={{ flex: 1, fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>It can take a minute to arrive.</Text>
+                  <Tap accessibilityLabel="Resend BVN code" disabled={busy || bvnResendIn > 0} onPress={() => void resendBvn()} style={{ minHeight: 44, justifyContent: 'center' }}>
+                    <Text style={{ fontSize: 12.5, color: busy || bvnResendIn > 0 ? c.ink3 : c.brand, fontFamily: font.semibold }}>
+                      {bvnResendIn > 0 ? resendLabel(bvnResendIn) : 'Resend code'}
+                    </Text>
+                  </Tap>
+                </View>
+                <View style={{ height: 18 }} />
+                <Btn label={busy ? 'Confirming…' : 'Continue'} disabled={busy || bvnOtp.length !== 6} onPress={confirmBvn} />
+              </View>
+            ) : (
+              <>
+                <View style={{ height: 22 }} />
+                {status.identity_face_available && bvnVia === 'face'
+                  ? <Btn label={busy ? 'Opening face check…' : 'Start face check'} icon="scan" disabled={busy || bvn.length !== 11} onPress={() => startIdentityFaceVerification({ bvn })} />
+                  : <Btn label={busy ? 'Sending code…' : 'Send code'} disabled={busy || bvn.length !== 11} onPress={startBvn} />}
+              </>
+            )}
           </View>
           <AddressWaits />
           <LaterLink onPress={toSetup} />
@@ -953,7 +1083,7 @@ const Kyc = () => {
         </View>
       )}
 
-      {method === 'bvn' && bvnSent && (
+      {method === 'bvn' && bvnSent && !onboarding && (
         <View>
           <Hero icon="insurance" color={C_BVN} title="Confirm your BVN" sub={`Enter the 6-digit code${bvnOtpDestination ? ` sent to ${bvnOtpDestination}` : ' sent for your BVN'}.`} />
           {!!bvnDeliveryNotice && <Text accessibilityRole="alert" style={{ marginTop: 12, color: c.ink2, fontFamily: font.regular }}>{bvnDeliveryNotice}</Text>}
@@ -1116,6 +1246,14 @@ const Kyc = () => {
         </View>
       )}
     </Screen>
+    <FaceVerifyModal
+      url={faceSheet?.url || ''}
+      visible={!!faceSheet}
+      onClose={closeFaceSheet}
+      footer={onboarding
+        ? 'Your photo is used only to match your BVN and is never stored by Zitch. When it’s done, you come straight back to finish sign-up.'
+        : undefined}
+    />
     <FaceLivenessModal
       visible={upgradeCameraOpen}
       onClose={() => { upgradeCaptureOwner.current = null; setUpgradeCameraOpen(false); }}

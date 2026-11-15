@@ -133,26 +133,24 @@ describe('BuyCable response binding', () => {
     });
     expect(tree.root.findAllByProps({ accessibilityLabel: 'Stale GoTV Plan' })).toHaveLength(0);
 
+    // A complete smartcard number checks itself: the first (old) check is
+    // left pending while the customer types a different number.
     await act(async () => {
-      control(tree, 'Smartcard / IUC number').props.onChangeText('11111111');
-    });
-    let oldValidation!: Promise<void>;
-    await act(async () => {
-      oldValidation = control(tree, 'Validate IUC').props.onPress();
+      control(tree, 'Smartcard / IUC number').props.onChangeText('1111111111');
       await Promise.resolve();
     });
     await act(async () => {
-      control(tree, 'Smartcard / IUC number').props.onChangeText('22222222');
+      control(tree, 'Smartcard / IUC number').props.onChangeText('2222222222');
+      await Promise.resolve();
     });
     await act(async () => {
       resolveOldIuc({ ok: true, json: async () => ({ success: true, customer_name: 'Stale Subscriber' }) });
-      await oldValidation;
+      await Promise.resolve();
+      await Promise.resolve();
     });
-
-    expect(control(tree, 'Continue').props.disabled).toBe(true);
-    expect(control(tree, 'Validate IUC')).toBeTruthy();
-
-    await act(async () => { await control(tree, 'Validate IUC').props.onPress(); });
+    // The stale name never lands; the current number's own check resolves it.
+    expect(JSON.stringify(tree.toJSON())).not.toContain('Stale Subscriber');
+    expect(mockApiPost).toHaveBeenCalledTimes(2);
 
     await act(async () => {
       control(tree, 'DStv One').props.onPress();
@@ -162,17 +160,43 @@ describe('BuyCable response binding', () => {
 
     await act(async () => { control(tree, 'DStv Two').props.onPress(); });
     await act(async () => { await Promise.resolve(); });
-    expect(control(tree, 'Continue · ₦2,200').props.disabled).toBe(false);
+    expect(control(tree, 'Continue').props.disabled).toBe(false);
 
     await act(async () => {
       resolveFirstPrice({ json: async () => ({ cable_plans_price: '1100' }) });
       await Promise.resolve();
     });
-    expect(control(tree, 'Continue · ₦2,200').props.disabled).toBe(false);
+    expect(control(tree, 'Continue').props.disabled).toBe(false);
 
     expect(mockApiPost.mock.calls.map((call) => call[1])).toEqual([
-      { iuc: '11111111', cablenetwork: '2' },
-      { iuc: '22222222', cablenetwork: '2' },
+      { iuc: '1111111111', cablenetwork: '2' },
+      { iuc: '2222222222', cablenetwork: '2' },
     ]);
+  });
+
+  it('opens on the provider and smartcard of the most recent payment', async () => {
+    const recentsModule = jest.requireMock('@/lib/recents') as { useBillRecents: () => unknown };
+    const emptyRecents = recentsModule.useBillRecents;
+    const recents = {
+      phones: [], meters: [], betting: [], exam_phones: [],
+      smartcards: [
+        { iuc: '7012345678', provider: '2', name: 'DSTV HOME', last_used: '2026-11-01' },
+        { iuc: '1023456789', provider: '1', name: 'GOTV HOME', last_used: '2026-10-01' },
+      ],
+    };
+    recentsModule.useBillRecents = () => recents;
+    mockFetch.mockImplementation(() => Promise.resolve({ json: async () => ({ cable_plans: [] }) }));
+    mockApiPost.mockResolvedValue({ ok: true, json: async () => ({ success: true, customer_name: 'Dstv Home' }) });
+    let tree!: renderer.ReactTestRenderer;
+    try {
+      await act(async () => { tree = renderer.create(<BuyCable />); });
+      expect(control(tree, 'Smartcard / IUC number').props.value).toBe('7012345678');
+      expect(mockApiPost.mock.calls.map((call) => call[1])).toEqual([{ iuc: '7012345678', cablenetwork: '2' }]);
+      await act(async () => { control(tree, 'GoTV').props.onPress(); });
+      expect(control(tree, 'Smartcard / IUC number').props.value).toBe('1023456789');
+      act(() => tree.unmount());
+    } finally {
+      recentsModule.useBillRecents = emptyRecents;
+    }
   });
 });

@@ -138,14 +138,14 @@ describe('BuyData catalogue response binding', () => {
 
     await act(async () => { control(tree, 'Glo Two').props.onPress(); });
     await act(async () => { await Promise.resolve(); });
-    expect(control(tree, 'Continue · ₦2,200').props.disabled).toBe(false);
+    expect(control(tree, 'Continue').props.disabled).toBe(false);
 
     await act(async () => {
       resolveFirstPrice({ json: async () => ({ price: '1100' }) });
       await Promise.resolve();
     });
 
-    expect(control(tree, 'Continue · ₦2,200').props.disabled).toBe(false);
+    expect(control(tree, 'Continue').props.disabled).toBe(false);
     expect(tree.root.findAllByType(Text).some((node) =>
       String(node.props.children).includes('Stale MTN Plan'))).toBe(false);
   });

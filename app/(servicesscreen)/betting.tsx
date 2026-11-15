@@ -47,7 +47,7 @@ const Betting = () => {
     setCatalogueLoading(true);
     publicPost('/api/betting/list/', {}, 15000)
       .then((r) => { if (r.ok === false) throw new Error('Catalogue unavailable'); return r.json(); })
-      .then((res) => { if (current && Array.isArray(res.platforms)) { setPlatforms(res.platforms); if (res.platforms[0]) setSelected(res.platforms[0].code); } })
+      .then((res) => { if (current && Array.isArray(res.platforms)) setPlatforms(res.platforms); })
       .catch(() => {})
       .finally(() => { if (current) setCatalogueLoading(false); });
     return () => { current = false; };
@@ -57,6 +57,18 @@ const Betting = () => {
   // the betting account shows once the ID is in, where the platform can be checked.
   const recents = useBillRecents();
   const idEdited = useRef(false);
+  const platformChosen = useRef(false);
+  // The platform starts on the one last paid, when it is still listed, else the
+  // first; a platform the customer picks is kept.
+  useEffect(() => {
+    if (!platforms.length) return;
+    const listed = (code?: string) => !!code && platforms.some((p) => p.code === code);
+    if (platformChosen.current && listed(selected)) return;
+    const last = recents.betting[0]?.platform;
+    const next = listed(last) && !idEdited.current ? last! : listed(selected) ? selected : platforms[0].code;
+    if (next !== selected) setSelected(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platforms, recents]);
   const ids = recents.betting.filter((r) => r.platform === selected);
   useEffect(() => {
     if (idEdited.current || !selected) return;
@@ -171,7 +183,7 @@ const Betting = () => {
       <Label>Select platform</Label>
       {catalogueLoading ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Loading available platforms…</Text> : platforms.length === 0 ? <View style={{ marginBottom: 16 }}><Text style={{ color: c.ink3, fontFamily: font.regular }}>No platforms are available right now.</Text><Btn label="Try again" variant="outline" onPress={() => setQuoteRevision((value) => value + 1)} /></View> : null}
 
-      <ProviderGrid items={platforms.map((p) => ({ id: p.code, name: p.name, color: p.color }))} value={selected} onPick={(code) => { idEdited.current = false; setSelected(code); }} cols={3} borderless />
+      <ProviderGrid items={platforms.map((p) => ({ id: p.code, name: p.name, color: p.color }))} value={selected} onPick={(code) => { platformChosen.current = true; idEdited.current = false; setSelected(code); }} cols={3} borderless />
 
       <RecentField
         label="User ID"
@@ -210,7 +222,7 @@ const Betting = () => {
       <BalanceHint amount={amount} balance={balance} />
       {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
-      <Btn label={amount > 0 ? `Continue · ${money(amount)}` : 'Continue'} disabled={!valid} onPress={() => setStep('confirm')} />
+      <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
 
       <ConfirmSheet
         open={step === 'confirm'}

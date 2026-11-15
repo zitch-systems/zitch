@@ -3,9 +3,8 @@ import { View, Text, Pressable } from 'react-native';
 import { notify } from '@/components/design/Notify';
 import { router, Link } from 'expo-router';
 import { storeSession, getToken, getRememberedIdentifier, rememberIdentifier, getSessionGeneration } from '@/lib/secureStore';
-import { enforceHardExpiry, unlockSession } from '@/lib/session';
-import { pendingWhatsAppApproval } from '@/lib/pendingApproval';
-import { registerForPushNotifications, takePendingNotificationOpen } from '@/lib/notifications';
+import { enforceHardExpiry } from '@/lib/session';
+import { enterAccount as enterAccountShared } from '@/lib/enterAccount';
 import { publicPost } from '@/lib/api';
 import { EDGE_BLOCK_USER_MESSAGE, isEdgeBlockMessage } from '@/lib/netPatch';
 import { isBiometricAvailable, isBiometricEnabled, authenticate } from '@/lib/biometrics';
@@ -50,22 +49,8 @@ const Signin = () => {
     })().catch(() => { if (mounted.current) setBioReady(false); });
   }, []);
 
-  const enterAccount = async (generation: number) => {
-    const current = () => mounted.current && generation === getSessionGeneration();
-    if (!current()) return;
-    await unlockSession();
-    if (!current()) return;
-    // Bind this phone's push token to whoever is signing in now. Signup was the
-    // only registration, so a phone that changed hands kept delivering the
-    // previous customer's alerts, and a new phone never received any. No
-    // permission prompt here: it binds only where alerts are already allowed.
-    registerForPushNotifications(false).catch(() => {});
-    const token = await pendingWhatsAppApproval();
-    if (!current()) return;
-    const openNotifications = !token && await takePendingNotificationOpen().catch(() => false);
-    if (!current()) return;
-    router.replace(token ? { pathname: '/waapprove', params: { token } } : openNotifications ? '/notifications' : '/home');
-  };
+  const enterAccount = (generation: number) =>
+    enterAccountShared(() => mounted.current && generation === getSessionGeneration());
 
   const handleBiometricSignin = async () => {
     if (signinInFlight.current) return;
@@ -162,7 +147,7 @@ const Signin = () => {
   return (
     <Screen>
       <View style={{ alignItems: 'center', marginTop: 18, marginBottom: 26 }}>
-        <ZMark size={56} badge glow />
+        <ZMark size={56} />
         <Text style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1, marginTop: 16, textAlign: 'center' }}>Welcome back</Text>
         <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, fontFamily: font.regular, textAlign: 'center' }}>
           Sign in to continue to Zitch

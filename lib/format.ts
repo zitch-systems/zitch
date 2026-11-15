@@ -67,6 +67,17 @@ export const txnDate = (ts: number): string => {
   return `${MONTHS[d.getMonth()]} ${ordinal(d.getDate())}, ${hh}:${mm}`;
 };
 
+/** "Today · 9:14am", "Yesterday · 6:40pm", "14 Nov · 6:40pm" — when, in a short activity row. */
+export const whenLabel = (ts: number, now: number = Date.now()): string => {
+  const d = new Date(ts);
+  const h = d.getHours();
+  const time = `${h % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')}${h < 12 ? 'am' : 'pm'}`;
+  const startOf = (t: number) => { const x = new Date(t); x.setHours(0, 0, 0, 0); return x.getTime(); };
+  const days = Math.round((startOf(now) - startOf(ts)) / 86400000);
+  const day = days === 0 ? 'Today' : days === 1 ? 'Yesterday' : `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  return `${day} · ${time}`;
+};
+
 /** "15 Jul, 2026" — the date shown in a statement's start/end fields. */
 export const dayLabel = (ts: number): string => {
   const d = new Date(ts);
