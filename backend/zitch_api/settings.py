@@ -658,6 +658,18 @@ RESEND = {
 # selectable from a session that might be stolen. Unset => the admin export refuses,
 # rather than falling back to showing the record in a browser.
 COMPLIANCE_EXPORT_EMAIL = os.environ.get("COMPLIANCE_EXPORT_EMAIL", "").strip()
+# Who is emailed when a background job or money check raises an error-level alert
+# (utility/alerts.py). Comma-separated. Falls back to the back-office super admin's
+# address. With no recipient and no SENTRY_DSN, the scheduled jobs keep failing their
+# cron run on a finding, because that is then the only alarm anyone would see.
+OPS_ALERT_EMAILS = [
+    address.strip()
+    for address in (os.environ.get("OPS_ALERT_EMAILS", "").strip()
+                    or os.environ.get("DJANGO_SUPERUSER_EMAIL", "")).split(",")
+    if address.strip()
+]
+# The same alert is emailed again at most this often (it is still logged every time).
+OPS_ALERT_REPEAT_SECONDS = max(300, int(os.environ.get("OPS_ALERT_REPEAT_SECONDS", "21600") or 21600))
 # The partner bank's fee on a transfer to another bank (wallet/transfer_fees.py):
 # Wema's NIP schedule charge plus VAT, taken from the sender's own account by the
 # bank and debited by Zitch as its own "Transfer fee" row so the two balances
