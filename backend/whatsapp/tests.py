@@ -405,7 +405,7 @@ class ChannelTests(TestCase):
         welcome = WaMessageLog.objects.filter(
             msisdn=m, direction=WaMessageLog.OUT, text__contains="Welcome to Zitch").first()
         self.assertIsNotNone(welcome)
-        # Verification is no longer deferred to a "reply 8" the customer never
+        # Verification is no longer deferred to a "reply 9" the customer never
         # sends — account setup runs it — but the path stays named in the menu
         # for anyone who cancels out of it.
         self.assertIn("Verify my identity", welcome.text)
@@ -2576,7 +2576,7 @@ class ChatAccountSetupTests(TestCase):
         self.assertTrue(PendingAction.objects.filter(msisdn=m, action_type="add_account", state="otp").exists())
         complete.return_value = ({"success": False, "message": "This verification request has expired. Start account setup again."}, 400)
         self.inbound("00001", f"u4-{m}", msisdn=m)      # expired: flow ends, restart hinted
-        self.assertIn("Reply *5*", self.last_reply(m))
+        self.assertIn("Reply *6*", self.last_reply(m))
         self.assertFalse(PendingAction.objects.filter(msisdn=m, action_type="add_account").exists())
 
     def test_menu_lists_account_details_and_shows_them(self):

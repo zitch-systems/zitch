@@ -10,7 +10,7 @@ from .models import PendingAction
 
 RETIRED_SETUP_MESSAGE = (
     "That account setup is no longer available. "
-    "Reply 5 to add money or 7 to verify your identity."
+    "Reply 6 to add money or 8 to verify your identity."
 )
 
 

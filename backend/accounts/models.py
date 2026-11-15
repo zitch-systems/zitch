@@ -147,7 +147,7 @@ class User(AbstractUser):
     # way out of a repeat lock is a PIN reset (verified identity + a live SMS
     # code), which is deliberately NOT gated on the lock — see _start_pin_reset.
     PIN_MAX_ATTEMPTS = 5
-    PIN_LOCKOUT_MINUTES = 60                    # first lock: one hour
+    PIN_LOCKOUT_MINUTES = 30                    # first lock: 30 minutes
     PIN_LOCKOUT_ESCALATED_MINUTES = 24 * 60     # locked again without a correct PIN since
 
     phone = models.CharField(max_length=20, unique=True, null=True, blank=True)

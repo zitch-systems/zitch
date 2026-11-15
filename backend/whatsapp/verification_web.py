@@ -638,7 +638,7 @@ def _face_post(request, token):
     with transaction.atomic():
         pa, user = _face_resolve(_decode(token), lock=True)
         if pa is None or pa.payload.get("tier") != 2 or pa.state == FACE_FAILED:
-            return _json(410, status="closed", message="This link has closed. Reply 7 in WhatsApp for a new one.")
+            return _json(410, status="closed", message="This link has closed. Reply 8 in WhatsApp for a new one.")
         if pa.state in (FACE_PROCESSING, FACE_PENDING):
             return _json(202, status="pending", message=FACE_PENDING_TEXT)
         if pa.state == COMPLETE or (user.face_verified and user.tier >= 2):
@@ -745,7 +745,7 @@ FACE_RETRY_TEXT = ("Your bank could not confirm your face. Take the photo again 
 FACE_DONE_TEXT = ("✅ *Tier 2 verification complete.*\n\n"
                   "Your face check passed and your account limits have been upgraded.")
 FACE_FAILED_TEXT = ("❌ *Your face check wasn't confirmed.*\n\n"
-                    "Nothing changed on your account. Reply *7* to try again in good light.")
+                    "Nothing changed on your account. Reply *8* to try again in good light.")
 
 
 def notify_face_results(limit: int = FACE_SWEEP_LIMIT) -> int:
