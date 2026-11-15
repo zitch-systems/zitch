@@ -64,6 +64,12 @@ class Command(BaseCommand):
             if code != 0:
                 problems.append((job, code, run.attempts))
 
+        # The other services: is the worker alive, is the alert outbox moving?
+        from utility import watchdog
+
+        watchdog.check_worker()
+        watchdog.check_alert_outbox()
+
         try:
             schedule.forget_old_runs(now)
         except Exception:  # noqa: BLE001 - housekeeping retries on the next run

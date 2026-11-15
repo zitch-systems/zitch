@@ -56,6 +56,18 @@ def _dispatch_alerts_until_stopped(stop, interval, concurrency, stderr):
         connections.close_all()
 
 
+def _check_scheduler():
+    try:
+        close_old_connections()
+        from utility.watchdog import check_scheduler
+
+        check_scheduler()
+    except Exception:  # noqa: BLE001 - the watchdog must never stop the worker
+        pass
+    finally:
+        connections.close_all()
+
+
 class Command(BaseCommand):
     help = "Process durable WhatsApp messages and retry terminal transaction alerts."
 
@@ -214,6 +226,8 @@ class Command(BaseCommand):
         next_account_repair = time.monotonic()
         next_credit_poll = time.monotonic()
         next_expected_poll = time.monotonic()
+        next_heartbeat = time.monotonic()
+        next_scheduler_check = time.monotonic() + 300
         expected_poll_interval = 2.0 if settings.WEMA_EXPECTED_DEPOSIT_MINUTES > 0 else 0
 
         alert_thread = None
@@ -259,6 +273,16 @@ class Command(BaseCommand):
                     daemon=True,
                 ).start()
                 next_expected_poll = now + expected_poll_interval
+
+            if not options["once"] and now >= next_heartbeat:
+                from utility.watchdog import beat_worker
+
+                beat_worker()
+                next_heartbeat = now + 30
+            if not options["once"] and now >= next_scheduler_check:
+                threading.Thread(target=_check_scheduler, name="scheduler-watchdog",
+                                 daemon=True).start()
+                next_scheduler_check = now + 300
 
             inbound, outbound = process_once(batch)
             if options["once"]:
