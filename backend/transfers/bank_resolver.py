@@ -72,6 +72,10 @@ _STOPWORDS = frozenset({
     "old", "one", "two", "three", "five", "ten", "hundred", "thousand", "million",
     "the", "best", "good", "great", "home", "life", "first", "union", "unity",
     "hope", "trust", "capital", "global", "people", "standard", "royal",
+    # Replies, not banks: "yes" is YES MFB's only distinctive word, and a "yes"
+    # typed at the bank question must not pick it.
+    "yes", "yeah", "yep", "no", "nope", "ok", "okay", "done", "sure", "fine", "correct",
+    "right", "wrong", "cancel", "stop", "back", "next", "again", "same", "that", "this",
 })
 
 #: The short names people use for the banks we carry, by our own slug. Several
@@ -425,10 +429,14 @@ def _curated(bank) -> bool:
     return bank.code in CANONICAL_NAMES
 
 
+_IDENTITY_SLUG = {identity: slug for slug, ids in _CANONICAL_KEYS.items() for identity in ids}
+
+
 def _dedupe(banks: list) -> list:
-    """One row per bank. Two rows with one bank code, or with names that read the
-    same ("ACCESS BANK" imported beside our "Access Bank"), are one bank listed
-    twice; the first one kept is the best ranked."""
+    """One row per bank. Two rows with one bank code, with names that read the
+    same ("ACCESS BANK" imported beside our "Access Bank"), or that are both one of
+    the banks we list ("UNITED BANK FOR AFRICA" beside our "UBA") are one bank
+    listed twice; the first one kept is the best ranked."""
     seen, out = set(), []
     for bank in banks:
         code = "".join(ch for ch in (bank.bank_code or "") if ch.isdigit())
@@ -436,6 +444,9 @@ def _dedupe(banks: list) -> list:
         identity = _identity(bank.name)
         if identity[0]:
             keys.add(identity)
+        slug = bank.code if bank.code in CANONICAL_NAMES else _IDENTITY_SLUG.get(identity)
+        if slug:
+            keys.add(f"slug:{slug}")
         if keys & seen:
             continue
         seen |= keys
@@ -503,17 +514,19 @@ def match_banks(text: str, banks) -> list:
     if not t:
         return []
     banks = list(banks)
-    exact = [b for b in banks if " ".join(tokens(b.name)) == t]
-    if exact:
-        return _dedupe(exact)
     index = BankIndex(banks)
     mentions = find_mentions(text, index, whole_answer=True)
     strength, named, _phrase = strongest(mentions)
-    if named:
-        return _ranked(named.values())
+    # An exact name is one of the answers, ranked with the rest, so the rail's
+    # "UNITED BANK FOR AFRICA" still comes back as our UBA, listed once.
+    pool = {b.pk: b for b in banks if " ".join(tokens(b.name)) == t}
+    pool.update(named)
+    if pool:
+        return _ranked(pool.values())
     # Half a word: "zen", "moni", "provid". Prefix of a word in the name, and the
     # old whole-substring rule, so a fragment still finds every bank it could be.
-    if len(t) >= 3:
+    # Never for a reply that is an ordinary word: "yes" starts "YES MFB".
+    if len(t) >= 3 and t not in _STOPWORDS:
         hits = [b for b in banks
                 if t in (b.name or "").lower()
                 or any(w.startswith(t) for w in tokens(b.name))]

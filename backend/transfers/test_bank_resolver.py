@@ -199,3 +199,30 @@ class NamesakeTests(TestCase):
         self.assertNotIn(self.bank, router.nuban_bank_candidates(acct))
         res = router._bank_resolution(f"send 5k to {acct} parallex bank", acct)
         self.assertIn(self.mfb, [res.bank] + res.choices)
+
+
+class RailListTests(TestCase):
+    """Rows as Wema's GetAllBanks names them, beside our own."""
+
+    def setUp(self):
+        for code, name, bank_code, popular in (
+                ("uba", "UBA", "033", True), ("nip000004", "UNITED BANK FOR AFRICA", "000004", False),
+                ("zenith", "Zenith Bank", "057", True), ("nip100034", "ZENITH EASY WALLET", "100034", False),
+                ("gtb", "GTBank", "058", True), ("nip100009", "GT MOBILE", "100009", False),
+                ("nip090142", "YES MFB", "090142", False)):
+            Bank.objects.create(code=code, name=name, bank_code=bank_code, popular=popular,
+                                active=True, color="#000")
+
+    def test_one_of_our_banks_listed_again_by_the_rail_is_offered_once(self):
+        self.assertEqual([b.code for b in router._match_banks("uba")], ["uba"])
+        self.assertEqual([b.code for b in router._match_banks("united bank for africa")], ["uba"])
+
+    def test_a_banks_wallet_product_is_not_the_bank(self):
+        self.assertEqual([b.code for b in router._match_banks("zenith")], ["zenith"])
+        self.assertEqual([b.code for b in router._match_banks("gt")], ["gtb"])
+        self.assertEqual([b.code for b in router._match_banks("zenith easy wallet")], ["nip100034"])
+
+    def test_a_reply_is_not_a_bank(self):
+        for reply in ("yes", "ok", "no"):
+            self.assertEqual(router._match_banks(reply), [], reply)
+        self.assertEqual([b.code for b in router._match_banks("yes mfb")], ["nip090142"])
