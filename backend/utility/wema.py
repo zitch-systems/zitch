@@ -3209,8 +3209,12 @@ _LEGEND_SETTING = {
 def _vas_legend(product: str) -> dict[str, str]:
     """The configured integer→outcome map for a VAS status check, or {} when unset.
 
-    The live integration's confirmed payment legend is 200=success, 400=failed and
-    401=unauthorized/authentication-failed/invalid-API. This still reads a separate
+    The live integration's confirmed payment legend (16 Nov 2026) is 200=success,
+    400=failed, 401=unauthorized/authentication-failed/invalid-API, 404=not found and
+    500=internal server error. Production maps it as
+    ``200=success 400=failed 401=failed 404=pending 500=pending``: neither a 404 nor a
+    500 proves the purchase did not run, so both stay pending, and a purchase the bank
+    never asked to authorise is still released by providers.vas_never_authorised. This still reads a separate
     map per product from configuration: contract changes then fail closed instead of
     silently reclassifying in-flight money.
 
