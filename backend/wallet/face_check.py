@@ -109,7 +109,7 @@ def liveness_required() -> bool:
 def log_outcome(channel: str, user, result: FaceCheck) -> None:
     """Numbers only: never images, identities or provider payloads."""
     keys = ("faces", "face_width", "eye_distance", "yaw", "roll", "face_mean", "blur",
-            "frames", "matched", "turn", "rotated")
+            "frames", "matched", "turn", "frame_codes", "rotated")
     measured = " ".join(f"{key}={result.metrics[key]}" for key in keys if key in result.metrics)
     log.info("tier2_face_check channel=%s user=%s code=%s frame=%s %s",
              channel, user.pk, result.code, result.index, measured)

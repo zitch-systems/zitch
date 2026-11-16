@@ -91,7 +91,7 @@
   // Straight photos go to the bank (our server keeps the clearest); the
   // head-turn frames are only measured by our server. Never mirrored: the
   // bank compares the photo with the one on the customer's ID.
-  var FRONT_SIDE = 1280, TURN_SIDE = 480;
+  var FRONT_SIDE = 1280, TURN_SIDE = 640;  // 640: short side 360 px on a 16:9 camera
   var STRAIGHT_FRAMES = 3, STRAIGHT_GAP = 250, TURN_FRAMES = 8, TURN_GAP = 250, TURN_LEAD = 700;
   var STALE_PHOTO_MS = 10 * 60 * 1000;
   var $ = function (id) { return document.getElementById(id); };

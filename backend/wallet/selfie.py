@@ -63,6 +63,12 @@ MAX_PIXELS = 40_000_000          # JPEG: decoded at 1/2-1/8 scale (draft)
 MAX_PIXELS_FULL_DECODE = 12_000_000
 MIN_SHORT_SIDE = 320
 MIN_LONG_SIDE = 400
+#: Head-turn frames are only measured here, never sent to the bank, so they need
+#: only enough pixels to find a face. The page scales them to 480 px on the long
+#: side; a 16:9 camera makes that 270x480, under the bank photo's 320 px minimum,
+#: and on 16 Nov 2026 every turn frame from such a phone was refused unseen.
+TURN_MIN_SHORT_SIDE = 160
+TURN_MIN_LONG_SIDE = 200
 MAX_ASPECT = 2.4
 #: What the bank receives: enough for a face match, small enough to upload fast.
 BANK_LONG_SIDE = 1280
@@ -344,7 +350,7 @@ def _fit(image: Image.Image, long_side: int) -> Image.Image:
     return image.resize(size, Image.Resampling.LANCZOS, reducing_gap=3.0)
 
 
-def _open(raw: bytes):
+def _open(raw: bytes, *, min_short: int = MIN_SHORT_SIDE, min_long: int = MIN_LONG_SIDE):
     """``(upright RGB image, clean)`` or ``(None, code)``. ``clean`` means the
     upload is a JPEG with no metadata that needed no turning or resizing."""
     try:
@@ -372,7 +378,7 @@ def _open(raw: bytes):
             Image.DecompressionBombWarning, Image.DecompressionBombError):
         return None, "selfie_unreadable"
     width, height = image.size
-    if (min(width, height) < MIN_SHORT_SIDE or max(width, height) < MIN_LONG_SIDE):
+    if min(width, height) < min_short or max(width, height) < min_long:
         return None, "selfie_too_small"
     if max(width, height) / min(width, height) > MAX_ASPECT:
         return None, "selfie_unreadable"
@@ -513,7 +519,8 @@ def assess(value, *, frontal: bool = True) -> Selfie:
     if code:
         return Selfie(code)
     selfie = Selfie(digest=hashlib.sha256(raw).hexdigest())
-    image, clean = _open(raw)
+    image, clean = (_open(raw) if frontal
+                    else _open(raw, min_short=TURN_MIN_SHORT_SIDE, min_long=TURN_MIN_LONG_SIDE))
     if image is None:
         selfie.code = clean
         return selfie
@@ -658,11 +665,15 @@ def verify_head_turn(frontal: Selfie, frames) -> tuple[str, dict]:
         return "liveness_missing", {}
     seen = matched = 0
     turn = 0.0
+    refused = Counter()
     for value in frames:
         turned = assess(value, frontal=False)
         if turned.code == "selfie_many_faces":
             return "liveness_mismatch", {"frames": len(frames), "faces": seen}
         if not turned.ok or turned.face is None:
+            # Why each frame went unseen, so a refusal like 16 Nov 2026's (every
+            # frame too small, reported only as "no face") shows in the log.
+            refused[turned.code if not turned.ok else "selfie_no_face"] += 1
             continue
         seen += 1
         if not _consistent(frontal, turned):
@@ -670,6 +681,8 @@ def verify_head_turn(frontal: Selfie, frames) -> tuple[str, dict]:
         matched += 1
         turn = max(turn, abs(turned.face.yaw - frontal.face.yaw))
     metrics = {"frames": len(frames), "faces": seen, "matched": matched, "turn": round(turn, 3)}
+    if refused:
+        metrics["frame_codes"] = ",".join(f"{code}:{n}" for code, n in sorted(refused.items()))
     if not seen:
         return "liveness_no_face", metrics
     if not matched:
