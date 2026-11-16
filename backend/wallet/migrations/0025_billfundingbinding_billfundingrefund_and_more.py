@@ -8,7 +8,6 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('wallet', '0024_bankhistorycheckpoint'),
-        ('wema_vas', '0003_durable_bank_evidence'),
     ]
 
     operations = [
@@ -20,7 +19,6 @@ class Migration(migrations.Migration):
                 ('approval_reference', models.CharField(blank=True, max_length=256)),
                 ('created', models.DateTimeField(auto_now_add=True)),
                 ('transaction', models.OneToOneField(on_delete=django.db.models.deletion.PROTECT, related_name='bill_funding', to='wallet.transaction')),
-                ('vas_account', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, related_name='bill_fundings', to='wema_vas.virtualaccount')),
             ],
         ),
         migrations.CreateModel(

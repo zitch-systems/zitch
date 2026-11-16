@@ -147,10 +147,15 @@ class RefusedInTheBodyUnderHttp200Tests(BillerTransportSourceMixin, SimpleTestCa
         self.assertFalse(res["pending"], "an auth refusal must not be left pending")
         self.assertFalse(res["success"])
 
-        with mock.patch("utility.alerts.alert"):
+        with mock.patch("utility.alerts.alert") as paged:
             shown = customer_safe_failure(res, service="airtime")
         self.assertEqual(shown, PROVIDER_REFUSED_MESSAGE)
         self.assertNotIn("Authentication", shown)
+        # The page names the real cause (the bank's authentication step and our
+        # Authentication URL), not the retired "not entitled for this tenant" guess.
+        page = paged.call_args.args[0]
+        self.assertIn("Authentication URL", page)
+        self.assertNotIn("entitled", page)
 
     @override_settings(WEMA=WEMA_LIVE)
     def test_the_other_refusal_wordings(self):

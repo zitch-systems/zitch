@@ -1,10 +1,13 @@
-"""Schema retirement refuses data loss and preserves active payment protections."""
+"""Schema retirement refuses data loss and preserves active payment protections.
+
+The wema_vas tombstone app that once described the retired tables is gone, so
+migration 0031 works from table names alone. These tests build the leftovers by
+hand, the way an old database still carries them.
+"""
 import importlib
 
-from django.apps import apps
 from django.db import connection, IntegrityError, transaction
 from django.test import TransactionTestCase, override_settings
-from django.utils import timezone
 
 from wallet.funding_test_fixtures import funding_hold
 from wallet.models import BillFundingBinding, BillFundingRefund, Transaction, UnsettledFunding, Wallet
@@ -12,52 +15,56 @@ from wallet.services import debit, refund
 from wallet.tests import make_user
 
 remove = importlib.import_module("wallet.migrations.0031_drop_retired_account_schema")
-detach = importlib.import_module("wallet.migrations.0030_detach_retired_funding")
-old_guards = importlib.import_module("legacy_funding.migrations.0003_durable_bank_evidence")
-bill_guards = importlib.import_module("wallet.migrations.0026_bill_funding_immutable")
-
-
-class FixtureRollback(Exception):
-    pass
 
 
 @override_settings(WEMA_PARTNERSHIP_MODE="active", WEMA_BILLER_MODE="active")
 class RetiredSchemaTests(TransactionTestCase):
-    def setUp(self):
-        self.old = remove.historical_apps(connection)
-        with connection.schema_editor() as editor:
-            for name in ("MigrationApproval", "VirtualAccount", "Receipt"):
-                editor.create_model(self.old.get_model("wema_vas", name))
-            binding = self.old.get_model("wallet", "BillFundingBinding")
-            editor.add_field(binding, binding._meta.get_field("vas_account"))
-            old_guards.install(self.old, editor)
-            bill_guards.remove(self.old, editor)
-            bill_guards.install(self.old, editor)
+    def build_leftovers(self):
+        with connection.cursor() as cursor:
+            for table in remove.RETIRED_TABLES:
+                cursor.execute(f"CREATE TABLE {table} (id integer PRIMARY KEY)")
+            cursor.execute("ALTER TABLE wallet_billfundingbinding ADD COLUMN vas_account_id integer NULL")
+            if connection.vendor == "postgresql":
+                for name in ("wema_vas_account_immutable_fn", "wema_vas_evidence_immutable_fn"):
+                    cursor.execute(f"CREATE FUNCTION {name}() RETURNS trigger AS $$ BEGIN "
+                                   "RETURN NEW; END; $$ LANGUAGE plpgsql")
 
     def tearDown(self):
-        if "wema_vas_virtualaccount" in connection.introspection.table_names():
-            self.remove_schema()
+        tables = set(connection.introspection.table_names())
+        with connection.cursor() as cursor:
+            for table in remove.RETIRED_TABLES:
+                if table in tables:
+                    cursor.execute(f"DELETE FROM {table}")
+        self.remove_schema()
         super().tearDown()
 
     def remove_schema(self):
         with connection.schema_editor() as editor:
-            remove.drop_empty_schema(apps, editor)
+            remove.drop_empty_schema(None, editor)
 
-    def test_nonempty_schema_stops_both_stages_without_deleting_records(self):
-        user, _ = make_user("08077770001", "schema-gate@example.test")
-        Account = self.old.get_model("wema_vas", "VirtualAccount")
-        with self.assertRaises(FixtureRollback), transaction.atomic():
-            account = Account.objects.create(user_id=user.pk, number="9990000001", prefix="999",
-                display_name="Zitch/Test", encrypted_identity="test", verification_reference="proof",
-                consent_reference="consent", verified_at=timezone.now(), mode="live")
-            # The gate runs before any schema mutation in either migration.
-            for operation in (detach.require_empty, remove.drop_empty_schema):
-                with self.assertRaisesRegex(RuntimeError, "not empty"):
-                    operation(self.old, connection.schema_editor())
-                self.assertTrue(Account.objects.filter(pk=account.pk).exists())
-            raise FixtureRollback
+    def binding_columns(self):
+        with connection.cursor() as cursor:
+            return {c.name for c in connection.introspection.get_table_description(
+                cursor, "wallet_billfundingbinding")}
+
+    def test_a_fresh_database_has_nothing_to_drop(self):
+        self.remove_schema()
+        self.assertFalse(any(t.startswith("wema_vas_") for t in connection.introspection.table_names()))
+        self.assertNotIn("vas_account_id", self.binding_columns())
+
+    def test_nonempty_schema_stops_without_deleting_records(self):
+        self.build_leftovers()
+        with connection.cursor() as cursor:
+            cursor.execute("INSERT INTO wema_vas_virtualaccount (id) VALUES (1)")
+        with self.assertRaisesRegex(RuntimeError, "not empty"):
+            self.remove_schema()
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM wema_vas_virtualaccount")
+            self.assertEqual(cursor.fetchone()[0], 1)
+        self.assertIn("vas_account_id", self.binding_columns())
 
     def test_empty_schema_removal_preserves_money_and_partnership_bill_refunds(self):
+        self.build_leftovers()
         user, _ = make_user("08077770002", "schema-money@example.test", balance="1000", tier=3)
         Wallet.objects.filter(user=user).update(account_number="0457777002")
         bill = debit(user, "100", "Airtime — MTN")
@@ -66,12 +73,8 @@ class RetiredSchemaTests(TransactionTestCase):
         ledger = list(Transaction.objects.order_by("pk").values())
         balances = list(Wallet.objects.order_by("pk").values_list("pk", "balance"))
         self.remove_schema()
-        tables = connection.introspection.table_names()
-        self.assertFalse(any(table.startswith("wema_vas_") for table in tables))
-        self.assertEqual(list(apps.get_app_config("wema_vas").get_models()), [])
-        with connection.cursor() as cursor:
-            columns = connection.introspection.get_table_description(cursor, "wallet_billfundingbinding")
-        self.assertNotIn("vas_account_id", {column.name for column in columns})
+        self.assertFalse(any(t.startswith("wema_vas_") for t in connection.introspection.table_names()))
+        self.assertNotIn("vas_account_id", self.binding_columns())
         self.assertEqual(list(Transaction.objects.order_by("pk").values()), ledger)
         self.assertEqual(list(Wallet.objects.order_by("pk").values_list("pk", "balance")), balances)
         self.assertTrue(UnsettledFunding.objects.filter(pk=hold.pk, amount="100").exists())

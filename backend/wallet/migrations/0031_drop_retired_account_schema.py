@@ -1,30 +1,38 @@
 """Drop the empty retired schema after all services use the detached runtime."""
-import importlib
-
 from django.db import migrations
-from django.db.migrations.loader import MigrationLoader
 
 
-def historical_apps(connection):
-    return MigrationLoader(connection).project_state([
-        ("wallet", "0029_retired_funding_archive"),
-        ("wema_vas", "0004_separate_account_modes"),
-    ]).apps
+RETIRED_TABLES = ("wema_vas_receipt", "wema_vas_migrationapproval", "wema_vas_virtualaccount")
 
 
 def drop_empty_schema(_apps, schema_editor):
+    """Drop whatever is left of the retired wema_vas schema, by name.
+
+    The tombstone app that described these tables has been deleted, so this works
+    from table names alone and is a no-op where they never existed (every fresh
+    database). A retired table that still holds rows stops the migration.
+    """
     connection = schema_editor.connection
-    old = historical_apps(connection)
-    models = [old.get_model("wema_vas", name)
-              for name in ("Receipt", "MigrationApproval", "VirtualAccount")]
-    binding = old.get_model("wallet", "BillFundingBinding")
-    if connection.vendor == "postgresql":
+    existing = set(connection.introspection.table_names())
+    present = [table for table in RETIRED_TABLES if table in existing]
+    with connection.cursor() as cursor:
+        binding_columns = {c.name for c in connection.introspection.get_table_description(
+            cursor, "wallet_billfundingbinding")}
+    if connection.vendor == "postgresql" and present:
         # Close the count/drop race and wait for any final old-schema statement.
-        tables = [binding._meta.db_table] + [model._meta.db_table for model in models]
+        tables = ["wallet_billfundingbinding"] + present
         schema_editor.execute("LOCK TABLE " + ", ".join(map(schema_editor.quote_name, tables))
                               + " IN ACCESS EXCLUSIVE MODE")
-    gate = importlib.import_module("wallet.migrations.0030_detach_retired_funding")
-    gate.require_empty(old, schema_editor)
+    with connection.cursor() as cursor:
+        counts = {}
+        for table in present:
+            cursor.execute("SELECT COUNT(*) FROM " + schema_editor.quote_name(table))
+            counts[table] = cursor.fetchone()[0]
+        if "vas_account_id" in binding_columns:
+            cursor.execute("SELECT COUNT(*) FROM wallet_billfundingbinding WHERE vas_account_id IS NOT NULL")
+            counts["linked_bills"] = cursor.fetchone()[0]
+    if any(counts.values()):
+        raise RuntimeError(f"Retired account schema is not empty; refusing removal: {counts}")
     if connection.vendor == "postgresql":
         # Keep the active bill reservation/refund checks; only remove the retired
         # account branch. Immutability triggers remain enabled throughout.
@@ -49,20 +57,18 @@ def drop_empty_schema(_apps, schema_editor):
                 RETURN NEW;
             END; $$ LANGUAGE plpgsql
         """)
-    schema_editor.remove_field(binding, binding._meta.get_field("vas_account"))
-    for model in models:
+    if "vas_account_id" in binding_columns:
+        schema_editor.execute("ALTER TABLE wallet_billfundingbinding DROP COLUMN vas_account_id")
+    for table in present:
         # Deliberately no CASCADE: unexpected dependencies must stop removal.
-        schema_editor.execute("DROP TABLE " + schema_editor.quote_name(model._meta.db_table))
+        schema_editor.execute("DROP TABLE " + schema_editor.quote_name(table))
     if connection.vendor == "postgresql":
-        schema_editor.execute("DROP FUNCTION wema_vas_account_immutable_fn()")
-        schema_editor.execute("DROP FUNCTION wema_vas_evidence_immutable_fn()")
-    print("Retired schema removed: 3 empty tables, bill foreign key and retired triggers; "
-          "Partnership ledger, bill protections and outstanding liabilities retained.")
+        schema_editor.execute("DROP FUNCTION IF EXISTS wema_vas_account_immutable_fn()")
+        schema_editor.execute("DROP FUNCTION IF EXISTS wema_vas_evidence_immutable_fn()")
 
 
 class Migration(migrations.Migration):
-    dependencies = [("wallet", "0030_detach_retired_funding"),
-                    ("wema_vas", "0005_remove_runtime_models")]
+    dependencies = [("wallet", "0030_detach_retired_funding")]
     # Schema retirement is intentionally roll-forward only. Old provider code is
     # never restored by an application rollback.
     operations = [migrations.RunPython(drop_empty_schema)]
