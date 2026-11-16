@@ -10,6 +10,8 @@ import type { FundingAccount } from '@/lib/services/wallet';
 import FaceLivenessModal, { type FaceCapture } from '@/components/design/FaceLivenessModal';
 import FaceVerifyModal from '@/components/design/FaceVerifyModal';
 import { CodeBoxes, resendLabel } from '@/components/design/CodeBoxes';
+import { PasteCode } from '@/components/design/PasteCode';
+import { extractCode } from '@/lib/code';
 import AuthGuard from '@/components/AuthGuard';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Tap } from '@/components/design/ui';
@@ -878,8 +880,9 @@ const Kyc = () => {
               </>
             ) : (
               <>
-                <Field editable={!busy} label="Email verification code" textContentType="oneTimeCode" maxLength={6} placeholder="6-digit code" keyboardType="number-pad" value={emailOtp}
-                  onChangeText={(value) => setEmailOtp(value.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
+                <Field editable={!busy} label="Email verification code" textContentType="oneTimeCode" placeholder="6-digit code" keyboardType="number-pad" value={emailOtp}
+                  onChangeText={(value) => setEmailOtp(extractCode(value, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
+                  suffix={<PasteCode onCode={setEmailOtp} disabled={busy} />} />
                 <Tap
                   disabled={busy}
                   onPress={() => { setEmailSent(false); setEmailOtp(''); }}
@@ -928,9 +931,12 @@ const Kyc = () => {
             )}
             {bvnSent && (!status.identity_face_available || bvnVia === 'sms') ? (
               <View style={{ marginTop: 18 }}>
-                <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2 }}>
-                  Enter the code sent to {bvnOtpDestination || 'the phone on your BVN'}
-                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <Text style={{ flex: 1, fontSize: 13, fontFamily: font.semibold, color: c.ink2 }}>
+                    Enter the code sent to {bvnOtpDestination || 'the phone on your BVN'}
+                  </Text>
+                  <PasteCode onCode={setBvnOtp} disabled={busy} />
+                </View>
                 {!!bvnDeliveryNotice && <Text accessibilityRole="alert" style={{ marginTop: 8, color: c.ink2, fontFamily: font.regular }}>{bvnDeliveryNotice}</Text>}
                 <CodeBoxes
                   value={bvnOtp}
@@ -988,7 +994,7 @@ const Kyc = () => {
           <Hero icon="insurance" color={C_BVN} title="Confirm your BVN" sub={`Enter the 6-digit code${bvnOtpDestination ? ` sent to ${bvnOtpDestination}` : ' sent for your BVN'}.`} />
           {!!bvnDeliveryNotice && <Text accessibilityRole="alert" style={{ marginTop: 12, color: c.ink2, fontFamily: font.regular }}>{bvnDeliveryNotice}</Text>}
           <View style={{ marginTop: 22 }}>
-            <Field editable={!busy} label="Verification code" autoComplete="sms-otp" textContentType="oneTimeCode" maxLength={6} placeholder="6-digit code" keyboardType="number-pad" value={bvnOtp} onChangeText={(v) => setBvnOtp(v.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
+            <Field editable={!busy} label="Verification code" autoComplete="sms-otp" textContentType="oneTimeCode" placeholder="6-digit code" keyboardType="number-pad" value={bvnOtp} onChangeText={(v) => setBvnOtp(extractCode(v, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} suffix={<PasteCode onCode={setBvnOtp} disabled={busy} />} />
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }}>
               <Tap accessibilityLabel="Change BVN" disabled={busy} onPress={() => { setBvnSent(false); setBvnOtp(''); setBvnTrackingId(''); setBvnOtpDestination(''); }} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.semibold }}>Change BVN</Text></Tap>
               <Tap accessibilityLabel="Resend BVN code" disabled={busy} onPress={() => void resendBvn()} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ fontSize: 12.5, color: busy ? c.ink3 : c.brand, fontFamily: font.semibold }}>Resend code</Text></Tap>
@@ -1024,7 +1030,7 @@ const Kyc = () => {
           <Hero icon="card" color={C_NIN} title="Confirm your NIN" sub={`Enter the 6-digit code${ninOtpDestination ? ` sent to ${ninOtpDestination}` : ' sent for your NIN'}.`} />
           {!!ninDeliveryNotice && <Text accessibilityRole="alert" style={{ marginTop: 12, color: c.ink2, fontFamily: font.regular }}>{ninDeliveryNotice}</Text>}
           <View style={{ marginTop: 22 }}>
-            <Field editable={!busy} label="Verification code" autoComplete="sms-otp" textContentType="oneTimeCode" maxLength={6} placeholder="6-digit code" keyboardType="number-pad" value={ninOtp} onChangeText={(v) => setNinOtp(v.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
+            <Field editable={!busy} label="Verification code" autoComplete="sms-otp" textContentType="oneTimeCode" placeholder="6-digit code" keyboardType="number-pad" value={ninOtp} onChangeText={(v) => setNinOtp(extractCode(v, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} suffix={<PasteCode onCode={setNinOtp} disabled={busy} />} />
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }}>
               <Tap accessibilityLabel="Change NIN" disabled={busy} onPress={() => { setNinSent(false); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); }} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.semibold }}>Change NIN</Text></Tap>
               <Tap accessibilityLabel="Resend NIN code" disabled={busy} onPress={() => void resendNin()} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ fontSize: 12.5, color: busy ? c.ink3 : c.brand, fontFamily: font.semibold }}>Resend code</Text></Tap>

@@ -12,6 +12,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Btn, Field } from '@/components/design/ui';
 import { Stepper } from '@/components/design/Stepper';
+import { PasteCode } from '@/components/design/PasteCode';
 import { CodeBoxes, resendLabel, type CodeBoxesHandle } from '@/components/design/CodeBoxes';
 import { useTheme, font } from '@/lib/theme';
 
@@ -316,7 +317,10 @@ const OTPVerification = () => {
         </Pressable>
       </View>
 
-      <Text style={{ fontSize: 15, fontFamily: font.extrabold, color: c.ink1, marginTop: 22 }}>Enter the code</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 22 }}>
+        <Text style={{ fontSize: 15, fontFamily: font.extrabold, color: c.ink1 }}>Enter the code</Text>
+        <PasteCode length={OTP_LEN} onCode={setOtp} disabled={isCheckingOtp || isResending} />
+      </View>
       <CodeBoxes
         ref={inputRef}
         value={otp}
