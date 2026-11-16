@@ -49,7 +49,13 @@ def make_user(phone, email, pin="1234", balance="0", tier=1, identity_verified=T
     u.save()
     get_or_create_wallet(u)
     if Decimal(balance) > 0:
-        credit(u, Decimal(balance), "Seed")
+        # A fixture balance, not a live credit: seed it outside the guard that
+        # refuses credits to wallets with no Wema account on a live deploy
+        # (tests that patch wema_live on for the whole class build users here).
+        from unittest import mock as _mock
+
+        with _mock.patch("utility.wema.wema_live", return_value=False):
+            credit(u, Decimal(balance), "Seed")
     return u, AccessToken.issue(u).key
 
 
