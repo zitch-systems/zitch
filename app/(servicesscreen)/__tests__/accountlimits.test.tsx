@@ -1,6 +1,7 @@
 import React, { type ReactNode } from 'react';
 import renderer, { act } from 'react-test-renderer';
 import { router } from 'expo-router';
+import { notify } from '@/components/design/Notify';
 import AccountLimits from '@/app/(servicesscreen)/accountlimits';
 
 const mockApiJson = jest.fn();
@@ -41,6 +42,8 @@ const state = { success: true, tier: 1, transaction_limit: '50000', daily_transf
 
 beforeEach(() => {
   mockApiJson.mockReset();
+  (router.push as jest.Mock).mockClear();
+  (notify as jest.Mock).mockClear();
   mockWallet.accountNumber = '';
   mockWallet.accountName = '';
 });
@@ -163,15 +166,16 @@ it('does not turn boolean limit values into money while retaining a confirmed ze
   act(() => tree.unmount());
 });
 
+const ladder = [
+  { tier: 1, name: 'Verified', per_transfer: '50000', daily_transfer: '50000', daily_bill: '20000' },
+  { tier: 2, name: 'Enhanced', per_transfer: '200000', daily_transfer: '1000000', daily_bill: '100000' },
+  { tier: 3, name: 'Premium', per_transfer: '5000000', daily_transfer: '5000000', daily_bill: '500000' },
+];
+
 it('shows the tier ladder from the server and answers Verify Tier 3 with what the server says', async () => {
-  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? {
-    ...state, tier: 2, address: '12 Allen Avenue, Ikeja, Lagos',
-    tier_ladder: [
-      { tier: 1, name: 'Verified', per_transfer: '50000', daily_transfer: '50000', daily_bill: '20000' },
-      { tier: 2, name: 'Enhanced', per_transfer: '200000', daily_transfer: '1000000', daily_bill: '100000' },
-      { tier: 3, name: 'Premium', per_transfer: '5000000', daily_transfer: '5000000', daily_bill: '500000' },
-    ],
-  } : path === '/api/kyc/address/' ? { success: false, code: 'address_verification_unavailable', message: 'Address verification is not available yet.' }
+  mockApiJson.mockImplementation(async (path: string, body?: { tier?: number }) => path === '/api/kyc/status/'
+    ? { ...state, tier: 2, address: '12 Allen Avenue, Ikeja, Lagos', tier_ladder: ladder }
+    : path === '/api/kyc/claim/' ? (expect(body).toEqual({ tier: 3 }), { success: true, state: 'processing', tier: 2 })
     : { success: true, provider: 'partnership', account_number: '0454243073', account_name: 'Current Account', has_account: true, available: true, can_fund: true, account_setup_state: 'ready' });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
@@ -182,8 +186,23 @@ it('shows the tier ladder from the server and answers Verify Tier 3 with what th
   output = JSON.stringify(tree.toJSON());
   // never claims an upgrade the server did not make
   expect(output).not.toContain('now Tier 3');
-  expect(output).toContain('Address verification is not available yet.');
+  expect(output).toContain('Tier 3 is processing');
   expect(output).toContain('12 Allen Avenue, Ikeja, Lagos');
+  expect(mockApiJson.mock.calls.map(([p]) => p)).not.toContain('/api/kyc/address/');
+  act(() => tree.unmount());
+});
+
+it('sends Verify Tier 3 to the address page when the bank did not confirm it, and to Tier 2 first when needed', async () => {
+  let answer: Record<string, unknown> = { success: true, state: 'not_confirmed', tier: 2 };
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/'
+    ? { ...state, tier: 2, tier_ladder: ladder } : path === '/api/kyc/claim/' ? answer : ready);
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Verify Tier 3' }).props.onPress(); });
+  expect(router.push).toHaveBeenCalledWith('/tier3?from=limits');
+  answer = { success: true, state: 'needs_tier2', tier: 2, message: 'Verify Tier 2 first. Tier 3 opens after it.' };
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Verify Tier 3' }).props.onPress(); });
+  expect(notify).toHaveBeenLastCalledWith('Verify Tier 2 first', 'Verify Tier 2 first. Tier 3 opens after it.');
   act(() => tree.unmount());
 });
 
@@ -197,12 +216,42 @@ it('titles the error state Account Limits', async () => {
   act(() => tree.unmount());
 });
 
-it('sends Verify Tier 2 to the Tier 2 page', async () => {
-  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : ready);
+it('sends Verify Tier 2 to the Tier 2 page when the sign-up check was not confirmed', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state
+    : path === '/api/kyc/claim/' ? { success: true, state: 'not_confirmed', tier: 1 } : ready);
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
-  act(() => { tree.root.findByProps({ accessibilityLabel: 'Verify Tier 2' }).props.onPress(); });
-  expect(router.push).toHaveBeenCalledWith('/tier2?from=limits');
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Verify Tier 2' }).props.onPress(); });
+  expect(router.push).toHaveBeenCalledWith('/tier2?from=limits&recheck=1');
+  act(() => tree.unmount());
+});
+
+it('moves to Tier 2 at once when the bank already confirmed the sign-up check', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? { ...state, tier_ladder: ladder }
+    : path === '/api/kyc/claim/' ? { success: true, state: 'upgraded', tier: 2 } : ready);
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Verify Tier 2' }).props.onPress(); });
+  const output = JSON.stringify(tree.toJSON());
+  expect(output).toContain('You’re now Tier 2');
+  expect(output).toContain('₦1000000');
+  expect(router.push).not.toHaveBeenCalledWith(expect.stringContaining('/tier2'));
+  act(() => tree.unmount());
+});
+
+it('shows Tier 2 as processing while the bank is still checking the sign-up check', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? { ...state, tier_ladder: ladder }
+    : path === '/api/kyc/claim/' ? { success: true, state: 'processing', tier: 1 } : ready);
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Verify Tier 2' }).props.onPress(); });
+  const output = JSON.stringify(tree.toJSON());
+  expect(output).toContain('Tier 2 is processing');
+  expect(output).toContain('From your sign-up');
+  expect(output).not.toContain('now Tier 2');
+  // the row turns into a status that asks again when tapped
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Verify Tier 2' })).toHaveLength(0);
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Tier 2 processing. Check again' }).length).toBeGreaterThan(0);
   act(() => tree.unmount());
 });
 
@@ -212,16 +261,17 @@ it('shows Tier 3 in progress as a status, not a button, and drops the Checking p
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
   const output = JSON.stringify(tree.toJSON());
-  expect(output).toContain('In progress');
+  expect(output).toContain('Processing');
   expect(output).not.toContain('Checking');
   expect(tree.root.findAllByProps({ accessibilityLabel: 'Verify Tier 3' })).toHaveLength(0);
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Tier 3 processing. Check again' }).length).toBeGreaterThan(0);
   act(() => tree.unmount());
 });
 
 it('shows the Tier 3 limits when the address check had already come through', async () => {
   mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/'
-    ? { ...state, tier: 2, nin_verified: true, address: '12 Allen Avenue, Ikeja, Lagos' }
-    : path === '/api/kyc/address/' ? { success: true, address_verified: true, tier: 3 } : ready);
+    ? { ...state, tier: 2, nin_verified: true, address: '12 Allen Avenue, Ikeja, Lagos', tier_ladder: ladder }
+    : path === '/api/kyc/claim/' ? { success: true, state: 'upgraded', tier: 3 } : ready);
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
   await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Verify Tier 3' }).props.onPress(); });

@@ -1452,6 +1452,15 @@ def _kyc_state(user) -> dict:
         "nin_verified": user.nin_verified,
         "face_verified": user.face_verified,
         "address_verified": user.address_verified,
+        # Verify Tier 2 (Account limits): what tapping it will find. "ready" = the
+        # bank confirmed the details sent at sign-up, so it applies at once;
+        # "processing" = still with the bank; "not_confirmed" = refused, or never
+        # sent, so the customer enters NIN and face again.
+        "tier2_state": tier2_claim_state(user),
+        "tier2_review": user.tier2_review,
+        # Verify Tier 3: "done", "processing" (sent to the bank), "not_confirmed"
+        # (the bank refused it: enter the address again) or "not_sent".
+        "tier3_state": tier3_claim_state(user),
         "address_verification_pending": user.address_verification_pending,
         "address_verification_state": ("verified" if user.address_verified else
                                        "pending" if user.address_verification_pending else "not_verified"),
@@ -1620,6 +1629,113 @@ def _limit_state(user) -> dict:
 def transaction_limits(request):
     """POST /api/limits/ {access_token} -> the customer's limits and their ceiling."""
     return ok(success=True, **_limit_state(request.user_obj))
+
+
+#: A Tier 2 check the bank has not answered for this long is treated as not
+#: confirmed: the customer is offered the NIN and face check again rather than
+#: "Processing" for ever.
+TIER2_REVIEW_PATIENCE = timedelta(hours=48)
+
+
+def tier2_claim_state(user) -> str:
+    """Where Tier 2 stands for Verify Tier 2: done, ready, processing or not_confirmed."""
+    from wallet.views import tier2_face_pending
+
+    if user.tier >= 2:
+        return "done"
+    if user.tier1_identity_verified and user.face_verified:
+        return "ready"
+    if user.tier2_review == "rejected":
+        return "not_confirmed"
+    if user.tier2_review == "pending" or tier2_face_pending(user):
+        at = user.tier2_review_at
+        if at and timezone.now() - at > TIER2_REVIEW_PATIENCE:
+            return "not_confirmed"
+        return "processing"
+    return "not_confirmed"
+
+
+def tier3_claim_state(user) -> str:
+    """Where Tier 3 stands. The bank's answer never makes it "ready": an address
+    the bank answered for cannot be tied to its request, so Zitch does not raise
+    Tier 3 from it. Only an address verified some other way is "ready"."""
+    if user.tier >= 3:
+        return "done"
+    if user.address_verified:
+        return "ready"
+    if user.tier3_review == "rejected":
+        return "not_confirmed"
+    if user.address_verification_pending or user.tier3_review == "pending":
+        return "processing"
+    return "not_sent"
+
+
+@api
+@ratelimit("kyc_claim_tier", limit=20, window=600)
+@require_user
+def kyc_claim_tier(request):
+    """POST /api/kyc/claim/ {access_token, tier: 2|3}
+    -> {success, state: upgraded|processing|not_confirmed|unavailable, ...kyc state}
+
+    Verify Tier 2/3 on Account limits. Sign-up already sent the details to the
+    bank; this applies a tier the bank confirmed, reports one it is still
+    checking, or says the details must be entered again. Nothing new is sent to
+    the bank: a pending check is only read back.
+    """
+    from wallet.views import confirm_wema_tier2, _TIER2_PENDING_KEY
+
+    user = request.user_obj
+    try:
+        wanted = int(request.data.get("tier"))
+    except (TypeError, ValueError):
+        return fail("Choose Tier 2 or Tier 3", code="tier_required")
+    if wanted not in (2, 3):
+        return fail("Choose Tier 2 or Tier 3", code="tier_required")
+
+    if wanted == 3:
+        state3 = tier3_claim_state(user)
+        if state3 == "ready" and user.tier >= 2:
+            # An address verified some other way (never from the bank's
+            # uncorrelated answer): lift the sign-up cap so the tier shows it.
+            with db_transaction.atomic():
+                locked = User.objects.select_for_update().get(pk=user.pk)
+                locked.tier_cap = 3
+                locked.recompute_tier()
+                locked.save(update_fields=["tier_cap", "tier"])
+            user.refresh_from_db()
+            state3 = tier3_claim_state(user)
+        if state3 == "done":
+            return ok(success=True, state="upgraded", **_kyc_state(user))
+        if state3 == "processing":
+            return ok(success=True, state="processing", **_kyc_state(user))
+        if state3 == "not_confirmed":
+            return ok(success=True, state="not_confirmed", **_kyc_state(user))
+        if user.tier < 2:
+            return ok(success=True, state="needs_tier2",
+                      message="Verify Tier 2 first.", **_kyc_state(user))
+        # Nothing sent yet: the customer enters the address on the Tier 3 page.
+        return ok(success=True, state="not_confirmed", **_kyc_state(user))
+
+    if user.tier >= 2:
+        return ok(success=True, state="upgraded", **_kyc_state(user))
+    state = tier2_claim_state(user)
+    if state == "processing":
+        # Read the bank's answer back; nothing is submitted again.
+        marker = cache.get(_TIER2_PENDING_KEY.format(user.pk))
+        hashed = {k: v for k, v in marker.items() if k in ("bvn", "nin")} if isinstance(marker, dict) else {}
+        confirm_wema_tier2(user, hashed=hashed)
+        user.refresh_from_db()
+        state = tier2_claim_state(user)
+    if state == "ready":
+        with db_transaction.atomic():
+            locked = User.objects.select_for_update().get(pk=user.pk)
+            locked.tier_cap = max(locked.tier_cap, 2)
+            locked.recompute_tier()
+            locked.save(update_fields=["tier_cap", "tier"])
+        user.refresh_from_db()
+        log.info("kyc_tier_claimed user=%s tier=%s", user.pk, user.tier)
+        return ok(success=True, state="upgraded", **_kyc_state(user))
+    return ok(success=True, state=state, **_kyc_state(user))
 
 
 @api
@@ -2497,6 +2613,65 @@ def kyc_address_save(request):
         user.set_address(f"{house} {street}, {lga}, {match}")
         user.save(update_fields=["address"])
     return ok(success=True, message="Address saved", address=user.address)
+
+
+@api
+@ratelimit("kyc_tier3_send", limit=6, window=600)
+@require_user
+def kyc_tier3_send(request):
+    """POST /api/kyc/tier3/send/ {access_token, house_number, street, state, lga}
+    -> {success, sent, tier3_state, address}
+
+    Saves the address and sends it to the bank as its own Tier 3 request
+    (partner-account-upgrade-tier3). Sign-up calls this at the same moment as the
+    separate Tier 2 request; the Tier 3 page calls it again when the bank refused
+    the address. Zitch never raises Tier 3 from the bank's answer (it cannot tie
+    that answer to this address), so the customer sees Processing, not Tier 3.
+    Without an account number yet, the address is only saved.
+    """
+    gate = _email_gate(request.user_obj)
+    if gate:
+        return gate
+    data = request.data
+    house = _address_part(data, "house_number", 20)
+    street = _address_part(data, "street", 120)
+    state = _address_part(data, "state", 40)
+    lga = _address_part(data, "lga", 60)
+    if not house or not street:
+        return fail("Enter your house number and street.")
+    match = next((s for s in _NIGERIAN_STATES if s.lower() == state.lower()), "")
+    if not match:
+        return fail("Choose your state from the list.")
+    if not lga:
+        return fail("Enter your local government area.")
+    with db_transaction.atomic():
+        user = User.objects.select_for_update().get(pk=request.user_obj.pk)
+        if user.address_verified or user.address_verification_pending:
+            return ok(success=True, sent=False, tier3_state=tier3_claim_state(user), address=user.address)
+        user.set_address(f"{house} {street}, {lga}, {match}")
+        user.save(update_fields=["address"])
+    wallet = Wallet.objects.filter(user=user).first()
+    if not wallet or not wallet.account_number:
+        return ok(success=True, sent=False, tier3_state="not_sent", address=user.address)
+    res = wema.upgrade_tier3(wallet.account_number, {
+        "buildingNumber": house, "street": street, "lga": lga, "state": match,
+        "city": lga, "fullAddress": user.address, "country": "Nigeria"})
+    if res.get("mock") and not res.get("success"):
+        # The bank's upgrade service is not set up here: nothing was sent.
+        return ok(success=True, sent=False, tier3_state="not_sent", address=user.address)
+    now = timezone.now()
+    if res.get("success") or res.get("pending") or res.get("mock"):
+        User.objects.filter(pk=user.pk).update(
+            address_verification_pending=True, address_verification_requested_at=now,
+            address_verification_account_number=wallet.account_number,
+            tier3_review="pending", tier3_review_at=now)
+        log.info("kyc_tier3_sent user=%s account=%s", user.pk, wallet.account_number)
+        state3 = "processing"
+    else:
+        User.objects.filter(pk=user.pk).update(tier3_review="rejected", tier3_review_at=now)
+        log.info("kyc_tier3_refused user=%s message=%s", user.pk, mask_pii(str(res.get("message") or ""))[:120])
+        state3 = "not_confirmed"
+    return ok(success=True, sent=True, tier3_state=state3, address=user.address)
 
 
 @api

@@ -53,7 +53,15 @@ export type KycStatus = ApiResult<{
   tier3_address_available?: boolean;
   tier3_address_unavailable_reason?: string;
   address_rail?: 'document' | 'wema' | 'none';
+  /** Verify Tier 2: done, ready (applies on tap), processing (with the bank), not_confirmed (enter again). */
+  tier2_state?: 'done' | 'ready' | 'processing' | 'not_confirmed';
+  /** The bank's answer to the Tier 2 details sent at sign-up, while not confirmed. */
+  tier2_review?: '' | 'pending' | 'rejected';
+  /** Verify Tier 3: done, processing (with the bank), not_confirmed (enter the address again), not_sent. */
+  tier3_state?: 'done' | 'ready' | 'processing' | 'not_confirmed' | 'not_sent';
 }>;
+
+export type TierClaim = KycStatus & { state?: 'upgraded' | 'processing' | 'not_confirmed' | 'needs_tier2' | 'unavailable' };
 
 export type ResidentialAddress = {
   buildingNumber: string;
@@ -167,6 +175,16 @@ export const kycService = {
   // nothing else will move the customer forward.
   upgradeTier2: (bvn: string, nin: string, liveImage: string, livenessToken?: string) =>
     walletService.upgradeTier2(bvn, nin, liveImage, livenessToken),
+  /** Sign-up: send the NIN and face check with the BVN to the bank now. The
+   *  customer stays on Tier 1 until they tap Verify Tier 2 (claimTier). */
+  sendTier2AtSignup: (bvn: string, nin: string, liveImage: string, livenessToken?: string) =>
+    walletService.upgradeTier2(bvn, nin, liveImage, livenessToken, true),
+  /** The address as its own Tier 3 request to the bank. Saves it too; with no
+   *  account number yet it is only saved. Zitch never shows Tier 3 from this. */
+  sendTier3: (address: { house_number: string; street: string; state: string; lga: string }) =>
+    apiJson<ApiResult<{ sent?: boolean; tier3_state?: string; address?: string }>>(EP.kyc.tier3Send, address),
+  /** Verify Tier 2/3 on Account limits. Never sends anything new to the bank. */
+  claimTier: (tier: 2 | 3) => apiJson<TierClaim>(EP.kyc.claim, { tier }),
   /** The Tier 2 live face check (FaceLivenessModal): nothing reaches the bank. */
   checkTier2Face: (frames: string[], turns: string[]) => walletService.checkTier2Face(frames, turns),
 };

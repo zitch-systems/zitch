@@ -949,16 +949,48 @@ def upgrade_wema_identity(user, data, *, checked=None):
     if _identity_owned_by_another_user(user, WemaProvisioningAttempt.NIN, nin):
         return fail("This NIN is already linked to another Zitch account", status=409)
 
+    # Sign-up sends the Tier 2 details with the rest of the identity step, but
+    # the customer stays on Tier 1 until they tap Verify Tier 2 (kyc_claim_tier).
+    # Any other upgrade is the customer asking for Tier 2 now: no cap.
+    at_signup = data.get("at_signup") is True
+    cap = 1 if (at_signup and user.tier < 2) else 3
+    if user.tier_cap != cap:
+        User.objects.filter(pk=user.pk).update(tier_cap=cap)
+        user.tier_cap = cap
     res = wema_provider.upgrade_tier2(wallet.account_number, bvn=bvn, nin=nin,
                                      live_image=photo.bank_base64())
     if res.get("pending"):
-        return _tier2_pending(user, bvn, nin)
+        _set_tier2_review(user, "pending")
+        response = _tier2_pending(user, bvn, nin)
+        return _signup_tier2_sent(user, "pending") if at_signup else response
     if not res.get("success"):
+        _set_tier2_review(user, "rejected")
+        if at_signup:
+            return _signup_tier2_sent(user, "rejected")
         return fail(res.get("message", "Your bank could not confirm your face. Retake the selfie in good light."),
                     status=502)
     ref = str((res.get("raw") or {}).get("message") or "wema_tier2")[:128]
-    return confirm_wema_tier2(user, bvn=bvn, nin=nin, ref=ref,
-                              account_number=wallet.account_number)
+    response = confirm_wema_tier2(user, bvn=bvn, nin=nin, ref=ref,
+                                  account_number=wallet.account_number)
+    if at_signup and response.status_code in (200, 202):
+        user.refresh_from_db()
+        return _signup_tier2_sent(user, "confirmed" if user.face_verified else "pending")
+    return response
+
+
+def _set_tier2_review(user, state):
+    """Remember where the bank's Tier 2 check stands ("pending"/"rejected"/"")
+    so Verify Tier 2 can answer without sending anything again."""
+    at = timezone.now() if state else None
+    User.objects.filter(pk=user.pk).update(tier2_review=state, tier2_review_at=at)
+    user.tier2_review, user.tier2_review_at = state, at
+
+
+def _signup_tier2_sent(user, state):
+    """Sign-up's answer: the details went to the bank. The customer is still on
+    Tier 1 whatever the bank said; Verify Tier 2 shows the outcome later."""
+    return JsonResponse({"success": True, "sent": True, "tier2_state": state, "tier": user.tier},
+                        status=200)
 
 
 def _tier2_pending(user, bvn="", nin="", hashed=None):
@@ -1047,6 +1079,9 @@ def confirm_wema_tier2(user, *, bvn="", nin="", ref="wema_tier2", account_number
                 return fail("Verify your BVN or NIN (Tier 1) before the Tier 2 face check.",
                             status=409, code="tier1_required")
             user.face_verified = True
+            # The bank confirmed it: nothing is left to review.
+            user.tier2_review, user.tier2_review_at = "", None
+            fields += ["tier2_review", "tier2_review_at"]
             user.recompute_tier()
             user.save(update_fields=fields)
             for kind, (identity_hash, last4) in identities.items():

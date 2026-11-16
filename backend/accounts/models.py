@@ -199,6 +199,25 @@ class User(AbstractUser):
     nin_last4 = models.CharField(max_length=4, blank=True, default="")
     nin_verified = models.BooleanField(default=False)
     face_verified = models.BooleanField(default=False)
+    # The highest tier the customer has asked for. Sign-up sends the Tier 2
+    # details (NIN + live face) to the bank straight away, but the customer stays
+    # on Tier 1 until they tap Verify Tier 2 (review, Nov 2026): then a tier the
+    # bank already confirmed applies at once. 3 = no cap, the default for every
+    # existing account and for any explicit upgrade.
+    tier_cap = models.PositiveSmallIntegerField(default=3)
+    # Where the bank's Tier 2 check stands when it is not confirmed yet:
+    # "pending" (sent, no answer) or "rejected" (the bank refused it). Empty once
+    # confirmed, or when nothing was sent.
+    tier2_review = models.CharField(max_length=12, blank=True, default="")
+    tier2_review_at = models.DateTimeField(null=True, blank=True)
+    # The same for the address sent to the bank as its own Tier 3 request
+    # (sign-up sends Tier 2 and Tier 3 separately, at the same time). Zitch never
+    # raises Tier 3 from the bank's answer: it cannot tell which address or
+    # request that answer is about (partnership audit, 10 Oct 2026). "rejected"
+    # lets the customer enter the address again; a sent request also sets
+    # address_verification_pending.
+    tier3_review = models.CharField(max_length=12, blank=True, default="")
+    tier3_review_at = models.DateTimeField(null=True, blank=True)
     # Tier 3: a verified residential address. We keep the (non-sensitive) address
     # string for support/records and a verified flag the tier logic reads.
     address = models.CharField(max_length=255, blank=True, default="")
@@ -355,16 +374,19 @@ class User(AbstractUser):
 
         # Both contact channels must be proven before any tier above the floor.
         if not (self.email_verified and self.phone_verified):
-            self.tier = 0
+            earned = 0
         elif (has_identity and self.face_verified
                 and self.address_verified):
-            self.tier = 3
+            earned = 3
         elif has_identity and self.face_verified:
-            self.tier = 2
+            earned = 2
         elif self.tier1_identity_verified:
-            self.tier = 1
+            earned = 1
         else:
-            self.tier = 0
+            earned = 0
+        # A tier the bank confirmed applies once the customer asks for it
+        # (tier_cap). The cap never takes away Tier 1.
+        self.tier = min(earned, max(1, self.tier_cap)) if earned else 0
 
     def set_address(self, raw: str) -> None:
         self.address = (raw or "").strip()[:255]

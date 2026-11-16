@@ -22,6 +22,7 @@ const AuthLayout = () => {
       <Stack.Screen name="accountdetails" />
       <Stack.Screen name="kyc" />
       <Stack.Screen name="tier2" />
+      <Stack.Screen name="tier3" />
       <Stack.Screen name="waapprove" />
     </Stack>
   );

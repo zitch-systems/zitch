@@ -101,7 +101,8 @@ const SetPin = () => {
           {confirm === null ? `Create a ${TRANSACTION_PIN_LENGTH}-digit PIN` : 'Confirm your PIN'}
         </Text>
         <Text style={{ fontSize: 14, color: err ? c.red : c.ink3, marginTop: 6, textAlign: 'center', fontFamily: err ? font.bold : font.regular }}>
-          {err ? "PINs don't match, try again" : submitting ? 'Setting up your PIN…' : "You'll use this to authorize payments"}
+          {err ? "PINs don't match, try again" : submitting ? 'Setting up your PIN…'
+            : confirm === null ? "You'll use this to authorize payments" : `Enter the same ${TRANSACTION_PIN_LENGTH} digits again`}
         </Text>
 
         <View accessible accessibilityLabel={`${active.length} of ${TRANSACTION_PIN_LENGTH} PIN digits entered`} style={{ flexDirection: 'row', gap: 18, marginVertical: 30 }}>

@@ -7,7 +7,7 @@ import FaceLivenessModal, { type FaceCapture } from '@/components/design/FaceLiv
 import AuthGuard from '@/components/AuthGuard';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Card } from '@/components/design/ui';
-import { StepTitle } from '@/components/kyc/Onboarding';
+import { FaceCheckRow, StepTitle } from '@/components/kyc/Onboarding';
 import { TierBadge, TierDetails, TierPill } from '@/components/design/TierRow';
 import { apiJson } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
@@ -18,7 +18,6 @@ import { useTheme, font } from '@/lib/theme';
 
 type Status = KycStatus & { tier_ladder?: LadderTier[]; has_wema_account?: boolean };
 
-const GREEN = '#15803D';
 
 /** 3456 7890 123 — grouped for reading; the digits alone are sent. */
 const group = (digits: string) => [digits.slice(0, 4), digits.slice(4, 8), digits.slice(8)].filter(Boolean).join(' ');
@@ -29,13 +28,6 @@ const faceRefused = (res: { success?: boolean; pending?: boolean; code?: string 
   !res.success && !res.pending && (/^(selfie|liveness)_/.test(res.code || '')
     || (res as { _httpStatus?: number })._httpStatus === 502);
 
-const Done = ({ label }: { label: string }) => (
-  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 34 }}>
-    <ZIcon name="check" size={14} color={GREEN} stroke={3} />
-    <Text style={{ fontSize: 13, fontFamily: font.bold, color: GREEN }}>{label}</Text>
-  </View>
-);
-
 /**
  * Upgrade to Tier 2 (design 72), on the bank's contract: the customer types
  * their BVN and NIN, takes the live face check (FaceLivenessModal: turn left,
@@ -45,8 +37,8 @@ const Done = ({ label }: { label: string }) => (
  * tier.
  */
 const Tier2 = () => {
-  const { c, theme } = useTheme();
-  const params = useLocalSearchParams<{ from?: string }>();
+  const { c } = useTheme();
+  const params = useLocalSearchParams<{ from?: string; recheck?: string }>();
   const [status, setStatus] = useState<Status | null>(null);
   const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -105,6 +97,21 @@ const Tier2 = () => {
   };
 
   const idsDone = bvn.length === 11 && nin.length === 11;
+  // From Verify Tier 2 when the bank did not confirm what sign-up sent (or never answered).
+  const notConfirmed = params.recheck === '1' && !!status && status.tier2_state === 'not_confirmed'
+    && (status.tier2_review === 'rejected' || status.tier2_review === 'pending');
+
+  // The bank already confirmed the details sent at sign-up: moving up needs no new check.
+  const claim = async () => {
+    if (!begin()) return;
+    try {
+      const res = await kycService.claimTier(2);
+      if (!live()) return;
+      if (res.success && res.state === 'upgraded') { await load(); finished(); }
+      else { await load(); if (res.message) notify('Not upgraded yet', res.message, 'info'); }
+    } catch { if (live()) notify('Error', 'Check your connection and try again.'); }
+    finally { end(); }
+  };
 
   const submit = async (capture: FaceCapture | null = face) => {
     if (!idsDone || !capture || !begin()) return;
@@ -139,7 +146,7 @@ const Tier2 = () => {
   if (!status) {
     return (
       <Screen>
-        <Header title="Upgrade to Tier 2" sub="Your BVN, NIN and a live face check" onBack={() => router.back()} />
+        <Header title="Upgrade to Tier 2" sub={notConfirmed ? 'Enter your NIN and retake the face check' : 'Your BVN, NIN and a live face check'} onBack={() => router.back()} />
         {loadError ? (
           <Card>
             <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginBottom: 16 }}>{loadError}</Text>
@@ -150,11 +157,11 @@ const Tier2 = () => {
     );
   }
 
-  const tint = theme === 'dark' ? 'rgba(234,251,247,0.07)' : 'rgba(6,110,102,0.06)';
   const tier2 = tierLadder(status.tier_ladder).find((t) => t.tier === 2);
   const complete = !!status.face_verified && Number(status.tier) >= 2;
   const unavailable = status.tier2_face_available === false;
   const pending = !complete && status.tier2_face_pending === true;
+  const ready = !complete && status.tier2_state === 'ready';
   const noAccount = status.has_wema_account === false;
   const canSubmit = idsDone && !!face && !busy;
   const hint = !idsDone ? 'Enter your BVN and NIN to submit.' : !face ? 'Take the live face check to submit.' : '';
@@ -184,7 +191,7 @@ const Tier2 = () => {
   return (
     <>
       <Screen>
-        <Header title="Upgrade to Tier 2" sub="Your BVN, NIN and a live face check" onBack={() => router.back()} />
+        <Header title="Upgrade to Tier 2" sub={notConfirmed ? 'Enter your NIN and retake the face check' : 'Your BVN, NIN and a live face check'} onBack={() => router.back()} />
 
         {/* The same Tier 2 row as Account limits, so the two screens read alike. */}
         {tier2 ? (
@@ -201,6 +208,10 @@ const Tier2 = () => {
 
         {complete ? (
           <Notice title="You’re on Tier 2" body="Your face check passed and your bank confirmed the upgrade." />
+        ) : ready ? (
+          <Notice title="Your bank confirmed your details"
+            body="The NIN and face check from your sign-up are confirmed. Move up now and your new limits apply right away."
+            action={<Btn label={busy ? 'Moving up…' : 'Move to Tier 2'} disabled={busy} onPress={() => void claim()} />} />
         ) : pending ? (
           <Notice title="Your bank is checking your face"
             body="You don’t need to do anything. We’ll update your tier as soon as your bank confirms."
@@ -214,6 +225,15 @@ const Tier2 = () => {
             body="Tier 2 upgrades your Zitch account at the bank. Finish setting up your account number, then come back here." />
         ) : (
           <>
+            {notConfirmed ? (
+              <View accessibilityRole="alert" style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginTop: 14, paddingVertical: 12, paddingHorizontal: 14,
+                borderRadius: 16, backgroundColor: 'rgba(220,38,38,0.07)', borderWidth: 1, borderColor: 'rgba(220,38,38,0.25)' }}>
+                <View style={{ marginTop: 1 }}><ZIcon name="help" size={17} color={c.red} stroke={2.2} /></View>
+                <Text style={{ flex: 1, fontSize: 13, fontFamily: font.semibold, color: c.red, lineHeight: 19 }}>
+                  We couldn’t confirm the NIN or face check from your sign-up. Check your NIN and take the face check again.
+                </Text>
+              </View>
+            ) : null}
             <Card style={{ marginTop: 14, gap: 14 }}>
               <StepTitle n={1} title="Your BVN and NIN" done={idsDone} />
               <Field tint editable={!busy} label="Bank Verification Number (BVN)" placeholder="11 digits" keyboardType="number-pad"
@@ -229,35 +249,9 @@ const Tier2 = () => {
 
             <Card style={{ marginTop: 14, gap: 12 }}>
               <StepTitle n={2} title="Live face check" done={!!face} />
-              {face ? (
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <Done label="Face check passed" />
-                  <Pressable accessibilityRole="button" accessibilityLabel="Take the face check again" disabled={busy}
-                    onPress={() => setCameraOpen(true)} style={{ minHeight: 44, justifyContent: 'center' }}>
-                    <Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.semibold }}>Retake</Text>
-                  </Pressable>
-                </View>
-              ) : (
-                <>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                    <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: 'rgba(6,110,102,0.08)', alignItems: 'center', justifyContent: 'center' }}>
-                      <ZIcon name="faceid" size={26} color={c.brand} stroke={1.7} />
-                    </View>
-                    <Text style={{ flex: 1, fontSize: 13, fontFamily: font.regular, color: c.ink2, lineHeight: 19 }}>
-                      Turn your head left, then right, then smile. Your bank matches the photo to your BVN and NIN. About fifteen seconds.
-                    </Text>
-                  </View>
-                  <OutlineBtn label="Start face check" icon="scan" disabled={busy} onPress={() => setCameraOpen(true)} />
-                </>
-              )}
+              {/* One short row (review, Nov 2026): no long instructions; the camera explains each move. */}
+              <FaceCheckRow done={!!face} busy={busy} onStart={() => setCameraOpen(true)} />
             </Card>
-
-            <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginTop: 14, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16, backgroundColor: tint }}>
-              <View style={{ marginTop: 1 }}><ZIcon name="home" size={17} color={c.brand} stroke={2} /></View>
-              <Text style={{ flex: 1, fontSize: 12.5, fontFamily: font.medium, color: c.ink2, lineHeight: 18 }}>
-                Your sign-up address is sent with this, so the Tier 3 check starts straight away.
-              </Text>
-            </View>
 
             <View style={{ marginTop: 20 }}>
               <Btn label={busy ? 'Submitting…' : 'Submit for Tier 2'} disabled={!canSubmit} onPress={() => void submit()} />

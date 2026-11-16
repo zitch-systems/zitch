@@ -224,6 +224,10 @@ const P: Record<string, (color: string) => React.ReactNode> = {
     <Rect key="c" x={3} y={14} width={7} height={7} rx={1} />,
     <Path key="d" d="M14 14h3v3M21 14v.01M14 21h.01M21 17v4h-4" />,
   ],
+  camera: () => [
+    <Path key="a" d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" />,
+    <Circle key="b" cx={12} cy={13} r={3} />,
+  ],
   lock: () => [
     <Rect key="a" x={4} y={11} width={16} height={10} rx={2} />,
     <Path key="b" d="M8 11V7a4 4 0 0 1 8 0v4" />,

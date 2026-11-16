@@ -3,10 +3,11 @@ import renderer, { act } from 'react-test-renderer';
 import Kyc from '@/app/(auth)/kyc';
 import { EP } from '@/lib/endpoints';
 
-// Sign-up's "BVN and address" page: the identity screen in onboarding mode.
+// Sign-up's "Identity and address" page: the identity screen in onboarding mode.
 const mockApiJson = jest.fn();
 const mockReplace = jest.fn();
 const mockFaceSheet = jest.fn();
+const mockLiveness = jest.fn();
 jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args) }));
 jest.mock('@/lib/secureStore', () => ({ getToken: async () => 'test-token', getSessionGeneration: () => 0 }));
 jest.mock('expo-router', () => ({
@@ -26,7 +27,7 @@ jest.mock('@/lib/session', () => ({
   enforceHardExpiry: jest.fn(), enforceIdleTimeout: jest.fn(), lockIfAwayTooLong: jest.fn(),
 }));
 jest.mock('@/components/design/Loading', () => ({ Loading: () => null }));
-jest.mock('@/components/design/FaceLivenessModal', () => () => null);
+jest.mock('@/components/design/FaceLivenessModal', () => (props: unknown) => { mockLiveness(props); return null; });
 jest.mock('@/components/design/Notify', () => ({ notify: jest.fn() }));
 jest.mock('@/components/design/ZIcon', () => () => null);
 jest.mock('@/lib/theme', () => ({
@@ -57,6 +58,7 @@ beforeEach(() => {
   mockApiJson.mockReset();
   mockReplace.mockReset();
   mockFaceSheet.mockReset();
+  mockLiveness.mockReset();
 });
 
 it('starts on the BVN form, even before the email is verified, and sends the SMS code', async () => {
@@ -64,7 +66,7 @@ it('starts on the BVN form, even before the email is verified, and sends the SMS
     : { success: true, otp_required: true, identity_verification_provider: 'prembly', delivery: 'phone •••8888' });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  expect(JSON.stringify(tree.toJSON())).toContain('BVN and address');
+  expect(JSON.stringify(tree.toJSON())).toContain('Identity and address');
   expect(JSON.stringify(tree.toJSON())).not.toContain('Verify email');
   expect(byLabel(tree, 'Send code').props.disabled).toBe(true);
   await act(async () => { byLabel(tree, 'Bank Verification Number (BVN)').props.onChangeText('12345678901'); });
@@ -86,7 +88,7 @@ it('keeps the code step on the same page: BVN, the SMS/face choice, then the cod
   await act(async () => { byLabel(tree, 'Bank Verification Number (BVN)').props.onChangeText('12345678901'); });
   await act(async () => { await byLabel(tree, 'Send code').props.onPress(); });
   const text = () => JSON.stringify(tree.toJSON());
-  expect(text()).toContain('BVN and address');
+  expect(text()).toContain('Identity and address');
   expect(text()).not.toContain('Confirm your BVN');
   expect(byLabel(tree, 'Bank Verification Number (BVN)').props.value).toBe('12345678901');
   expect(!!byLabel(tree, 'SMS code, Sent to the phone on your BVN')).toBe(true);
@@ -128,7 +130,7 @@ it('opens the BVN face check inside the app, polls it, and closes it once verifi
     await act(async () => { jest.advanceTimersByTime(3000); });
     await act(async () => {});
     expect(sheet().visible).toBe(false);
-    expect(JSON.stringify(tree.toJSON())).toContain('Your BVN is verified. Now add your address.');
+    expect(JSON.stringify(tree.toJSON())).toContain('Your BVN is verified. Add your NIN, take a quick face check, then your address.');
     await act(async () => tree.unmount());
   } finally {
     jest.useRealTimers();
@@ -157,12 +159,12 @@ it('can be left for later, straight to the PIN set-up', async () => {
   await act(async () => tree.unmount());
 });
 
-it('asks for the address once the BVN is verified, saves it and moves on', async () => {
+it('asks for the address once the BVN is verified, sends it as the Tier 3 request and moves on', async () => {
   mockApiJson.mockImplementation(async (path: string) => path === EP.kyc.status ? { ...base, bvn_verified: true, tier: 1 }
     : { success: true, address: '12 Allen Avenue, Ikeja, Lagos' });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  expect(JSON.stringify(tree.toJSON())).toContain('Your BVN is verified. Now add your address.');
+  expect(JSON.stringify(tree.toJSON())).toContain('Your BVN is verified. Add your NIN, take a quick face check, then your address.');
   const cont = () => byLabel(tree, 'Continue');
   expect(cont().props.disabled).toBe(true);
   await act(async () => { byLabel(tree, 'House number').props.onChangeText('12'); });
@@ -176,8 +178,9 @@ it('asks for the address once the BVN is verified, saves it and moves on', async
   expect(byLabel(tree, 'Local government area').props.placeholder).toBe('Select or type your LGA');
   expect(cont().props.disabled).toBe(false);
   await act(async () => { await cont().props.onPress(); });
-  expect(mockApiJson).toHaveBeenCalledWith(EP.kyc.addressSave, { house_number: '12', street: 'Allen Avenue', state: 'Lagos', lga: 'Ikeja' });
-  // saving the address verifies nothing, so the Tier 3 endpoint is never called
+  expect(mockApiJson).toHaveBeenCalledWith(EP.kyc.tier3Send, { house_number: '12', street: 'Allen Avenue', state: 'Lagos', lga: 'Ikeja' });
+  // no NIN or face check given: no Tier 2 request, and no address "verification" call
+  expect(mockApiJson.mock.calls.map(([p]) => p)).not.toContain(EP.wallet.wemaUpgradeTier2);
   expect(mockApiJson.mock.calls.map(([p]) => p)).not.toContain(EP.kyc.address);
   expect(mockReplace).toHaveBeenCalledWith('/setup');
   await act(async () => tree.unmount());
@@ -200,6 +203,57 @@ it('suggests the LGAs of the chosen state, and still takes one typed that is not
   await act(async () => { byLabel(tree, 'Local government area').props.onChangeText('Ikeja GRA'); });
   expect(byLabel(tree, 'Continue').props.disabled).toBe(false);
   await act(async () => { await byLabel(tree, 'Continue').props.onPress(); });
-  expect(mockApiJson).toHaveBeenCalledWith(EP.kyc.addressSave, { house_number: '12', street: 'Allen Avenue', state: 'Lagos', lga: 'Ikeja GRA' });
+  expect(mockApiJson).toHaveBeenCalledWith(EP.kyc.tier3Send, { house_number: '12', street: 'Allen Avenue', state: 'Lagos', lga: 'Ikeja GRA' });
+  await act(async () => tree.unmount());
+});
+
+it('shows the NIN, a short face check and the address under the BVN before it is verified', async () => {
+  mockApiJson.mockResolvedValue(base);
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  const text = JSON.stringify(tree.toJSON());
+  expect(text).toContain('Your NIN');
+  expect(text).toContain('Dial *346# on the phone linked to your NIN to get it.');
+  expect(text).toContain('A quick face check');
+  expect(text).toContain('Opens once your BVN is verified.');
+  // the face check waits for the BVN
+  expect(byLabel(tree, 'Start face check').props.disabled).toBe(true);
+  await act(async () => tree.unmount());
+});
+
+it('sends the NIN and face check (Tier 2) and the address (Tier 3) as separate requests at the same time', async () => {
+  const started: string[] = [];
+  const release: (() => void)[] = [];
+  mockApiJson.mockImplementation((path: string) => {
+    if (path === EP.kyc.status) return Promise.resolve({ ...base, bvn_verified: true, tier: 1 });
+    started.push(path);
+    // neither answers until both have been sent
+    return new Promise((resolve) => release.push(() => resolve(path === EP.kyc.tier3Send
+      ? { success: true, sent: true, tier3_state: 'processing' }
+      : { success: true, sent: true, tier2_state: 'pending' })));
+  });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  await act(async () => { byLabel(tree, 'National Identification Number (NIN)').props.onChangeText('1234 5678 901'); });
+  expect(byLabel(tree, 'Continue').props.disabled).toBe(true);   // NIN without the face check
+  await act(async () => { byLabel(tree, 'Start face check').props.onPress(); });
+  const modal = () => mockLiveness.mock.calls[mockLiveness.mock.calls.length - 1][0] as { visible: boolean; onCapture: (c: { image: string; token: string }) => void };
+  expect(modal().visible).toBe(true);
+  await act(async () => { modal().onCapture({ image: 'face-b64', token: 'proof' }); });
+  expect(JSON.stringify(tree.toJSON())).toContain('Face check done');
+  // the BVN was verified in an earlier session: the bank needs it typed again
+  await act(async () => { byLabel(tree, 'Bank Verification Number (BVN)').props.onChangeText('22222222222'); });
+  await act(async () => { byLabel(tree, 'House number').props.onChangeText('12'); });
+  await act(async () => { byLabel(tree, 'Street address').props.onChangeText('Allen Avenue'); });
+  await act(async () => { byLabel(tree, 'State').props.onChangeText('Lagos'); });
+  await act(async () => { byLabel(tree, 'Local government area').props.onChangeText('Ikeja'); });
+  let pressed!: Promise<void>;
+  await act(async () => { pressed = byLabel(tree, 'Continue').props.onPress(); });
+  expect(started).toEqual([EP.wallet.wemaUpgradeTier2, EP.kyc.tier3Send]);
+  expect(mockApiJson).toHaveBeenCalledWith(EP.wallet.wemaUpgradeTier2,
+    { bvn: '22222222222', nin: '12345678901', live_image: 'face-b64', liveness_token: 'proof', at_signup: true });
+  expect(mockApiJson).toHaveBeenCalledWith(EP.kyc.tier3Send, { house_number: '12', street: 'Allen Avenue', state: 'Lagos', lga: 'Ikeja' });
+  await act(async () => { release.forEach((r) => r()); await pressed; });
+  expect(mockReplace).toHaveBeenCalledWith('/setup');
   await act(async () => tree.unmount());
 });
