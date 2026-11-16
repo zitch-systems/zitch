@@ -44,6 +44,7 @@ from common.http import evaluate_transaction_pin
 from common.ratelimit import ratelimit
 from utility.providers import partnership_new_business_allowed
 
+from .liveness import liveness_context, secure_camera_headers
 from .models import PendingAction, WhatsAppLink
 
 TTL_SECONDS = 15 * 60
@@ -611,7 +612,7 @@ def _face_get(request, token):
     if _android_in_app(request) and request.GET.get("stay") != "1":
         return _chrome_handoff(request, _public_origin() + request.path)
     return render(request, "whatsapp/face_camera.html", {
-        "nonce": request.verification_nonce,
+        **liveness_context(request.verification_nonce),
         "picker_only": request.GET.get("stay") == "1",
     })
 
@@ -625,7 +626,7 @@ def _json(http_status, **body):
 def _face_link_closed(pa, user):
     """The answer for a link that can no longer take a photo, or None."""
     if pa is None or pa.payload.get("tier") != 2 or pa.state == FACE_FAILED:
-        return _json(410, status="closed", message="This link has closed. Reply 7 in WhatsApp for a new one.")
+        return _json(410, status="closed", message="This link has closed. Reply 8 in WhatsApp for a new one.")
     if pa.state in (FACE_PROCESSING, FACE_PENDING):
         return _json(202, status="pending", message=FACE_PENDING_TEXT)
     if pa.state == COMPLETE or (user.face_verified and user.tier >= 2):
@@ -648,7 +649,9 @@ def _face_post(request, token):
             or set(request.POST) - {"image", "turns", "bvn", "nin", "csrfmiddlewaretoken"}
             or request.FILES or any(len(request.POST.getlist(k)) != 1 for k in request.POST)):
         return _json(400, status="retry", field="face", message="Take the photo using this page.")
-    image = request.POST.get("image", "")
+    # Base64 never contains a comma: "image" is 1-3 straight photos (the
+    # server keeps the clearest) and "turns" the head-turn frames.
+    image = [frame for frame in request.POST.get("image", "").split(",") if frame]
     turns = [frame for frame in request.POST.get("turns", "").split(",") if frame]
     bvn, nin = request.POST.get("bvn", "").strip(), request.POST.get("nin", "").strip()
     if not (re.fullmatch(r"[0-9]{11}", bvn) and re.fullmatch(r"[0-9]{11}", nin)):
@@ -657,13 +660,13 @@ def _face_post(request, token):
         # A page loaded before the head-turn step existed.
         return _json(400, status="retry", field="face", code="liveness_missing",
                      message=FACE_REFRESH_TEXT)
-    if len(turns) > face_check.MAX_TURN_FRAMES:
+    if len(image) > face_check.MAX_FRONTAL_FRAMES or len(turns) > face_check.MAX_TURN_FRAMES:
         return _json(400, status="retry", field="face", message="Take the photo using this page.")
     pa, user = _face_resolve(_decode(token))
     closed = _face_link_closed(pa, user)
     if closed:
         return closed
-    checked = face_check.check_live_face([image], turns)
+    checked = face_check.check_live_face(image, turns)
     face_check.log_outcome("whatsapp", user, checked)
     if checked.code == "face_check_unavailable":
         return _json(503, status="retry", field="face", code=checked.code, message=checked.message)
@@ -754,18 +757,9 @@ def face_page(request, token):
             response = _face_protected(request, token)
         except (RequestDataTooBig, SuspiciousOperation, ValueError):
             response = _json(400, status="retry", message="We could not read that photo. Please take it again.")
-    response["Cache-Control"] = "no-store, private, max-age=0"
-    response["Referrer-Policy"] = "no-referrer"
-    response["X-Content-Type-Options"] = "nosniff"
-    response["X-Frame-Options"] = "DENY"
-    response["X-Robots-Tag"] = "noindex, nofollow, noarchive"
-    response["Permissions-Policy"] = "camera=(self), microphone=(), geolocation=()"
-    response["Content-Security-Policy"] = (
-        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; "
-        f"style-src 'nonce-{request.verification_nonce}'; "
-        f"script-src 'nonce-{request.verification_nonce}'; connect-src 'self'; "
-        "img-src data: blob:; media-src blob: mediastream:; object-src 'none'")
-    return response
+    # Same nonce-only CSP as before, plus 'wasm-unsafe-eval' for the on-device
+    # liveness model (self-hosted; see whatsapp/liveness.py).
+    return secure_camera_headers(response, request.verification_nonce)
 
 
 FACE_SWEEP_LIMIT = 20
@@ -780,7 +774,7 @@ FACE_REFRESH_TEXT = ("This page has been updated. Refresh it, then take the face
 FACE_DONE_TEXT = ("✅ *Tier 2 verification complete.*\n\n"
                   "Your face check passed and your account limits have been upgraded.")
 FACE_FAILED_TEXT = ("❌ *Your face check wasn't confirmed.*\n\n"
-                    "Nothing changed on your account. Reply *7* to try again in good light.")
+                    "Nothing changed on your account. Reply *8* to try again in good light.")
 
 
 def notify_face_results(limit: int = FACE_SWEEP_LIMIT) -> int:

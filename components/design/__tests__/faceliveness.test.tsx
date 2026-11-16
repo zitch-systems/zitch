@@ -1,23 +1,40 @@
 import React from 'react';
-import { Platform } from 'react-native';
+import { Modal, Platform } from 'react-native';
 import renderer, { act } from 'react-test-renderer';
-import FaceLivenessModal, { pickPictureSize } from '@/components/design/FaceLivenessModal';
+import FaceLivenessModal, { LIVENESS_URL, PAGE_TIMEOUT_MS, pickPictureSize } from '@/components/design/FaceLivenessModal';
 import { EP } from '@/lib/endpoints';
 
 const mockApiJson = jest.fn();
 const mockTake = jest.fn();
 const mockSizes = jest.fn();
-let mockPermission = { granted: true, canAskAgain: true };
+const mockRequest = jest.fn();
+let mockPermission: { granted: boolean; canAskAgain: boolean } = { granted: true, canAskAgain: true };
+const mockGetBrightness = jest.fn();
+const mockSetBrightness = jest.fn();
+const mockRestoreBrightness = jest.fn();
+
 jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args) }));
 jest.mock('@/lib/session', () => ({ beginExternalActivity: jest.fn(), endExternalActivity: jest.fn() }));
 jest.mock('@/components/design/ZIcon', () => () => null);
-jest.mock('react-native-safe-area-context', () => ({
-  SafeAreaView: ({ children }: { children: React.ReactNode }) => children,
-}));
+jest.mock('react-native-safe-area-context', () => {
+  const { View } = jest.requireActual<typeof import('react-native')>('react-native');
+  return { SafeAreaView: View };
+});
 jest.mock('@/lib/theme', () => ({
   useTheme: () => ({ c: { brand: '#066E66', inkOnBrand: '#fff', ink1: '#111', ink2: '#222', ink3: '#333' } }),
-  font: { bold: 'b', extrabold: 'x', regular: 'r', semibold: 's' },
+  font: { bold: 'b', extrabold: 'x', regular: 'r', semibold: 's', medium: 'm' },
 }));
+jest.mock('@/components/configFiles/apiConfig', () => 'https://api.zitch.ng');
+jest.mock('expo-brightness', () => ({
+  getBrightnessAsync: () => mockGetBrightness(),
+  setBrightnessAsync: (value: number) => mockSetBrightness(value),
+  restoreSystemBrightnessAsync: () => mockRestoreBrightness(),
+}));
+jest.mock('react-native-webview', () => {
+  const R = jest.requireActual<typeof import('react')>('react');
+  const { View } = jest.requireActual<typeof import('react-native')>('react-native');
+  return { WebView: (props: object) => R.createElement(View, props) };
+});
 jest.mock('expo-camera', () => {
   const R = jest.requireActual<typeof import('react')>('react');
   const { View } = jest.requireActual<typeof import('react-native')>('react-native');
@@ -29,7 +46,7 @@ jest.mock('expo-camera', () => {
     R.useEffect(() => { props.onCameraReady?.(); }, []);
     return R.createElement(View, { ...props, testID: 'camera' });
   });
-  return { CameraView, useCameraPermissions: () => [mockPermission, jest.fn()] };
+  return { CameraView, useCameraPermissions: () => [mockPermission, mockRequest] };
 });
 
 const open = async (props: Partial<React.ComponentProps<typeof FaceLivenessModal>> = {}) => {
@@ -39,6 +56,7 @@ const open = async (props: Partial<React.ComponentProps<typeof FaceLivenessModal
   await act(async () => {
     tree = renderer.create(<FaceLivenessModal visible onClose={onClose} onCapture={onCapture} {...props} />);
   });
+  await act(async () => { tree.root.findByType(Modal).props.onShow(); });
   return { tree, onCapture, onClose };
 };
 const press = async (tree: renderer.ReactTestRenderer, label: string) => {
@@ -49,22 +67,148 @@ const runClock = async (ms = 5000) => {
     await act(async () => { await jest.advanceTimersByTimeAsync(200); });
   }
 };
+const flush = async () => { await act(async () => { await Promise.resolve(); await Promise.resolve(); }); };
 const text = (tree: renderer.ReactTestRenderer) => JSON.stringify(tree.toJSON());
+const web = (tree: renderer.ReactTestRenderer) => tree.root.findByProps({ testID: 'liveness-web' });
+const say = (tree: renderer.ReactTestRenderer, data: object, url = LIVENESS_URL) =>
+  act(async () => { web(tree).props.onMessage({ nativeEvent: { url, data: JSON.stringify(data) } }); });
+/** The simple camera, as when the page reports it cannot run the check. */
+const toCamera = async (tree: renderer.ReactTestRenderer) => {
+  await say(tree, { type: 'unavailable', reason: 'model' });
+};
 
 beforeEach(() => {
-  jest.useFakeTimers();
   Platform.OS = 'ios';
   mockPermission = { granted: true, canAskAgain: true };
   mockApiJson.mockReset();
+  mockRequest.mockReset().mockResolvedValue(mockPermission);
+  mockGetBrightness.mockReset().mockResolvedValue(0.3);
+  mockSetBrightness.mockReset().mockResolvedValue(undefined);
+  mockRestoreBrightness.mockReset().mockResolvedValue(undefined);
   mockSizes.mockReset().mockResolvedValue(['4000x3000', '1920x1080', '1280x960', '640x480']);
   let shot = 0;
-  mockTake.mockReset().mockImplementation(async () => ({ base64: `PHOTO-${++shot}` }));
+  mockTake.mockReset().mockImplementation(async () => ({ base64: `PHOTO${++shot}` }));
 });
 afterEach(() => { jest.useRealTimers(); });
 
-it('counts down, takes two straight and three turned photos, and hands back the photo the server chose', async () => {
+// --- the guided check in the page -------------------------------------------
+it('runs the liveness page from our API host, only that host', async () => {
+  const { tree } = await open();
+  expect(LIVENESS_URL).toBe('https://api.zitch.ng/kyc/liveness/');
+  const view = web(tree);
+  expect(view.props.source).toEqual({ uri: 'https://api.zitch.ng/kyc/liveness/' });
+  expect(view.props.mediaCapturePermissionGrantType).toBe('grantIfSameHostElsePrompt');
+  expect(view.props.allowsInlineMediaPlayback).toBe(true);
+  expect(view.props.onShouldStartLoadWithRequest({ url: 'https://api.zitch.ng/kyc/liveness/' })).toBe(true);
+  expect(view.props.onShouldStartLoadWithRequest({ url: 'https://evil.example/kyc/liveness/' })).toBe(false);
+  expect(tree.root.findAllByProps({ testID: 'camera' })).toHaveLength(0);
+  act(() => tree.unmount());
+});
+
+it('has our server check the frames from the moves and hands back the photo it chose', async () => {
   mockApiJson.mockResolvedValue({ success: true, frame: 1, liveness_token: 'PROOF' });
   const { tree, onCapture } = await open();
+  await say(tree, { type: 'ready' });
+  const capture = { type: 'capture', image: 'QUJD', frames: ['QUJD', 'REVG'], turns: ['R0hJ', 'SktM'] };
+  // Only our page, and only well-formed frames.
+  await say(tree, capture, 'https://evil.example/kyc/liveness/');
+  await say(tree, { ...capture, frames: ['not base64!'] });
+  await say(tree, { ...capture, frames: [] });
+  expect(mockApiJson).not.toHaveBeenCalled();
+  await say(tree, capture);
+  expect(mockApiJson).toHaveBeenCalledWith(EP.wallet.wemaTier2FaceCheck,
+    { frames: ['QUJD', 'REVG'], turns: ['R0hJ', 'SktM'] }, 90000);
+  expect(onCapture).toHaveBeenCalledWith({ image: 'REVG', token: 'PROOF' });
+  act(() => tree.unmount());
+});
+
+it('shows a refusal from the server and runs the moves again on a fresh page', async () => {
+  mockApiJson.mockResolvedValueOnce({ success: false, code: 'liveness_no_turn',
+    message: 'We didn’t see your head turn.', _httpStatus: 422 })
+    .mockResolvedValueOnce({ success: true, frame: 0, liveness_token: 'PROOF-2' });
+  const { tree, onCapture } = await open();
+  await say(tree, { type: 'ready' });
+  await say(tree, { type: 'capture', frames: ['QUJD'], turns: ['R0hJ'] });
+  expect(text(tree)).toContain('We didn’t see your head turn.');
+  expect(onCapture).not.toHaveBeenCalled();
+  const before = web(tree);
+  await press(tree, 'Try again');
+  expect(web(tree)).not.toBe(before);                    // remounted: the page starts over
+  expect(text(tree)).toContain('Getting the face check ready…');
+  await say(tree, { type: 'ready' });
+  await say(tree, { type: 'capture', frames: ['REVG'], turns: ['SktM'] });
+  expect(onCapture).toHaveBeenCalledWith({ image: 'REVG', token: 'PROOF-2' });
+  act(() => tree.unmount());
+});
+
+it('a page that sends no head-turn frames is not trusted: the camera check runs instead', async () => {
+  const { tree, onCapture } = await open();
+  await say(tree, { type: 'ready' });
+  await say(tree, { type: 'capture', image: 'QUJD' });
+  expect(mockApiJson).not.toHaveBeenCalled();
+  expect(onCapture).not.toHaveBeenCalled();
+  expect(tree.root.findByProps({ testID: 'camera' })).toBeTruthy();
+  act(() => tree.unmount());
+});
+
+it('raises the screen to full brightness during the check and restores it after (iOS)', async () => {
+  const { tree } = await open();
+  await flush();
+  expect(mockSetBrightness).toHaveBeenCalledWith(1);
+  await act(async () => { tree.update(<FaceLivenessModal visible={false} onClose={jest.fn()} onCapture={jest.fn()} />); });
+  await flush();
+  expect(mockSetBrightness).toHaveBeenLastCalledWith(0.3);
+  act(() => tree.unmount());
+});
+
+it('hands Android back to the system brightness when the check closes', async () => {
+  Platform.OS = 'android';
+  const { tree } = await open();
+  await flush();
+  expect(mockSetBrightness).toHaveBeenCalledWith(1);
+  act(() => tree.unmount());
+  await flush();
+  expect(mockRestoreBrightness).toHaveBeenCalledTimes(1);
+});
+
+it('falls back to the camera check when the model or camera cannot run in the page', async () => {
+  const { tree } = await open();
+  await say(tree, { type: 'loading' });
+  await say(tree, { type: 'unavailable', reason: 'model' });
+  expect(tree.root.findAllByProps({ testID: 'liveness-web' })).toHaveLength(0);
+  expect(tree.root.findByProps({ testID: 'camera' })).toBeTruthy();
+  expect(tree.root.findByProps({ accessibilityLabel: 'Start face check' })).toBeTruthy();
+  act(() => tree.unmount());
+});
+
+it('falls back to the camera check when the page never answers', async () => {
+  jest.useFakeTimers();
+  const { tree } = await open();
+  await act(async () => { jest.advanceTimersByTime(PAGE_TIMEOUT_MS + 10); });
+  expect(tree.root.findByProps({ testID: 'camera' })).toBeTruthy();
+  act(() => tree.unmount());
+});
+
+it('falls back on a load error and offers the simple camera when the page says it is slow', async () => {
+  const first = await open();
+  await say(first.tree, { type: 'ready' });
+  await say(first.tree, { type: 'slow' });
+  await press(first.tree, 'Use the simple camera instead');
+  expect(first.tree.root.findByProps({ testID: 'camera' })).toBeTruthy();
+  act(() => first.tree.unmount());
+
+  const second = await open();
+  await act(async () => { web(second.tree).props.onError({ nativeEvent: {} }); });
+  expect(second.tree.root.findByProps({ testID: 'camera' })).toBeTruthy();
+  act(() => second.tree.unmount());
+});
+
+// --- the camera fallback -------------------------------------------------------
+it('camera: counts down, takes two straight and three turned photos, and hands back the photo the server chose', async () => {
+  jest.useFakeTimers();
+  mockApiJson.mockResolvedValue({ success: true, frame: 1, liveness_token: 'PROOF' });
+  const { tree, onCapture } = await open();
+  await toCamera(tree);
   await press(tree, 'Start face check');
   expect(text(tree)).toContain('Look straight at the camera and hold still.');
   await runClock();
@@ -74,13 +218,14 @@ it('counts down, takes two straight and three turned photos, and hands back the 
   }
   expect(mockTake.mock.calls.map(([options]) => options.quality)).toEqual([0.85, 0.85, 0.5, 0.5, 0.5]);
   expect(mockApiJson).toHaveBeenCalledWith(EP.wallet.wemaTier2FaceCheck,
-    { frames: ['PHOTO-1', 'PHOTO-2'], turns: ['PHOTO-3', 'PHOTO-4', 'PHOTO-5'] }, 90000);
-  expect(onCapture).toHaveBeenCalledWith({ image: 'PHOTO-2', token: 'PROOF' });
+    { frames: ['PHOTO1', 'PHOTO2'], turns: ['PHOTO3', 'PHOTO4', 'PHOTO5'] }, 90000);
+  expect(onCapture).toHaveBeenCalledWith({ image: 'PHOTO2', token: 'PROOF' });
   act(() => tree.unmount());
 });
 
-it('the camera never mirrors the photo and does not flash between frames', async () => {
+it('camera: never mirrors the photo and does not flash between frames', async () => {
   const { tree } = await open();
+  await toCamera(tree);
   const camera = tree.root.findByProps({ testID: 'camera' });
   expect(camera.props.facing).toBe('front');
   expect(camera.props.mirror).toBeUndefined();
@@ -88,23 +233,27 @@ it('the camera never mirrors the photo and does not flash between frames', async
   act(() => tree.unmount());
 });
 
-it('shows what to fix and lets the customer try again', async () => {
+it('camera: shows what to fix and lets the customer try again', async () => {
+  jest.useFakeTimers();
   mockApiJson.mockResolvedValueOnce({ success: false, code: 'liveness_no_turn',
     message: 'We didn’t see your head turn.', _httpStatus: 422 })
     .mockResolvedValueOnce({ success: true, frame: 0, liveness_token: 'PROOF-2' });
   const { tree, onCapture } = await open();
+  await toCamera(tree);
   await press(tree, 'Start face check');
   await runClock();
   expect(text(tree)).toContain('We didn’t see your head turn.');
   expect(onCapture).not.toHaveBeenCalled();
   await press(tree, 'Try again');
   await runClock();
-  expect(onCapture).toHaveBeenCalledWith({ image: 'PHOTO-6', token: 'PROOF-2' });
+  expect(onCapture).toHaveBeenCalledWith({ image: 'PHOTO6', token: 'PROOF-2' });
   act(() => tree.unmount());
 });
 
-it('closing mid-check abandons it: no upload and no result', async () => {
+it('camera: closing mid-check abandons it, with no upload and no result', async () => {
+  jest.useFakeTimers();
   const { tree, onCapture, onClose } = await open();
+  await toCamera(tree);
   await press(tree, 'Start face check');
   await act(async () => { await jest.advanceTimersByTimeAsync(900); });
   await press(tree, 'Close face check');
@@ -116,9 +265,11 @@ it('closing mid-check abandons it: no upload and no result', async () => {
   act(() => tree.unmount());
 });
 
-it('a camera error becomes a retry, not a crash', async () => {
+it('camera: an error becomes a retry, not a crash', async () => {
+  jest.useFakeTimers();
   mockTake.mockRejectedValueOnce(new Error('busy'));
   const { tree, onCapture } = await open();
+  await toCamera(tree);
   await press(tree, 'Start face check');
   await runClock();
   expect(text(tree)).toContain('We could not use the camera. Please try again.');
@@ -126,10 +277,11 @@ it('a camera error becomes a retry, not a crash', async () => {
   act(() => tree.unmount());
 });
 
-it('on Android asks the camera for a photo near the bank size instead of the full sensor', async () => {
+it('camera: on Android asks for a photo near the bank size instead of the full sensor', async () => {
   Platform.OS = 'android';
   const { tree } = await open();
-  await act(async () => { await Promise.resolve(); });
+  await toCamera(tree);
+  await flush();
   expect(tree.root.findByProps({ testID: 'camera' }).props.pictureSize).toBe('1280x960');
   act(() => tree.unmount());
 });

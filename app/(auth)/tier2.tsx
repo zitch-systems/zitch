@@ -38,10 +38,11 @@ const Done = ({ label }: { label: string }) => (
 
 /**
  * Upgrade to Tier 2 (design 72), on the bank's contract: the customer types
- * their BVN and NIN, takes the live face check (FaceLivenessModal: a straight
- * photo and a head turn, checked by our server), and one request sends the
- * account, both numbers and the checked photo to the bank. Only the bank's
- * read-back raises the tier.
+ * their BVN and NIN, takes the live face check (FaceLivenessModal: turn left,
+ * turn right, smile, checked by our server), and one request sends the
+ * account, both numbers and the checked photo to the bank, as soon as the
+ * check passes with both numbers typed. Only the bank's read-back raises the
+ * tier.
  */
 const Tier2 = () => {
   const { c, theme } = useTheme();
@@ -105,10 +106,10 @@ const Tier2 = () => {
 
   const idsDone = bvn.length === 11 && nin.length === 11;
 
-  const submit = async () => {
-    if (!idsDone || !face || !begin()) return;
+  const submit = async (capture: FaceCapture | null = face) => {
+    if (!idsDone || !capture || !begin()) return;
     try {
-      const res = await kycService.upgradeTier2(bvn, nin, face.image, face.token);
+      const res = await kycService.upgradeTier2(bvn, nin, capture.image, capture.token);
       if (!live()) return;
       if (res.success) {
         const fresh = await load();
@@ -243,7 +244,7 @@ const Tier2 = () => {
                       <ZIcon name="faceid" size={26} color={c.brand} stroke={1.7} />
                     </View>
                     <Text style={{ flex: 1, fontSize: 13, fontFamily: font.regular, color: c.ink2, lineHeight: 19 }}>
-                      Look straight at the camera, then slowly turn your head. Your bank matches the photo to your BVN and NIN. About ten seconds.
+                      Turn your head left, then right, then smile. Your bank matches the photo to your BVN and NIN. About fifteen seconds.
                     </Text>
                   </View>
                   <OutlineBtn label="Start face check" icon="scan" disabled={busy} onPress={() => setCameraOpen(true)} />
@@ -272,7 +273,9 @@ const Tier2 = () => {
           if (!live()) return;
           setCameraOpen(false);
           setFace(capture);
-          notify('Face check passed', 'Now submit for Tier 2.', 'success');
+          // Both numbers typed: send it now, as the WhatsApp page does.
+          if (idsDone && !busy) void submit(capture);
+          else notify('Face check passed', 'Enter your BVN and NIN, then submit for Tier 2.', 'success');
         }}
       />
     </>

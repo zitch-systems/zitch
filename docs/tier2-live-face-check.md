@@ -12,15 +12,28 @@ file, and with nothing to show a live person was in front of the camera.
 
 ## What happens now
 
-1. **Capture, guided.** The app (`components/design/FaceLivenessModal.tsx`) and
-   the WhatsApp page (`backend/whatsapp/templates/whatsapp/face_camera.html`)
-   show an oval with a light mask around it (it also lights the face), a short
-   countdown, then take a burst of straight photos and, after "slowly turn your
-   head to your left", a few frames of the turn. Photos are never mirrored (the
-   ID photo is not mirrored either). The WhatsApp page sends the 3:4 window the
-   customer sees, gives live light and steadiness hints, keeps the sharpest
-   frame of its burst, and falls back to two camera-app photos (straight, then
-   turned) where the browser cannot stream the camera. Android takes a 4:3 photo
+1. **Capture, guided on the device.** The WhatsApp page
+   (`backend/whatsapp/templates/whatsapp/face_camera.html`) and the app (the same
+   check at `/kyc/liveness/`, shown in a WebView by
+   `components/design/FaceLivenessModal.tsx`) run an active check on the phone:
+   turn your head left, then right, then smile, each move ticked off as it
+   happens (`backend/whatsapp/static/whatsapp/liveness/liveness.js`, MediaPipe
+   FaceLandmarker, self-hosted; see `whatsapp/liveness.py`). The screen is the
+   light: a white ring on the web page, full brightness in the app, and a "turn up
+   your brightness" hint on a dark face. While the moves run, the check keeps up
+   to three of the clearest straight frames (up to 1280 px, for the bank) and the
+   widest point of each turn (480 px, only for our server). A move needs about 27
+   degrees (on-device yaw 0.6), and "Turn a little further" appears part of the
+   way, so the turn is wide enough for the server to measure on flatter noses
+   too. Frames are never mirrored (the ID photo is not mirrored either); only the
+   preview is.
+   Fallbacks still take a turn. Where the model cannot run (old browser, no
+   WebAssembly SIMD, blocked download, 20 s): the camera takes three straight
+   photos, then eight frames after "Now slowly turn your head to the left". Where
+   the browser cannot stream the camera (camera refused, Android in-app WebView
+   with `?stay=1`): two camera-app photos, straight then turned, each taken in
+   the last 10 minutes. The app's own fallback (expo-camera): a countdown, two
+   straight photos and three while the customer turns; Android takes a 4:3 photo
    near 1280 px instead of the 12-50 MP sensor default.
 2. **Checked before the bank** (`backend/wallet/selfie.py`). Every photo is
    decoded strictly, turned upright (EXIF, or the orientation the face is found
@@ -28,19 +41,22 @@ file, and with nothing to show a live person was in front of the camera.
    MIT, OpenCV) finds the face and five landmarks. A photo is refused with one
    instruction when it is clearly unusable: no face, more than one face, face
    too far or cut off, not facing the camera, too dark, backlit, burnt out, or
-   very blurred. The clearest passing frame of the burst is the one sent.
-3. **Live, three-dimensional face** (`selfie.verify_head_turn`). The nose tip
-   stands out from the face, so in a real head turn it moves across the line
-   between the eyes; a printed or on-screen photo tilted in front of the camera
-   is flat, so it keeps its place. The turn must move the nose at least 0.15 of
-   the eye distance, either way, with the same framing and background as the
-   straight photo.
+   very blurred. The clearest passing straight frame is the one sent.
+3. **Live, three-dimensional face** (`selfie.verify_head_turn`). The on-device
+   check is guidance, not proof: a modified page could skip it, so the server
+   measures the frames itself. The nose tip stands out from the face, so in a
+   real head turn it moves across the line between the eyes; a printed or
+   on-screen photo tilted in front of the camera is flat, so it keeps its place.
+   The turn must move the nose at least 0.15 of the eye distance, either way,
+   with the same framing and background as the straight photo.
 4. **Bound to the photo.** The app calls `POST /api/wallet/wema/tier2-face-check/`
    (`frames` 1-3, `turns` 1-8; nothing goes to the bank, nothing is stored) and
    gets back the chosen frame and a 15-minute signed proof bound to the
-   customer, their current credentials and that photo's SHA-256. It sends the
-   photo and `liveness_token` to `/api/wallet/wema/upgrade-tier2/`. The WhatsApp
-   page checks and submits in one request, before the link is claimed.
+   customer, their current credentials and that photo's SHA-256. As soon as the
+   check passes with both numbers typed, it sends the photo and
+   `liveness_token` to `/api/wallet/wema/upgrade-tier2/`. The WhatsApp page
+   checks and submits in one request (`image`: 1-3 straight photos, and `turns`,
+   each comma-joined base64, with `bvn` and `nin`), before the link is claimed.
 5. **Errors say what to do.** `selfie_*` and `liveness_*` codes (HTTP 422) come
    with one plain instruction (`selfie.MESSAGES`). A BVN/NIN problem keeps the
    checked photo; a refused or expired face check asks for a new one.
@@ -78,12 +94,20 @@ in perspective.
 | Blur (Crete et al., 0-1) | refuse above 0.75 | sharp 0.28-0.40, a soft video still 0.64, blur radius 3 0.68-0.79 |
 | Face size | width under 16% of the photo or eyes under 36 px apart | |
 | Pose | tilt over 25 degrees, nose more than 0.25 off centre | a ~25 degree turn (0.19) passes |
-| Head turn | nose moves 0.15 or more | flat photo tilted 20-35 degrees: 0.00-0.09 |
+| Head turn | nose moves 0.15 or more | flat photo tilted 15-35 degrees: 0.00-0.07; 45 degrees: up to 0.12 |
+| On-device move | yaw 0.6 (about 27 degrees) | flat photo tilted up to 45 degrees moves it by 0.15 at most |
 
 Edge energy falls with brightness, so measured plainly a dim or darker face
 would read as blurry; blur is measured as a ratio instead, which light and skin
 tone do not move. The backlight rule only fires when the face itself is dark,
 so a darker face in front of a bright wall is not refused for it.
+
+The tilt figures come from five sample portraits rendered as a flat photo
+rotated about its vertical axis in strong perspective (held at 2.5 times its
+width from the camera), measured by YuNet on the server and by MediaPipe in
+Chromium through the same page and CSP. On-device yaw is about 1.3 x sin(angle);
+the server's measure is about 0.3-0.45 x tan(angle) depending on the nose, which
+is why a move asks for ~27 degrees: the server still sees 0.15 on flatter noses.
 
 ## Limits
 
@@ -92,10 +116,9 @@ so a darker face in front of a bright wall is not refused for it.
   a pre-recorded video of the customer turning their head, or frames injected by
   a modified client, would need a certified liveness product. The bank's face
   match against the BVN/NIN photo remains the identity decision.
-- The app's capture runs on expo-camera without on-device face tracking: the
-  turn frames are timed, and the server measures them. On-device landmarks
-  (for example ML Kit) could guide the turn as it happens; that needs a new
-  native module and device testing.
+- The on-device model is about 6 MB over the wire (cached under hashed names; it
+  starts loading while the customer types). Phones that cannot run it get the
+  guided camera fallback, whose turn frames are timed rather than tracked.
 - Memory: OpenCV, numpy and the model add about 45 MB to the API process, loaded
   on the first face check. If they cannot load, photos still get the light and
   readability checks, and the live check answers 503 instead of passing.

@@ -1190,7 +1190,7 @@ class TransactionPinLockoutTests(TestCase):
 
 
 class EscalatingPinLockoutTests(TestCase):
-    """Five wrong PINs cost an hour; five more, without a correct PIN in between,
+    """Five wrong PINs cost 30 minutes; five more, without a correct PIN in between,
     cost a day and are told how to get out of it.
 
     Driven through `evaluate_transaction_pin` rather than a money endpoint on
@@ -1220,16 +1220,16 @@ class EscalatingPinLockoutTests(TestCase):
         u = User.objects.get(pk=self.user.pk)
         return round((u.pin_locked_until - timezone.now()).total_seconds() / 60)
 
-    def test_the_first_lock_is_one_hour(self):
+    def test_the_first_lock_is_thirty_minutes(self):
         ok, code, message = self._lock()
         self.assertEqual((ok, code), (False, "pin_locked"))
         self.assertAlmostEqual(self._held_minutes(), User.PIN_LOCKOUT_MINUTES, delta=1)
         self.assertEqual(User.objects.get(pk=self.user.pk).pin_lockout_strikes, 1)
         # A reset clears any lock outright and is reachable regardless of tier
         # (see set_transaction_pin), so it is offered from the FIRST lock —
-        # withholding it here only made an honest slip cost an hour of waiting
-        # before the customer learned they never had to.
-        self.assertIn("about an hour", message)
+        # withholding it here only made an honest slip cost half an hour of
+        # waiting before the customer learned they never had to.
+        self.assertIn("30 minute(s)", message)
         self.assertIn("reset your PIN", message)
 
     def test_a_second_round_after_the_first_lock_expires_costs_a_day(self):
@@ -1254,7 +1254,7 @@ class EscalatingPinLockoutTests(TestCase):
         self.assertAlmostEqual(self._held_minutes(),
                                User.PIN_LOCKOUT_ESCALATED_MINUTES, delta=1)
 
-    def test_a_correct_pin_between_rounds_puts_the_next_lock_back_at_an_hour(self):
+    def test_a_correct_pin_between_rounds_puts_the_next_lock_back_at_thirty_minutes(self):
         """Knowing the PIN is exactly what separates a customer who forgot it
         from someone working through the keyspace, so it resets the ladder."""
         from common.http import evaluate_transaction_pin
@@ -1277,7 +1277,7 @@ class EscalatingPinLockoutTests(TestCase):
         self.assertEqual((ok, code), (False, "pin_locked"))
         # Re-hitting the lock quotes the time LEFT, not the tier's nominal
         # length, and says the same thing the lock itself said.
-        self.assertIn("about an hour", message)
+        self.assertIn("30 minute(s)", message)
 
     def test_a_wrong_pin_while_locked_does_not_extend_the_lock(self):
         """Hammering a locked account must not push the release further out —

@@ -235,7 +235,7 @@ class FaceLinkTests(TestCase):
         sent = " ".join(str(c.args[1]) for c in rep.call_args_list)
         self.assertNotIn("11-digit", sent)
         self.assertNotIn("Zitch app", sent)
-        self.assertIn("Reply *7*", sent)
+        self.assertIn("Reply *8*", sent)
 
 
 @override_settings(WEMA=FACE_ON)

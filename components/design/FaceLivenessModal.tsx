@@ -1,17 +1,59 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Platform, Pressable, Text, View, type LayoutChangeEvent } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Brightness from 'expo-brightness';
+import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Ellipse, Path } from 'react-native-svg';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { kycService } from '@/lib/services/kyc';
+import apiBaseUrl from '@/components/configFiles/apiConfig';
 
 /** What the live face check hands back: the straight photo the server chose
  * (base64 JPEG) and its 15-minute proof, both sent with the Tier 2 upgrade. */
 export type FaceCapture = { image: string; token: string };
 
+/**
+ * Tier 2 live face check.
+ *
+ * First choice is the guided check the WhatsApp face link uses (turn left,
+ * turn right, smile), served by our API at /kyc/liveness/ with MediaPipe
+ * FaceLandmarker self-hosted there, shown in a WebView. Each move is detected
+ * on the device as it happens, and the page hands back the clearest straight
+ * frames and the widest point of each turn by postMessage.
+ *
+ * If that page cannot run here (no network to it, an old WebView, no model,
+ * the camera refused inside the WebView) the modal uses expo-camera instead:
+ * a countdown, two straight photos and three while the customer turns.
+ *
+ * Either way the frames go to our server (wallet/face_check.py), which keeps
+ * the straight photo the bank can use, checks the turn came from a real,
+ * three-dimensional face, and returns that photo's proof. Nothing is stored on
+ * the phone. Photos are not mirrored: the bank compares them with the photo on
+ * the customer's ID, which is not mirrored either. The screen goes to full
+ * brightness while the camera runs, which lights the face in a dim room.
+ */
+export const LIVENESS_URL = `${apiBaseUrl}/kyc/liveness/`;
+const livenessOrigin = (() => {
+  try {
+    const url = new URL(LIVENESS_URL);
+    return url.protocol === 'https:' ? url.origin : '';
+  } catch {
+    return '';
+  }
+})();
+/** Per frame, the server's own limit (wallet/selfie.py MAX_BASE64_CHARS). */
+const MAX_IMAGE_CHARS = 3_900_000;
+const MAX_FRAMES = 3;
+const MAX_TURNS = 8;
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+/** The page must say hello this soon, and be ready (or give up) this soon. */
+export const PAGE_TIMEOUT_MS = 15_000;
+export const READY_TIMEOUT_MS = 45_000;
+
+type Mode = 'live' | 'camera';
 type Step = 'ready' | 'countdown' | 'straight' | 'turn' | 'checking' | 'failed';
 
 const COUNTDOWN = 3;
@@ -25,6 +67,46 @@ const INK2 = '#40524A';
 const INK3 = '#5D6F66';
 
 const sleep = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+
+const sameOrigin = (value: string | undefined) => {
+  if (!livenessOrigin || !value) return false;
+  try {
+    return new URL(value).origin === livenessOrigin;
+  } catch {
+    return false;
+  }
+};
+
+/** 1..max base64 strings, each within the server's size limit, or null. */
+const frameList = (value: unknown, max: number): string[] | null => {
+  if (!Array.isArray(value) || value.length < 1 || value.length > max) return null;
+  return value.every((item) => typeof item === 'string' && item.length > 0
+    && item.length <= MAX_IMAGE_CHARS && BASE64.test(item)) ? value as string[] : null;
+};
+
+/** Full screen brightness while `active`, then back to what it was. */
+export function useFullBrightness(active: boolean) {
+  useEffect(() => {
+    if (!active) return;
+    let previous: number | null = null;
+    // Restoring waits for the raise to settle, so a quick close cannot leave
+    // the screen stuck at full brightness.
+    const raised = (async () => {
+      try {
+        previous = await Brightness.getBrightnessAsync();
+        await Brightness.setBrightnessAsync(1);
+      } catch { /* brightness is a nicety; the check works without it */ }
+    })();
+    return () => {
+      void raised.then(async () => {
+        try {
+          if (Platform.OS === 'android') await Brightness.restoreSystemBrightnessAsync();
+          else if (previous !== null) await Brightness.setBrightnessAsync(previous);
+        } catch { /* nothing else to do */ }
+      });
+    };
+  }, [active]);
+}
 
 /**
  * The Android picture size to use: 4:3 and close to the 1280 px the bank
@@ -60,17 +142,6 @@ const GUIDE: Record<Step, string> = {
   failed: '',
 };
 
-/**
- * Tier 2 live face check (in-app camera, expo-camera).
- *
- * The customer fills the oval; a countdown, then two straight photos and three
- * while they turn their head. The server picks the clearest straight photo the
- * bank can use and checks the turn came from a real, three-dimensional face
- * (wallet/face_check.py), returning that photo's proof. Nothing is stored on
- * the phone. Photos are not mirrored: the bank compares them with the photo on
- * the customer's ID, which is not mirrored either. The light mask around the
- * oval also lights the face in a dim room.
- */
 const FaceLivenessModal = ({
   visible,
   onClose,
@@ -83,6 +154,11 @@ const FaceLivenessModal = ({
   const { c } = useTheme();
   const camera = useRef<React.ElementRef<typeof CameraView>>(null);
   const [permission, requestPermission] = useCameraPermissions();
+  const [mode, setMode] = useState<Mode>(livenessOrigin ? 'live' : 'camera');
+  const [ready, setReady] = useState(false);
+  const [alive, setAlive] = useState(false);
+  const [slow, setSlow] = useState(false);
+  const [page, setPage] = useState(0);
   const [step, setStep] = useState<Step>('ready');
   const [count, setCount] = useState(0);
   const [message, setMessage] = useState('');
@@ -96,6 +172,8 @@ const FaceLivenessModal = ({
   active.current = visible;
   useEffect(() => () => { active.current = false; flow.current += 1; }, []);
 
+  useFullBrightness(visible && !!permission?.granted);
+
   const release = () => {
     if (held.current) {
       held.current = false;
@@ -103,15 +181,23 @@ const FaceLivenessModal = ({
     }
   };
 
+  const restart = () => {
+    flow.current += 1;
+    setStep('ready');
+    setMessage('');
+    setCount(0);
+    setReady(false);
+    setAlive(false);
+    setSlow(false);
+  };
+
   const open = () => {
     if (!held.current) {
       held.current = true;
       beginExternalActivity(); // the app lock must not fire while the camera is up
     }
-    flow.current += 1;
-    setStep('ready');
-    setMessage('');
-    setCount(0);
+    restart();
+    setMode(livenessOrigin ? 'live' : 'camera');
     if (!permission?.granted) void requestPermission();
   };
 
@@ -120,11 +206,80 @@ const FaceLivenessModal = ({
     return release;
   }, [visible]);
 
+  /** The expo-camera capture, when the page cannot run the check here. */
+  const toCamera = () => {
+    restart();
+    setMode('camera');
+  };
+
+  // A page that never answers (offline, blocked host) falls back to the camera.
+  useEffect(() => {
+    if (!visible || mode !== 'live' || !permission?.granted || ready) return;
+    // Nothing has been captured while the page is not ready: only the mode changes.
+    const timer = setTimeout(() => {
+      if (active.current) setMode('camera');
+    }, alive ? READY_TIMEOUT_MS : PAGE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [visible, mode, permission?.granted, ready, alive]);
+
   const close = () => {
     active.current = false;
     flow.current += 1;
     release();
     onClose();
+  };
+
+  /** Our server keeps the clearest straight photo and measures the turn. */
+  const verify = async (frames: string[], turns: string[], live: () => boolean) => {
+    setMessage('');
+    setStep('checking');
+    try {
+      const result = await kycService.checkTier2Face(frames, turns);
+      if (!live()) return;
+      const chosen = typeof result.frame === 'number' ? frames[result.frame] : undefined;
+      if (result.success && chosen && result.liveness_token) {
+        onCapture({ image: chosen, token: result.liveness_token });
+        return;
+      }
+      setMessage(result.message || 'We could not check your face. Please try again.');
+    } catch {
+      if (!live()) return;
+      setMessage('We could not check your face. Please try again.');
+    }
+    setStep('failed');
+  };
+
+  const onMessage = (event: WebViewMessageEvent) => {
+    if (!active.current || mode !== 'live' || !sameOrigin(event.nativeEvent.url)) return;
+    let data: { type?: unknown; image?: unknown; frames?: unknown; turns?: unknown };
+    try {
+      data = JSON.parse(event.nativeEvent.data);
+    } catch {
+      return;
+    }
+    switch (data?.type) {
+      case 'loading': setAlive(true); break;
+      case 'ready': setAlive(true); setReady(true); break;
+      case 'slow': setSlow(true); break;
+      case 'unavailable': toCamera(); break;
+      case 'capture': {
+        if (step === 'checking') break;
+        const frames = frameList(data.frames ?? (typeof data.image === 'string' ? [data.image] : undefined), MAX_FRAMES);
+        if (!frames) break;
+        const turns = frameList(data.turns, MAX_TURNS);
+        // A page without the head-turn frames cannot be checked: use the camera.
+        if (!turns) { toCamera(); break; }
+        const mine = ++flow.current;
+        void verify(frames, turns, () => mine === flow.current && active.current);
+        break;
+      }
+      default: break;
+    }
+  };
+
+  const tryLiveAgain = () => {
+    restart();
+    setPage((n) => n + 1); // a fresh page: the moves start again
   };
 
   const onCameraReady = () => {
@@ -171,16 +326,7 @@ const FaceLivenessModal = ({
         turns.push(await shoot(0.5));
         if (!live()) return;
       }
-      setStep('checking');
-      const result = await kycService.checkTier2Face(frames, turns);
-      if (!live()) return;
-      const chosen = typeof result.frame === 'number' ? frames[result.frame] : undefined;
-      if (result.success && chosen && result.liveness_token) {
-        onCapture({ image: chosen, token: result.liveness_token });
-        return;
-      }
-      setMessage(result.message || 'We could not check your face. Please try again.');
-      setStep('failed');
+      await verify(frames, turns, live);
     } catch {
       if (!live()) return;
       setMessage('We could not use the camera. Please try again.');
@@ -188,6 +334,7 @@ const FaceLivenessModal = ({
     }
   };
 
+  const live = mode === 'live' && !!permission?.granted;
   const busy = step === 'countdown' || step === 'straight' || step === 'turn' || step === 'checking';
   const onLayout = (event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
@@ -203,7 +350,7 @@ const FaceLivenessModal = ({
 
   return (
     <Modal visible={visible} animationType="slide" onShow={open} onRequestClose={close}>
-      <SafeAreaView style={{ flex: 1, backgroundColor: MASK }}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: live ? '#fff' : MASK }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12 }}>
           <Pressable onPress={close} hitSlop={12} accessibilityRole="button" accessibilityLabel="Close face check">
             <ZIcon name="x" size={22} color={INK} stroke={2.2} />
@@ -211,13 +358,66 @@ const FaceLivenessModal = ({
           <View style={{ flex: 1 }}>
             <Text style={{ fontFamily: font.bold, color: INK, fontSize: 15 }}>Live face check</Text>
             <Text style={{ fontFamily: font.regular, color: INK2, fontSize: 12, marginTop: 2 }}>
-              Look straight at the camera, then turn your head
+              {live ? 'Turn left, turn right, then smile' : 'Look straight at the camera, then turn your head'}
             </Text>
           </View>
         </View>
 
         <View style={{ flex: 1 }} onLayout={onLayout}>
-          {permission?.granted ? (
+          {live ? (
+            <View style={{ flex: 1 }}>
+              <WebView
+                key={page}
+                testID="liveness-web"
+                source={{ uri: LIVENESS_URL }}
+                onMessage={onMessage}
+                onError={() => { if (active.current) toCamera(); }}
+                onHttpError={() => { if (active.current) toCamera(); }}
+                // Only the liveness page itself; it never navigates anywhere.
+                onShouldStartLoadWithRequest={(request: { url: string }) => sameOrigin(request.url)}
+                originWhitelist={['https://*']}
+                // The camera runs inside the page: inline video, no tap to
+                // play, and the app's camera permission passed through for our
+                // own host only.
+                allowsInlineMediaPlayback
+                mediaPlaybackRequiresUserAction={false}
+                mediaCapturePermissionGrantType="grantIfSameHostElsePrompt"
+                javaScriptEnabled
+                setSupportMultipleWindows={false}
+                style={{ flex: 1, backgroundColor: '#fff' }}
+              />
+              {!ready || step === 'checking' || step === 'failed' ? (
+                <View
+                  pointerEvents={step === 'failed' ? 'auto' : 'none'}
+                  style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff', padding: 28, gap: 14 }}
+                >
+                  {step === 'failed' ? (
+                    <>
+                      <ZIcon name="help" size={28} color="#B45309" stroke={2} />
+                      <Text accessibilityLiveRegion="polite" style={{ fontFamily: font.bold, color: '#B45309', fontSize: 15, lineHeight: 21, textAlign: 'center' }}>
+                        {message}
+                      </Text>
+                      <Pressable
+                        onPress={tryLiveAgain}
+                        accessibilityRole="button"
+                        accessibilityLabel="Try again"
+                        style={({ pressed }) => ({ minHeight: 52, alignSelf: 'stretch', borderRadius: 999, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.85 : 1 })}
+                      >
+                        <Text style={{ color: c.inkOnBrand, fontFamily: font.bold, fontSize: 15 }}>Try again</Text>
+                      </Pressable>
+                    </>
+                  ) : (
+                    <>
+                      <ActivityIndicator color={c.brand} />
+                      <Text accessibilityLiveRegion="polite" style={{ fontFamily: font.regular, color: INK3, fontSize: 13 }}>
+                        {step === 'checking' ? 'Checking your face…' : 'Getting the face check ready…'}
+                      </Text>
+                    </>
+                  )}
+                </View>
+              ) : null}
+            </View>
+          ) : permission?.granted ? (
             <>
               <CameraView
                 ref={camera}
@@ -272,28 +472,43 @@ const FaceLivenessModal = ({
           )}
         </View>
 
-        <View style={{ paddingHorizontal: 24, paddingBottom: 24, paddingTop: 10, gap: 12 }}>
-          <Text style={{ color: INK2, fontFamily: font.regular, fontSize: 12, textAlign: 'center', lineHeight: 17 }}>
-            Face a window or a lamp · No glasses, cap or face covering · Phone at eye level
-          </Text>
-          <Pressable
-            onPress={() => void run()}
-            disabled={!permission?.granted || !cameraReady || busy}
-            accessibilityRole="button"
-            accessibilityLabel={step === 'failed' ? 'Try again' : 'Start face check'}
-            accessibilityState={{ disabled: !permission?.granted || !cameraReady || busy }}
-            style={({ pressed }) => ({ minHeight: 52, borderRadius: 999, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center', opacity: !permission?.granted || !cameraReady || busy ? 0.55 : pressed ? 0.85 : 1 })}
-          >
-            {busy ? <ActivityIndicator color={c.inkOnBrand} /> : (
-              <Text style={{ color: c.inkOnBrand, fontFamily: font.bold, fontSize: 15 }}>
-                {step === 'failed' ? 'Try again' : 'Start face check'}
-              </Text>
-            )}
-          </Pressable>
-          <Text style={{ color: INK3, fontFamily: font.regular, fontSize: 11, textAlign: 'center' }}>
-            Your photos are used only for this check and are not stored by Zitch.
-          </Text>
-        </View>
+        {live ? (
+          <View style={{ paddingHorizontal: 24, paddingBottom: 20, paddingTop: 8, alignItems: 'center', gap: 8 }}>
+            {slow && step !== 'checking' ? (
+              <Pressable onPress={toCamera} accessibilityRole="button" accessibilityLabel="Use the simple camera instead" hitSlop={8}>
+                <Text style={{ color: c.brand, fontFamily: font.bold, fontSize: 13.5, textDecorationLine: 'underline' }}>
+                  Having trouble? Use the simple camera instead
+                </Text>
+              </Pressable>
+            ) : null}
+            <Text style={{ color: INK3, fontFamily: font.regular, fontSize: 11, textAlign: 'center' }}>
+              The face check runs on your phone. Zitch checks the photos for this request only and does not store them.
+            </Text>
+          </View>
+        ) : (
+          <View style={{ paddingHorizontal: 24, paddingBottom: 24, paddingTop: 10, gap: 12 }}>
+            <Text style={{ color: INK2, fontFamily: font.regular, fontSize: 12, textAlign: 'center', lineHeight: 17 }}>
+              Face a window or a lamp · No glasses, cap or face covering · Phone at eye level
+            </Text>
+            <Pressable
+              onPress={() => void run()}
+              disabled={!permission?.granted || !cameraReady || busy}
+              accessibilityRole="button"
+              accessibilityLabel={step === 'failed' ? 'Try again' : 'Start face check'}
+              accessibilityState={{ disabled: !permission?.granted || !cameraReady || busy }}
+              style={({ pressed }) => ({ minHeight: 52, borderRadius: 999, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center', opacity: !permission?.granted || !cameraReady || busy ? 0.55 : pressed ? 0.85 : 1 })}
+            >
+              {busy ? <ActivityIndicator color={c.inkOnBrand} /> : (
+                <Text style={{ color: c.inkOnBrand, fontFamily: font.bold, fontSize: 15 }}>
+                  {step === 'failed' ? 'Try again' : 'Start face check'}
+                </Text>
+              )}
+            </Pressable>
+            <Text style={{ color: INK3, fontFamily: font.regular, fontSize: 11, textAlign: 'center' }}>
+              Your photos are used only for this check and are not stored by Zitch.
+            </Text>
+          </View>
+        )}
       </SafeAreaView>
     </Modal>
   );

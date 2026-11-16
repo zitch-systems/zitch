@@ -250,7 +250,7 @@ def send_list(msisdn: str, body: str, rows: list,
 
 def send_flow(msisdn: str, flow_token: str, header: str, body: str,
               screen: str, screen_data: dict, cta: str = "",
-              on_open: str = "navigate") -> dict:
+              on_open: str = "navigate", footer: str = "") -> dict:
     """Send an interactive Flow message - the secure PIN pad.
 
     `on_open` decides WHO picks the first screen when the customer taps the
@@ -296,6 +296,10 @@ def send_flow(msisdn: str, flow_token: str, header: str, body: str,
         "body": {"text": body[:1024]},
         "action": {"name": "flow", "parameters": parameters},
     }}
+    if footer:
+        # WhatsApp's small grey line under the card - the only small text a
+        # chat message can carry (max 60 characters).
+        payload["interactive"]["footer"] = {"text": footer[:60]}
     res = _send_payload(msisdn, payload, f"[flow] {header} -> {screen}")
     if not res.get("success"):
         _record_flow_rejection(screen, res)

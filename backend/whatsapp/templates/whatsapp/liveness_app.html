@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Face check · Zitch</title>
+  <link rel="stylesheet" href="{{ liveness_style }}" nonce="{{ nonce }}">
+  <style nonce="{{ nonce }}">
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #fff; color: #142621; font: 16px/1.5 system-ui, sans-serif; }
+    main { max-width: 520px; margin: 0 auto; padding: 12px 20px 18px; text-align: center; }
+    .note { color: #52665c; font-size: 14px; margin: 4px 0; }
+    .message { background: #fff5de; border-radius: 10px; padding: 12px; margin-top: 14px; text-align: left; }
+    .message.ok { background: #e6f5e8; font-weight: 600; }
+  </style>
+</head>
+<body class="lv-flash">
+<main>
+  <p class="note" id="lead">Turn your head left, then right, then smile. Remove glasses or a face covering.</p>
+  {% include "whatsapp/_liveness_stage.html" %}
+  <p class="message hidden" id="status" role="status" aria-live="polite"></p>
+  <noscript><p class="message">JavaScript is needed for the face check.</p></noscript>
+</main>
+{{ liveness_assets|json_script:"lv-assets" }}
+<script nonce="{{ nonce }}" src="{{ liveness_script }}"></script>
+<script nonce="{{ nonce }}">
+(function () {
+  // Messages to the Zitch app (react-native-webview). Elsewhere this page only
+  // runs the check locally and sends nothing anywhere.
+  function post(message) {
+    if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+      window.ReactNativeWebView.postMessage(JSON.stringify(message));
+    }
+  }
+  var $ = function (id) { return document.getElementById(id); };
+  function b64(dataUrl) { return String(dataUrl).split(',')[1] || ''; }
+  var video = $('video'), shot = $('shot'), hint = $('hint'), moves = $('lv-moves'), status = $('status');
+  var LV = window.ZitchLiveness || null;
+  var stream = null, run = null, lock = null, over = false;
+
+  function show(el, on) { el.classList.toggle('hidden', !on); }
+  function stop() {
+    if (run) { run.stop(); run = null; }
+    if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+    if (lock) { lock.release(); lock = null; }
+  }
+  function unavailable(reason) {
+    if (over) return;
+    over = true;
+    stop();
+    post({ type: 'unavailable', reason: reason });
+    hint.textContent = 'Switching to the simple camera…';
+    show(hint, true); show(video, false); show(moves, false);
+  }
+
+  post({ type: 'loading' });
+  if (!LV || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    unavailable(LV ? 'camera' : 'model');
+    return;
+  }
+  var assets = JSON.parse($('lv-assets').textContent);
+  assets.nonce = (document.currentScript && document.currentScript.nonce) || '';
+  var engine = LV.load(assets);
+  engine.catch(function () { /* handled below */ });
+  var base = LV.stage(document);
+
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
+    .then(function (s) {
+      if (over) { s.getTracks().forEach(function (t) { t.stop(); }); return; }
+      stream = s;
+      video.srcObject = s;
+      if (video.play) { var p = video.play(); if (p && p.catch) p.catch(function () {}); }
+      show(video, true);
+      lock = LV.wakeLock();
+      hint.textContent = 'Getting the face check ready…';
+      return engine.then(function (lm) {
+        if (over || !stream) return;
+        show(hint, false); show(moves, true);
+        post({ type: 'ready' });
+        run = LV.session(lm, video, {
+          step: base.step, prompt: base.prompt, hint: base.hint, dark: function (on) { base.dark(on); post({ type: 'dark', on: !!on }); },
+          done: function (result) {
+            over = true;
+            run = null;
+            stop();
+            var shown = (result && result.frames) || [];
+            var frames = shown.map(b64);
+            var turns = ((result && result.turns) || []).map(b64);
+            shot.src = shown[0] || '';
+            shot.classList.add('lv-mirror');
+            show(shot, true); show(video, false); show(moves, false);
+            status.textContent = 'Checking your face…';
+            show(status, true);
+            // The app sends these to our server's face check, which picks the
+            // straight photo for the bank and measures the head turn.
+            post({ type: 'capture', image: frames[0] || '', frames: frames, turns: turns });
+          },
+          error: function () { unavailable('model'); },
+          slow: function () { post({ type: 'slow' }); }
+        });
+      }, function () { unavailable('model'); });
+    }, function () { unavailable('camera'); });
+
+  window.addEventListener('pagehide', stop);
+})();
+</script>
+</body>
+</html>

@@ -672,9 +672,9 @@ const Kyc = () => {
     upgradeCaptureOwner.current = bindFlow();
     setUpgradeCameraOpen(true);
   };
-  const submitUpgrade = () => submit(async () => {
+  const submitUpgrade = (face: FaceCapture | null = upFace) => submit(async () => {
     const res = await kycService.upgradeTier2(askIdentity ? upBvn : '', askIdentity ? upNin : '',
-      upFace?.image || '', upFace?.token);
+      face?.image || '', face?.token);
     // A refused, expired or unusable face check needs a new one; a BVN/NIN
     // problem keeps it.
     if (faceCheckRefused(res)) setUpFace(null);
@@ -1070,14 +1070,14 @@ const Kyc = () => {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{upFace ? 'Face check passed' : 'Live face check'}</Text>
-                  <Text style={{ fontSize: 12, color: c.ink3, marginTop: 1, fontFamily: font.regular }}>{upFace ? 'Tap to take it again' : 'Look straight, then turn your head · about 10 seconds'}</Text>
+                  <Text style={{ fontSize: 12, color: c.ink3, marginTop: 1, fontFamily: font.regular }}>{upFace ? 'Tap to take it again' : 'Turn left, turn right, then smile'}</Text>
                 </View>
               </View>
             </Tap>
             <View style={{ height: 22 }} />
             <Btn label={busy ? 'Verifying…' : 'Finish verification'}
                  disabled={busy || (askIdentity && (upBvn.length !== 11 || upNin.length !== 11)) || !upFace}
-                 onPress={submitUpgrade} />
+                 onPress={() => submitUpgrade()} />
           </View>
           <Footer />
         </View>
@@ -1131,6 +1131,10 @@ const Kyc = () => {
         if (!upgradeCaptureOwner.current?.()) return;
         upgradeCaptureOwner.current = null;
         setUpgradeCameraOpen(false); setUpFace(capture);
+        // The face check passed: send it with the BVN and NIN already typed,
+        // as the WhatsApp page does. Otherwise it is held for "Finish
+        // verification".
+        if (!busy && (!askIdentity || (upBvn.length === 11 && upNin.length === 11))) void submitUpgrade(capture);
       }}
     />
     </>

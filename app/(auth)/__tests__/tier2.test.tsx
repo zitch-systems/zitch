@@ -80,19 +80,30 @@ it('asks for the BVN, NIN and the live face check, and keeps submit off until al
   const tree = await render();
   const out = text(tree);
   for (const copy of ['Upgrade to Tier 2 Your BVN, NIN and a live face check', 'Tier 1 now', 'Your BVN and NIN',
-    'Live face check', 'Look straight at the camera, then slowly turn your head.',
+    'Live face check', 'Turn your head left, then right, then smile.',
     'Your sign-up address is sent with this, so the Tier 3 check starts straight away.',
     'Enter your BVN and NIN to submit.']) expect(out).toContain(copy);
   expect(out).not.toMatch(/Prembly|Wema/);
   expect(tree.root.findAllByType(TextInput)).toHaveLength(2);
   expect(submitBtn(tree).props.disabled).toBe(true);
+  fill(tree, '2222 2222 222', '');
+  expect(submitBtn(tree).props.disabled).toBe(true);
+  // A face check passed before both numbers are in is held, not sent.
+  await passFaceCheck(tree);
+  expect(text(tree)).toContain('Face check passed');
+  expect(submitBtn(tree).props.disabled).toBe(true);
+  fill(tree);
+  expect(submitBtn(tree).props.disabled).toBe(false);
+  expect(mockApiJson.mock.calls.map(([p]) => p)).not.toContain(EP.wallet.wemaUpgradeTier2);
+  act(() => tree.unmount());
+});
+
+it('asks for the face check once both numbers are in', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === EP.kyc.status ? tier1 : { success: false });
+  const tree = await render();
   fill(tree);
   expect(text(tree)).toContain('Take the live face check to submit.');
   expect(submitBtn(tree).props.disabled).toBe(true);
-  await passFaceCheck(tree);
-  expect(text(tree)).toContain('Face check passed');
-  expect(submitBtn(tree).props.disabled).toBe(false);
-  expect(mockApiJson.mock.calls.map(([p]) => p)).not.toContain(EP.wallet.wemaUpgradeTier2);
   act(() => tree.unmount());
 });
 
@@ -107,8 +118,8 @@ it('sends both numbers with the chosen photo and its proof once, then returns to
   });
   const tree = await render();
   fill(tree);
+  // Passing the face check with both numbers typed sends it straight away.
   await passFaceCheck(tree);
-  await act(async () => { await submitBtn(tree).props.onPress(); });
   expect(mockApiJson).toHaveBeenCalledWith(EP.wallet.wemaUpgradeTier2, {
     bvn: '22222222222', nin: '33333333333', live_image: CAPTURE.image, liveness_token: CAPTURE.token });
   expect(mockApiJson.mock.calls.filter(([p]) => p === EP.wallet.wemaUpgradeTier2)).toHaveLength(1);
@@ -130,7 +141,6 @@ it('asks for a new face check when the bank or our check refuses it, but keeps i
   const tree = await render();
   fill(tree);
   await passFaceCheck(tree);
-  await act(async () => { await submitBtn(tree).props.onPress(); });
   expect(mockNotify).toHaveBeenLastCalledWith('Not upgraded yet', 'That NIN does not match the NIN already verified on this account.');
   expect(text(tree)).toContain('Face check passed');
   await act(async () => { await submitBtn(tree).props.onPress(); });
