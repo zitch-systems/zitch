@@ -174,6 +174,90 @@ reported a perfectly healthy Flow throughout exactly the outage described above.
 It is a three-hop Graph read, so it is deliberately *not* wired into `/healthz`;
 run it from the command when you want the answer.
 
+## Release 2 screens
+
+Added to `pin_flow.json` additively (no existing screen, field or route was
+changed or removed; Flow JSON version stays **6.0** — the menu uses
+`RadioButtonsGroup` + `data_exchange`, not `NavigationList`, which would need a
+newer version). Handlers live in `whatsapp/release2.py`. Every one is behind a
+`WHATSAPP_FLOW` flag that defaults **off**; with a flag off the code never sends
+or answers that screen.
+
+| Flag (env var) | Screens | What it does |
+|---|---|---|
+| `WHATSAPP_FLOW_DETAILS_SCREEN` | `SIGNUP_DETAILS` (root), `DETAILS_CHAIN` (from `PRIVACY_NOTICE`) | First name, surname, phone and email on one page, "Step 1 of 5". Same validators as `SIGNUP_SCREEN` + `SIGNUP_PHONE`. |
+| `WHATSAPP_FLOW_VERIFY_PASSWORD_SCREEN` | `VERIFY_PASSWORD` | When the typed phone is not the WhatsApp number: the SMS code, "Create a password", "Confirm password" and a "Didn't get it? Resend code" link on one page, "Step 2 of 5". Same number: the existing `SIGNUP_PASSWORD` page (this flag implies the password step). Then the PIN as today. |
+| `WHATSAPP_FLOW_LOGIN_ONE_SCREEN` | `LOGIN_SCREEN` (root), `LOGIN_RETRY` | Existing-account sign-in: email code + PIN on one page. Wrong code → `LOGIN_RETRY`; right code + wrong PIN → `PIN_RETRY`. Same budgets as before (2 codes, 2 PINs). |
+| `WHATSAPP_FLOW_BILL_FORM` | `BILL_SCREEN` (root), `BILL_CHAIN` (from `MENU`), `BILL_AMOUNT` | Menu 4 "Pay a bill" sends a "Pay a bill" Flow button **and** the chat sub-menu (typing 1/2 or a disco name keeps the chat path). Disco + Prepaid/Postpaid + meter → the chat's own meter check → "✓ Meter verified · NAME", address, amount → `PIN_CHAIN` → `_exec_electricity`. **Electricity only**; cable stays in the chat this release (there is no betting product in the chat). |
+| `WHATSAPP_FLOW_MENU_FORM` | `MENU` (root), `TRANSFER_CHAIN`, `VTU_CHAIN` (+ `BILL_CHAIN`) | The chat menu sends a "What would you like to do?" card with a "☰ Menu" button, then the numbered list as before. Send money / Airtime & data / Pay a bill (with `BILL_FORM` on) open their form inside the same Flow; every other item closes the Flow and is answered in the chat as if typed (via the inbound queue in production). |
+
+No flag is needed for the confirm layout: the PIN pages already render
+"Available balance ₦…" above the amount heading; every line under it is now
+"Label: value" (`To: JOHN DOE`, `Disco: Ikeja`, …), and a settled payment's
+outcome ends with "Receipt sent to your chat." These are data changes only.
+
+## Release 2 go-live
+
+Order matters: code first (flags off), then the Flow, then the flags.
+
+1. **Deploy this code** with every Release 2 flag unset. Nothing changes for
+   customers: the currently published Flow keeps serving every existing screen.
+
+2. **Compute the reviewed SHA256** of the exact file being published — the
+   canonical form `deploy_whatsapp_flow` checks (sorted keys, no whitespace):
+   ```sh
+   cd backend
+   python -c 'import hashlib,json; d=json.load(open("whatsapp/flow_assets/pin_flow.json")); print(hashlib.sha256(json.dumps(d, sort_keys=True, separators=(",", ":")).encode()).hexdigest())'
+   ```
+   (`python manage.py publish_flow --dry-run` prints the same value as "Local
+   contract SHA-256".)
+
+3. **Create the draft** (one API build with these set; `build.sh` runs
+   `deploy_whatsapp_flow` only when `WHATSAPP_FLOW_DEPLOY_OPERATION` is set):
+   ```sh
+   WHATSAPP_FLOW_DEPLOY_OPERATION=create-draft
+   WHATSAPP_FLOW_DEPLOY_REQUEST=release2-<date>        # 8–64 of [A-Za-z0-9_-]; names the draft "Zitch Partnership <REQUEST>"
+   WHATSAPP_FLOW_DEPLOY_SHA256=<digest from step 2>
+   WHATSAPP_FLOW_DEPLOY_ENDPOINT_URI=https://<api-host>/webhooks/whatsapp/flow
+   ```
+   The build log prints `Reviewed Flow: SHA256 …; 35 screens.`, the new draft's
+   Flow ID and Meta's validation errors. Fix any error before going on. A retry
+   with the same REQUEST reuses the same draft rather than creating a second.
+
+4. **Review the draft** in WhatsApp Manager → Flows (preview each new screen).
+
+5. **Publish it** (another build; same REQUEST, SHA256 and ENDPOINT_URI):
+   ```sh
+   WHATSAPP_FLOW_DEPLOY_OPERATION=publish
+   WHATSAPP_FLOW_DEPLOY_FLOW_ID=<draft Flow ID from step 3>
+   ```
+   The log ends `Flow <id> published; SHA256 …; 35 screens. WHATSAPP_FLOW_ID
+   remains unchanged.`
+
+6. **Switch the channel to the new Flow**: set `WHATSAPP_FLOW_ID=<new Flow ID>`
+   and clear every `WHATSAPP_FLOW_DEPLOY_*` variable, then redeploy. Every
+   existing screen is in the new Flow unchanged, so the flags-off paths keep
+   working. Confirm with `python manage.py publish_flow --dry-run` (or
+   `whatsapp_flow_published` on `/healthz`): no missing or drifted screens.
+
+7. **Turn the flags on, one at a time**, testing each on a real phone before the
+   next (each takes effect on the next restart):
+   ```sh
+   WHATSAPP_FLOW_LOGIN_ONE_SCREEN=true
+   WHATSAPP_FLOW_DETAILS_SCREEN=true
+   WHATSAPP_FLOW_VERIFY_PASSWORD_SCREEN=true
+   WHATSAPP_FLOW_BILL_FORM=true
+   WHATSAPP_FLOW_MENU_FORM=true
+   ```
+   Rollback is the same variable set back to `false` (or unset). A session
+   already open on a new screen is dispatched by its stored state, not the flag,
+   so it finishes normally.
+
+8. *(Optional)* retire the previous Flow with
+   `WHATSAPP_FLOW_DEPLOY_OPERATION=deprecate`, `…_FLOW_ID=<old>`,
+   `…_REPLACEMENT_FLOW_ID=<new>` — only once the new ID is selected, and only for
+   an old Flow that still carries the retired setup screens (the command checks).
+
 > **Re-publish after updating.** `IDENTITY_SCREEN` and `EMAIL_SCREEN` were added
 > after the first release, and `PIN_SCREEN` now carries the bank and account on
 > their own lines. Meta serves the version published in WhatsApp Manager, not

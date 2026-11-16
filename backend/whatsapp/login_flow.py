@@ -90,9 +90,25 @@ def _resolve(token, *, lock=False):
     return ob if hmac.compare_digest(signature, expected) else None
 
 
+#: Release 2 (WHATSAPP_FLOW['LOGIN_ONE_SCREEN']): the email code and the PIN on
+#: ONE page. A wrong code lands on LOGIN_RETRY (a different id, so both masked
+#: boxes arrive empty); a right code with a wrong PIN lands on PIN_RETRY, since
+#: the code is then proved and only the PIN is asked again. The attempt budgets
+#: are the two-page flow's: two codes, then two PINs.
+ONE_SCREEN_SUMMARY = ("Enter the 6-digit code we sent to your verified Zitch email, "
+                      "then your existing PIN.")
+
+
+def _one_screen(ob):
+    return bool(ob.payload.get("one_screen"))
+
+
 def _screen(ob, error=""):
-    from .flows import CODE_SCREEN, PIN_CHAIN, _identity_screen, _pin_screen
+    from .flows import CODE_SCREEN, LOGIN_SCREEN, PIN_CHAIN, _identity_screen, _pin_screen
     screen = ob.payload.get("screen") or CODE_SCREEN
+    if _one_screen(ob) and ob.step == CODE_STATE:
+        return {"screen": ob.payload.get("screen") or LOGIN_SCREEN,
+                "data": {"summary": ONE_SCREEN_SUMMARY, "error": error or ""}}
     if ob.step == PIN_STATE:
         return _pin_screen("Confirm your identity to connect WhatsApp. No payment will be made.",
                            error=error, screen=screen or PIN_CHAIN)
@@ -104,7 +120,7 @@ def _screen(ob, error=""):
 def start_login(msisdn):
     from .providers import flows_live, send_flow
     from .router import _local_phone, reply
-    from .flows import CODE_SCREEN
+    from .flows import CODE_SCREEN, LOGIN_SCREEN, login_one_screen_live
     if not flows_live():
         return reply(msisdn, "Secure sign-in is temporarily unavailable. Please try again shortly.")
     key = "wa-login-send:" + opaque_cache_identifier("wa-login-send", msisdn)
@@ -127,10 +143,14 @@ def start_login(msisdn):
                       "Enter it only in the secure WhatsApp form. Never share it.")
     if not sent.get("success"):
         return reply(msisdn, "We couldn't send your sign-in code. Please try again shortly.")
+    one_screen = login_one_screen_live()
+    payload = {"user_id": user.pk, "credentials": _credentials(user), "nonce": secrets.token_urlsafe(24),
+               "code_hash": make_password(code), "attempts": 0,
+               "screen": LOGIN_SCREEN if one_screen else CODE_SCREEN}
+    if one_screen:
+        payload["one_screen"] = True
     ob, _ = WaOnboarding.objects.update_or_create(msisdn=msisdn, defaults={
-        "step": CODE_STATE, "expires_at": timezone.now() + TTL,
-        "payload": {"user_id": user.pk, "credentials": _credentials(user), "nonce": secrets.token_urlsafe(24),
-                    "code_hash": make_password(code), "attempts": 0, "screen": CODE_SCREEN},
+        "step": CODE_STATE, "expires_at": timezone.now() + TTL, "payload": payload,
     })
     response = _screen(ob)
     sent = send_flow(msisdn, _token(ob), header="Sign in to Zitch",
@@ -155,19 +175,22 @@ def _send_login_menu(msisdn):
 
 @sensitive_variables()
 def handle_login(token, action, data):
-    from .flows import CODE_RETRY, PIN_CHAIN, PIN_RETRY, _result_screen
+    from .flows import CODE_RETRY, LOGIN_RETRY, PIN_CHAIN, PIN_RETRY, _result_screen
     from .router import EXECUTING_STATE, _mark_verified
     with transaction.atomic():
         ob = _resolve(token, lock=True)
         if ob is None:
             return _result_screen("This sign-in has ended. Reply 2 in the chat to start again.", "failed")
+        one_screen = _one_screen(ob)
         # Payment dispatch locks action -> user. Use that same order when a
         # successful re-link will retire old chat challenges. Browser grants are
         # excluded: they lock user -> link -> action and their link binding already
         # revokes them when we replace the old link below.
         from .verification_web import ACTION_TYPE as WEB_ACTION_TYPE
         old_actions = []
-        if ob.step == PIN_STATE and action == "data_exchange":
+        # The one-page form can reach the PIN check in the same exchange as
+        # the code, so it takes the same locks up front.
+        if (ob.step == PIN_STATE or one_screen) and action == "data_exchange":
             old_actions = list(PendingAction.objects.select_for_update().filter(
                 user_id=ob.payload.get("user_id"),
             ).exclude(action_type=WEB_ACTION_TYPE).exclude(state=EXECUTING_STATE))
@@ -182,6 +205,12 @@ def handle_login(token, action, data):
             ob.delete()
             return _result_screen("Reset your transaction PIN securely before signing in again.", "failed")
         if action != "data_exchange":
+            if action == "INIT" and one_screen and ob.step == CODE_STATE:
+                # A re-tapped card opens on the ROOT: LOGIN_RETRY has an
+                # incoming route, so Meta would refuse it as a first screen.
+                from .flows import LOGIN_SCREEN
+                ob.payload["screen"] = LOGIN_SCREEN
+                ob.save(update_fields=["payload"])
             return _screen(ob)
         if ob.step == CODE_STATE:
             code = str(data.get("number", "")).strip()
@@ -190,14 +219,16 @@ def handle_login(token, action, data):
                 if ob.payload["attempts"] >= 2:
                     ob.delete()
                     return _result_screen("Incorrect code. Reply 2 to request a fresh sign-in.", "failed")
-                ob.payload["screen"] = CODE_RETRY
+                ob.payload["screen"] = LOGIN_RETRY if one_screen else CODE_RETRY
                 ob.save(update_fields=["payload"])
                 return _screen(ob, "Incorrect code. Please try again.")
             ob.step = PIN_STATE
             ob.payload.pop("code_hash", None)
-            ob.payload.update(screen=PIN_CHAIN, attempts=0)
+            ob.payload.update(screen=PIN_RETRY if one_screen else PIN_CHAIN, attempts=0)
             ob.save(update_fields=["step", "payload"])
-            return _screen(ob)
+            if not one_screen:
+                return _screen(ob)
+            # One page: the PIN arrived with the code - check it now.
         raw_pin = str(data.get("pin", "")).strip()
         pin = raw_pin if re.fullmatch(r"[0-9]{6}", raw_pin) else ""
         valid, reason, message = evaluate_transaction_pin(user, pin)

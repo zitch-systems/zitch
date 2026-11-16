@@ -1576,22 +1576,14 @@ def _electricity_next(pa: PendingAction, user, msisdn: str) -> None:
 
     note = ""
     if not p.get("meter_verified"):
-        disco = DISCO_NAMES[p["disco"]].lower()
-        res = vtu_verify_customer(f"{disco}-electric", p["meter"], p["meter_type"])
-        if not res.get("success"):
-            # Drop the number that failed. Keeping it would re-verify the same bad
-            # meter on the next message and never let the customer past it.
-            p.pop("meter", None)
+        if not electricity_verify_meter(p):
             _touch(pa, state="meter", payload=p)
             # Plain re-prompt: this branch runs from _electricity_next, which has no
             # customer message in scope - the meter came from an earlier turn, so
             # there is nothing here that could be a new instruction.
             return reply(msisdn, "Couldn't validate that meter. Check the number and try "
                                  "again, or \"cancel\".")
-        cust = res.get("customer_name", "")
-        address = res.get("customer_address", "")
-        p.update({"customer": cust, "customer_address": address,
-                  "meter_verified": True})
+        cust = p.get("customer", "")
         note = f"Meter verified{f' ({cust})' if cust else ''}. "
 
     if not p.get("amount"):
@@ -1600,31 +1592,63 @@ def _electricity_next(pa: PendingAction, user, msisdn: str) -> None:
     return _electricity_confirm(pa, user, msisdn, note)
 
 
-def _electricity_confirm(pa: PendingAction, user, msisdn: str, note: str = "") -> None:
-    """The amount is known: run every money check, then arm the confirm."""
+def electricity_verify_meter(p: dict) -> bool:
+    """Verify the payload's meter with the provider; the ONE check both the chat
+    ladder and the secure bill form (release2) run, so they cannot disagree on
+    what a valid meter is. On success the provider's name and address are stored
+    on the payload; on failure the meter is dropped."""
+    disco = DISCO_NAMES[p["disco"]].lower()
+    res = vtu_verify_customer(f"{disco}-electric", p["meter"], p["meter_type"])
+    if not res.get("success"):
+        # Drop the number that failed. Keeping it would re-verify the same bad
+        # meter on the next message and never let the customer past it.
+        p.pop("meter", None)
+        return False
+    p.update({"customer": res.get("customer_name", ""),
+              "customer_address": res.get("customer_address", ""),
+              "meter_verified": True})
+    return True
+
+
+def electricity_check_amount(pa: PendingAction, user) -> tuple[str, bool]:
+    """Every money check on an electricity amount, shared by the chat ladder and
+    the secure bill form: ("", False) when payable (and the payload's amount and
+    ledger meta are set), else (why, is_limit). A limit ends the flow; the other
+    refusals drop the amount so the customer can name another."""
     p = pa.payload
     amount = parse_amount(p.get("amount", ""))
     if amount is None or amount < MIN_ELECTRICITY:
         p.pop("amount", None)
-        _touch(pa, state="amount", payload=p)
-        return reply(msisdn, f"Enter a valid amount, at least ₦{MIN_ELECTRICITY:,.0f}.")
+        return f"Enter a valid amount, at least ₦{MIN_ELECTRICITY:,.0f}.", False
     if _insufficient(user, amount):
         # Asked-for amounts stay recoverable: drop it and let them name another
         # rather than end the flow they are halfway through.
         p.pop("amount", None)
-        _touch(pa, state="amount", payload=p)
-        return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
+        return f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).", False
     limit_msg = send_limit_error(user, amount, biller=True) or daily_limit_error(user, amount, "bill")
     if limit_msg:
-        _clear_actions(msisdn)
-        return _limit_reply(msisdn, user, limit_msg)
-    disco_name = DISCO_NAMES[p["disco"]]
+        return limit_msg, True
     p["amount"] = str(amount)
     p["meta"] = {"meter": p["meter"], "disco": p["disco"], "meter_type": p["meter_type"],
                  "customer_name": p.get("customer", ""),
                  "customer": p.get("customer", ""),
                  "customer_address": p.get("customer_address", ""),
                  "address": p.get("customer_address", "")}
+    return "", False
+
+
+def _electricity_confirm(pa: PendingAction, user, msisdn: str, note: str = "") -> None:
+    """The amount is known: run every money check, then arm the confirm."""
+    p = pa.payload
+    problem, is_limit = electricity_check_amount(pa, user)
+    if problem and is_limit:
+        _clear_actions(msisdn)
+        return _limit_reply(msisdn, user, problem)
+    if problem:
+        _touch(pa, state="amount", payload=p)
+        return reply(msisdn, problem)
+    amount = Decimal(p["amount"])
+    disco_name = DISCO_NAMES[p["disco"]]
     if not _arm_confirm(pa, user):
         return
     cust = p.get("customer") or "-"
