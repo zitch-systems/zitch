@@ -380,6 +380,22 @@ def provider_logo(name: str) -> str | None:
 # --------------------------------------------------------------------------- #
 # messaging + small parsers
 # --------------------------------------------------------------------------- #
+#: Set while a menu answer is being shown INSIDE the form (release2.submit_menu):
+#: reply() collects the text instead of sending it to the chat.
+_REPLY_SINK: contextvars.ContextVar = contextvars.ContextVar("wa_reply_sink", default=None)
+
+
+def capture_replies(fn, *args) -> list:
+    """Run `fn(*args)` and return the texts it would have replied, unsent."""
+    sink: list = []
+    marker = _REPLY_SINK.set(sink)
+    try:
+        fn(*args)
+    finally:
+        _REPLY_SINK.reset(marker)
+    return sink
+
+
 def reply(msisdn: str, text: str) -> dict:
     """Send a message and record it (the OUT audit row; never contains a PIN).
 
@@ -388,6 +404,10 @@ def reply(msisdn: str, text: str) -> dict:
     row is therefore the only place a failed *send* (as opposed to a failed
     *process*) can be found; without recording it here, `whatsapp_diagnostics`
     would have no failed sends to count."""
+    sink = _REPLY_SINK.get()
+    if sink is not None:
+        sink.append(text)
+        return {"success": True, "captured": True}
     result = send_text(msisdn, text)
     _log_out(msisdn, text, result)
     return result
@@ -1059,7 +1079,40 @@ def _approve_url(pa: PendingAction) -> str:
     base = (_links().get("API_BASE") or "").rstrip("/")
     if not base:
         return ""
+    short = (_links().get("SHORT_BASE") or "").rstrip("/")
+    code = _approve_code(pa) if short and pa.pk else ""
+    if code:
+        # The approved design's short link; zitch.ng forwards /a/* to the API.
+        return f"{short}/a/{code}"
     return f"{base}/wa/approve/{sign_approve_token(pa)}"
+
+
+#: No 0/O or 1/l/I, so a code read off a screen is typed back right.
+_CODE_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ"
+
+
+def _approve_code(pa: PendingAction) -> str:
+    """This action's short approve code, minted once. A code is only a pointer:
+    /a/<code> resolves it back to the signed hand-off and re-runs every check."""
+    from django.db import IntegrityError
+
+    if pa.approve_code:
+        return pa.approve_code
+    for _ in range(5):
+        code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(6))
+        try:
+            with db_transaction.atomic():
+                updated = PendingAction.objects.filter(pk=pa.pk, approve_code__isnull=True).update(
+                    approve_code=code)
+        except IntegrityError:
+            continue
+        if updated:
+            pa.approve_code = code
+            return code
+        pa.approve_code = PendingAction.objects.filter(pk=pa.pk).values_list(
+            "approve_code", flat=True).first()
+        return pa.approve_code or ""
+    return ""
 
 
 def _has_app_session(user) -> bool:
@@ -1085,8 +1138,7 @@ def _approve_link_line(pa: PendingAction, *, primary: bool) -> str:
     if not url:
         return ""
     if primary:
-        return ("📲 *Approve with your fingerprint or Face ID* - fastest and most "
-                f"secure:\n{url}")
+        return f"📲 *Approve with your fingerprint or Face ID*: {url}"
     return f"\n\n📲 Have the Zitch app? Approve with your fingerprint or Face ID: {url}"
 
 
@@ -2595,7 +2647,10 @@ def _do_balance(user, msisdn: str) -> None:
     # a few seconds at most, and a deposit found later still gets its alert.
     from wallet.deposit_sync import refresh_deposits_briefly
 
-    refresh_deposits_briefly(user)
+    if _REPLY_SINK.get() is None:
+        # Shown in the form, the answer has Meta's ~10 seconds; the background
+        # deposit pass still catches a transfer that has just arrived.
+        refresh_deposits_briefly(user)
     bals = all_balances(user)
     funding = customer_funding_account(user)
     notice = _funding_spending_notice(funding)
@@ -3291,10 +3346,15 @@ def _tier_ladder_lines(user) -> str:
 
     mark = lambda ok: "✅" if ok else "⬜"  # noqa: E731
     limits = User.DAILY_TRANSFER_LIMITS
+    # The address saved at sign-up is what Tier 3 will check, so the card names it.
+    saved = (getattr(user, "address", "") or "").strip()
+    if saved and not user.address_verified:
+        parts = [p.strip() for p in saved.split(",") if p.strip()]
+        saved = ", ".join(parts[:2]) if len(parts) > 2 else saved
     rows = (
         (1, "Tier 1 · Phone number and BVN or NIN"),
         (2, "Tier 2 · BVN, NIN and face check"),
-        (3, "Tier 3 · Address"),
+        (3, f"Tier 3 · Address (saved: {saved})" if saved and user.tier < 3 else "Tier 3 · Address"),
     )
     return "\n".join(f"{mark(user.tier >= tier)} {label}\n      _Up to {_money(limits[tier])} a day_"
                      for tier, label in rows)
@@ -3447,12 +3507,11 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
     from wallet.views import refresh_tier2_face
 
     refresh_tier2_face(user)
-    status = (
-        ("✅ *Tier 1 verification is complete.*\n\n" if not _kyc_outstanding(user)
-         else "🪪 *Your verification status*\n\n")
-        + _kyc_status_lines(user)
-        + "\n\n" + _tier_ladder_lines(user)
-    )
+    # The approved card: the three tiers with their limits. The phone / email /
+    # BVN checklist stays for a customer who still has a Tier 1 check to finish.
+    status = "🪪 *Your verification*\n\n" + (
+        _tier_ladder_lines(user) if not _kyc_outstanding(user)
+        else _kyc_status_lines(user) + "\n\n" + _tier_ladder_lines(user))
     if user.tier >= 3:
         return reply(msisdn, status + "\n\nYou are already on the highest verification tier.")
     if user.tier >= 2:
@@ -3471,15 +3530,15 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
         return reply_buttons(
             msisdn,
             status + "\n\n*Upgrade to Tier 2*\n"
-            "Tier 2 needs your BVN, NIN and a quick selfie. Your bank matches "
-            "the selfie to your BVN and NIN.",
+            "Enter your BVN and NIN and take a quick selfie. Your bank checks them together.",
             [("tier2", "Upgrade to Tier 2"), ("later", "Later")],
         )
+    saved = (user.address or "").strip()
     return reply_buttons(
         msisdn,
         status + "\n\n*Upgrade to Tier 3*\n"
-        "Tier 3 adds address verification after Tier 2. "
-        "You can start it here on WhatsApp.",
+        + (f"We will verify the address you gave at sign-up:\n{saved}" if saved else
+           "Tier 3 adds address verification after Tier 2. You can start it here on WhatsApp."),
         [("tier3", "Upgrade to Tier 3"), ("later", "Later")],
     )
 

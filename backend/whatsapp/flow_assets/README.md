@@ -363,6 +363,16 @@ one flag, `WHATSAPP_FLOW_DESIGN_V5`, that is switched **together with**
 | `BILL_AMOUNT` is the designed "How much?" page under the verified name and address | drops `details` and the narration box |
 | Sign-up asks for the PIN and its confirmation on one page after the address | new `SIGNUP_PIN`, `SIGNUP_PIN_RETRY`; `SIGNUP_ADDRESS` gains a route to `SIGNUP_PIN` |
 | New coil logo on every page; page titles, labels and helper text as designed | none |
+| `MENU` rows get their second line (Your account number, Upgrade your tier, …) | `items[].description` |
+| Airtime quick amounts (₦500 / ₦1,000 / ₦2,000 / ₦5,000) on `VTU_FORM` / `VTU_FORM_CHAIN` | none (new `quick_amount` field; the document moves to Flow JSON 6.3 for `ChipsSelector`) |
+
+With the flag on, "Check balance" and "My account details" from the menu form
+are answered on its result page (the chat still asks for the PIN first after
+the idle window). Unrelated to the flag: the confirm card's approve link is
+the short `zitch.ng/a/<code>` (landing `_redirects` forwards `/a/*` to the API;
+`ZITCH_SHORT_LINK_BASE=` blank keeps the long link), and WhatsApp sign-in texts
+its code to the account's phone as well as emailing it
+(`WHATSAPP_LOGIN_SMS_CODE=false` turns the SMS copy off).
 
 While the flag is off the endpoint answers those pages in the shape the live
 Flow was published with (`flows._PRE_V5_CONTRACT`), so deploying the code first
@@ -383,8 +393,9 @@ charge in one row. Run the catalogue sync after deploying (build variable
    build log, then `billers`, then `cable`; clear the variable afterwards.
 3. **Compute the reviewed SHA256** as in Release 2 step 2. For this release's
    file it is
-   `361f97b01ecd3052e980f231572203b6aa267faaa9b380675e3b4fd5b5c7ed7f`
-   (510,412 bytes, 49 screens). Recompute if the file has changed since.
+   `934dbf7d0d940f1556bb40c33fbbc14a7883ea5bf3ec814b37fe064efe4e91be`
+   (512,162 bytes, 49 screens, Flow JSON 6.3). Recompute if the file has
+   changed since.
 4. **Create the draft** (`…_REQUEST=release5-<date>`), confirm Meta lists no
    validation errors, then **publish it**.
 5. **Switch in one change**: `WHATSAPP_FLOW_ID=<new ID>` and

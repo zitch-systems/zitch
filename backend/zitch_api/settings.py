@@ -763,6 +763,9 @@ ZITCH_LINKS = {
     # ourselves (the deep-link approval bounce page). Separate from WEBSITE,
     # which is the marketing site.
     "API_BASE": os.environ.get("ZITCH_API_BASE", "https://api.zitch.ng").rstrip("/"),
+    # Origin of the short approve link (<base>/a/<code>). The landing site
+    # forwards /a/* to API_BASE (landing/_redirects); blank = the long link.
+    "SHORT_BASE": os.environ.get("ZITCH_SHORT_LINK_BASE", "https://zitch.ng").rstrip("/"),
     # Support handle as a bare MSISDN (2348…); rendered as a wa.me deep link.
     # Defaults to the business number so "chat support" always resolves.
     "SUPPORT_WA": os.environ.get("ZITCH_SUPPORT_WHATSAPP", ""),
@@ -877,6 +880,11 @@ WHATSAPP_FLOW = {
     "DESIGN_V5": os.environ.get("WHATSAPP_FLOW_DESIGN_V5", "").strip().lower()
                  in ("1", "true", "yes", "on"),
 }
+
+# WhatsApp sign-in also texts its one-time code to the account's phone (the
+# approved design). The code still needs the account PIN beside it.
+WHATSAPP_LOGIN_SMS_CODE = os.environ.get("WHATSAPP_LOGIN_SMS_CODE", "true").strip().lower() \
+    not in ("0", "false", "no", "off")
 
 # LLM intent layer for WhatsApp. Blank API_KEY => AI off (deterministic router
 # handles everything). The model only proposes intents; it never moves money.

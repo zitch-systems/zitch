@@ -134,6 +134,17 @@ def vtu_form_screen_for(pa) -> dict:
     return vtu_form_screen(pa)
 
 
+#: The airtime page's quick-amount chips (ChipsSelector ids).
+QUICK_AMOUNTS = ("500", "1000", "2000", "5000")
+
+
+def _quick_amount(value) -> str:
+    """A tapped chip, used when the amount box is empty. Only our own four ids
+    count; the typed amount always wins."""
+    picked = value if isinstance(value, (list, tuple)) else [value]
+    return next((str(v) for v in picked if str(v) in QUICK_AMOUNTS), "")
+
+
 def submit_vtu_form(pa, data: dict) -> dict:
     """A submit from VTU_FORM (kind, phone, network, amount) or VTU_PLAN (plan).
 
@@ -191,9 +202,10 @@ def _submit_form(pa, data: dict) -> dict:
         _touch(pa, payload=pa.payload)
         return screen
 
-    if not str(data.get("amount", "") or "").strip():
+    amount = str(data.get("amount", "") or "").strip() or _quick_amount(data.get("quick_amount"))
+    if not amount:
         return again("Enter the airtime amount, e.g. 500.")
-    return F.arm_vtu(pa, {"phone": phone, "amount": data.get("amount"),
+    return F.arm_vtu(pa, {"phone": phone, "amount": amount,
                           "narration": pa.payload.get("narration", "")},
                      lambda message: vtu_form_screen(pa, error=message, screen=here))
 

@@ -97,6 +97,33 @@ def _resolve(token, *, lock=False):
 #: are the two-page flow's: two codes, then two PINs.
 ONE_SCREEN_SUMMARY = ("Enter the 6-digit code we sent to your verified Zitch email, "
                       "then your existing PIN.")
+#: The approved design: the same code by SMS to the account's phone number too.
+BOTH_SUMMARY = "Enter the code sent to your Zitch phone number and email."
+
+
+def _summary(ob) -> str:
+    return BOTH_SUMMARY if ob.payload.get("sms_sent") else ONE_SCREEN_SUMMARY
+
+
+def _send_login_sms(user, code: str) -> bool:
+    """The sign-in code by SMS to the phone on the account, beside the email.
+
+    Off with WHATSAPP_LOGIN_SMS_CODE=false. Either channel's copy of the code
+    works and the PIN is still required. Sent only when the SMS rail is keyed,
+    so the form never says "sent by SMS" over a rail that sent nothing."""
+    from utility.providers import send_sms, sms_live
+
+    if not getattr(settings, "WHATSAPP_LOGIN_SMS_CODE", True) or not user.phone:
+        return False
+    if not sms_live() and not (settings.DEBUG or getattr(settings, "TESTING", False)):
+        return False
+    try:
+        res = send_sms(user.phone, f"Zitch: your WhatsApp sign-in code is {code}. It expires in "
+                                   "10 minutes. Never share it.")
+    except Exception:  # noqa: BLE001 - the email copy still carries the sign-in
+        log.warning("wa_login_sms_failed")
+        return False
+    return bool(res.get("success"))
 
 
 def _one_screen(ob):
@@ -108,10 +135,13 @@ def _screen(ob, error=""):
     screen = ob.payload.get("screen") or CODE_SCREEN
     if _one_screen(ob) and ob.step == CODE_STATE:
         return {"screen": ob.payload.get("screen") or LOGIN_SCREEN,
-                "data": {"summary": ONE_SCREEN_SUMMARY, "error": error or ""}}
+                "data": {"summary": _summary(ob), "error": error or ""}}
     if ob.step == PIN_STATE:
         return _pin_screen("Confirm your identity to connect WhatsApp. No payment will be made.", title="Confirm it's you",
                            error=error, screen=screen or PIN_CHAIN)
+    if ob.payload.get("sms_sent"):
+        return _identity_screen("email", label="Code", error=error, screen=screen,
+                                summary=BOTH_SUMMARY)
     return _identity_screen("email", label="Email code", error=error, screen=screen,
                             summary="Enter the code sent to your verified Zitch email.")
 
@@ -143,18 +173,23 @@ def start_login(msisdn):
                       "Enter it only in the secure WhatsApp form. Never share it.")
     if not sent.get("success"):
         return reply(msisdn, "We couldn't send your sign-in code. Please try again shortly.")
+    sms_sent = _send_login_sms(user, code)
     one_screen = login_one_screen_live()
     payload = {"user_id": user.pk, "credentials": _credentials(user), "nonce": secrets.token_urlsafe(24),
                "code_hash": make_password(code), "attempts": 0,
                "screen": LOGIN_SCREEN if one_screen else CODE_SCREEN}
     if one_screen:
         payload["one_screen"] = True
+    if sms_sent:
+        payload["sms_sent"] = True
     ob, _ = WaOnboarding.objects.update_or_create(msisdn=msisdn, defaults={
         "step": CODE_STATE, "expires_at": timezone.now() + TTL, "payload": payload,
     })
     response = _screen(ob)
     sent = send_flow(msisdn, _token(ob), header="Sign in to Zitch",
-                     body="Enter your email code and existing PIN privately to connect this WhatsApp.",
+                     body=("Enter the code sent to your email and phone number, then your PIN, "
+                           "to connect this WhatsApp." if sms_sent else
+                           "Enter your email code and existing PIN privately to connect this WhatsApp."),
                      screen=response["screen"], screen_data=response["data"],
                      cta="Sign in", on_open="data_exchange")
     if not sent.get("success"):

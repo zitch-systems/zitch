@@ -15,6 +15,7 @@ from django.views.decorators.http import require_http_methods
 from portal.diagnostics import diagnostics_view
 from portal.pages import admin_portal, landing, prototype
 from whatsapp.views import approve_handoff as whatsapp_approve_handoff
+from whatsapp.views import approve_short as whatsapp_approve_short
 from whatsapp.views import flow_endpoint as whatsapp_flow_endpoint
 from whatsapp.views import webhook as whatsapp_webhook
 from whatsapp.verification_web import face_page as whatsapp_face_page
@@ -785,6 +786,8 @@ urlpatterns = [
     # links as tappable, so the chat carries this URL and it forwards into the
     # app scheme (store links as the no-app fallback).
     path("wa/approve/<str:token>", whatsapp_approve_handoff),
+    # The short form of the same link (zitch.ng/a/<code> is forwarded here).
+    path("a/<str:code>", whatsapp_approve_short),
     path("kyc/face/complete/", prembly_face_complete),
     path("wa/verify/<str:token>", whatsapp_verification_page, name="whatsapp_verification"),
     path("wa/face/<str:token>", whatsapp_face_page, name="whatsapp_face"),

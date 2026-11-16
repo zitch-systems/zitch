@@ -1483,7 +1483,7 @@ class ProductionConfirmSafetyTests(TestCase):
 
         from whatsapp.router import _flow_pin_ok
         action.refresh_from_db()
-        self.assertIn("/wa/approve/", _confirm_prompt(action))
+        self.assertRegex(_confirm_prompt(action), r"/a/\w{6}|/wa/approve/")
         with patch("whatsapp.router.reply"), patch("whatsapp.router.evaluate_transaction_pin") as pin:
             self.assertFalse(_flow_pin_ok(action, user, MSISDN, "123456"))
             pin.assert_not_called()

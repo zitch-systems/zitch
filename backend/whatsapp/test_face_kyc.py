@@ -609,5 +609,5 @@ class BvnMethodChoiceTests(TestCase):
         self.assertIn("✅ BVN", router._kyc_status_lines(self.user))
         with patch.object(router, "reply_buttons") as buttons:
             router._start_kyc(self.user, MSISDN)
-        self.assertIn("Tier 1 verification is complete", buttons.call_args.args[1])
+        self.assertIn("✅ Tier 1 · Phone number and BVN", buttons.call_args.args[1])
         self.assertEqual(PendingAction.objects.get(user=self.user).state, router.KYC_UPGRADE_STATE)
