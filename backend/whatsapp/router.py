@@ -68,6 +68,8 @@ from .flows import (ACCOUNT_OTP, CODE_SCREEN, EMAIL_SCREEN,
                     SIGNUP_SCREEN,
                     TRANSFER_FORM, VTU_SCREEN,
                     PIN_SCREEN,
+                    FLOW_BILL_STATE, FLOW_VERIFY_PW_STATE, SIGNUP_DETAILS,
+                    bill_form_live, details_screen_live, menu_form_live,
                     privacy_screen_live,
                     sign_approve_token, sign_flow_token, sign_identity_token,
                     sign_onboarding_token)
@@ -574,7 +576,15 @@ def reply_buttons(msisdn: str, body: str, buttons, fallback: str = "") -> None:
 def send_menu(msisdn: str) -> None:
     """The main menu as a plain numbered list - reply with the number (1–6) or
     type the action (e.g. \"send 5k\"). Kept as text rather than a tappable list
-    so it reads as the classic numbered menu."""
+    so it reads as the classic numbered menu.
+
+    With WHATSAPP_FLOW['MENU_FORM'] on, a one-line "What would you like to do?"
+    card with a "☰ Menu" Flow button goes first; the numbered list still follows,
+    so typing a number works exactly as before."""
+    if menu_form_live():
+        from .release2 import send_menu_form
+
+        send_menu_form(msisdn)
     reply(msisdn, menu_text())
 
 
@@ -766,40 +776,47 @@ def _flow_fields(pa: PendingAction) -> dict:
             if fee > 0:
                 rows += [("Bank fee", _money(fee)),
                          ("Total", _money(Decimal(p["amount"]) + fee))]
+            # Every line under the amount is "Label: value" - one fact per line,
+            # the recipient included (Release 2 confirm layout).
             return _with_context({
                 "amount": _money(Decimal(p["amount"])),
-                "recipient": f"To {p.get('name', 'recipient').upper()}",
+                "recipient": f"To: {p.get('name', 'recipient').upper()}",
                 "details": _detail_lines(rows)})
         if at == "airtime":
             return _with_context({
                 "amount": _money(Decimal(p["amount"])),
-                "recipient": f"{NETWORK_NAMES.get(p.get('net', ''), '')} airtime".strip(),
+                "recipient": _detail_lines([
+                    ("Airtime", NETWORK_NAMES.get(p.get("net", ""), "") or "Airtime")]),
                 "details": _detail_lines([("Phone", p.get("phone", ""))])})
         if at == "data":
             return _with_context({
                 "amount": _money(Decimal(p["price"])),
-                "recipient": f"{p.get('plan_name', 'Data')} · "
-                             f"{NETWORK_NAMES.get(p.get('net', ''), '')}".strip(" ·"),
+                "recipient": _detail_lines([
+                    ("Data", f"{p.get('plan_name', 'Data')} · "
+                             f"{NETWORK_NAMES.get(p.get('net', ''), '')}".strip(" ·"))]),
                 "details": _detail_lines([("Phone", p.get("phone", ""))])})
         if at == "electricity":
             return _with_context({
                 "amount": _money(Decimal(p["amount"])),
-                "recipient": DISCO_NAMES.get(p.get("disco", ""), "Electricity"),
+                "recipient": _detail_lines([
+                    ("Disco", DISCO_NAMES.get(p.get("disco", ""), "Electricity"))]),
                 "details": _detail_lines([
                     ("Meter", p.get("meter", "")), ("Name", p.get("customer", "")),
                     ("Address", p.get("customer_address") or p.get("address") or "")])})
         if at == "cable":
             return _with_context({
                 "amount": _money(Decimal(p["price"])),
-                "recipient": f"{CABLE_NAMES.get(p.get('prov', ''), '')} "
-                             f"{p.get('plan_name', '')}".strip(),
+                "recipient": _detail_lines([
+                    ("Package", f"{CABLE_NAMES.get(p.get('prov', ''), '')} "
+                                f"{p.get('plan_name', '')}".strip())]),
                 "details": _detail_lines([("Smartcard", p.get("iuc", ""))])})
         if at == "exam":
             quantity = int(p.get("quantity", 1))
             return _with_context({
                 "amount": _money(Decimal(p["amount"])),
-                "recipient": f"{p.get('exam_name', 'Exam')} {p.get('description', 'PIN')} "
-                             f"×{quantity}",
+                "recipient": _detail_lines([
+                    ("Exam", f"{p.get('exam_name', 'Exam')} {p.get('description', 'PIN')} "
+                             f"×{quantity}")]),
                 "details": _detail_lines([("Delivery phone", p.get("phone", ""))])})
     except (KeyError, InvalidOperation):
         pass
@@ -1652,6 +1669,12 @@ def handle_inbound(msisdn: str, text: str, *, list_reply: bool = False) -> None:
     if low in ("cable", "tv", "dstv", "gotv", "startimes"):
         return _start_cable(user, msisdn)
     if low in ("bill", "bills", "pay bill"):
+        if bill_form_live():
+            # The secure form, with the chat sub-menu beside it (release2).
+            from .release2 import start_bill_form
+
+            if start_bill_form(user, msisdn):
+                return None
         return _start_service_menu(user, msisdn, "bill")
     if low in ("convert", "conversion"):
         return _start_convert(user, msisdn)
@@ -2065,10 +2088,14 @@ def _start_onboarding(msisdn: str) -> None:
         # entirely rather than degrade it (131009, "not allowed as first
         # screen"); see privacy_screen_live().
         gated = privacy_screen_live()
+        # Release 2: names, phone and email on ONE page. The privacy path reaches
+        # it through DETAILS_CHAIN (see _submit_privacy_consent).
+        one_page = details_screen_live() and not gated
         ob, _ = WaOnboarding.objects.update_or_create(
             msisdn=msisdn,
             defaults={"step": FLOW_PRIVACY_STATE if gated else FLOW_SIGNUP_STATE,
-                      "payload": {},
+                      "payload": ({"details_form": True, "flow_screen": SIGNUP_DETAILS}
+                                  if one_page else {}),
                       "expires_at": timezone.now() + ONBOARD_TTL},
         )
         links = getattr(settings, "ZITCH_LINKS", {}) or {}
@@ -2078,7 +2105,7 @@ def _start_onboarding(msisdn: str) -> None:
             body=("How Zitch uses your details - review this before you continue."
                   if gated else
                   "Your details go into a private form - they never appear in this chat."),
-            screen=PRIVACY_NOTICE if gated else SIGNUP_SCREEN,
+            screen=PRIVACY_NOTICE if gated else (SIGNUP_DETAILS if one_page else SIGNUP_SCREEN),
             screen_data=({"privacy_url": links.get("PRIVACY", ""),
                           "terms_url": links.get("TERMS", "")}
                          if gated else {"error": ""}),
@@ -2174,6 +2201,18 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
         if text.strip().lower() in ("cancel", "quit", "stop"):
             _clear_onboarding(msisdn)
             return reply(msisdn, "Sign-in cancelled. Reply *2* whenever you want to sign in.")
+        if (ob.payload or {}).get("one_screen") and text.strip().lower() in (
+                "reset pin", "forgot pin", "forgot my pin", "change pin", "new pin"):
+            # The one-page sign-in form points a forgotten PIN to customer
+            # support. A customer may still type "reset pin": a reset needs the
+            # account's own verified channel,
+            # which this number is not yet connected to - so the honest answer is
+            # the recovery route, and the sign-in stays open.
+            from .login_flow import _support_suffix
+            return reply(msisdn, "🔐 Your PIN can't be reset from a WhatsApp number that isn't "
+                                 "connected yet. Contact Zitch support and we'll verify it's you "
+                                 "and help you choose a new PIN. Never send your PIN in this chat."
+                         + _support_suffix())
         return reply(msisdn, "Enter your email code and PIN only in the secure sign-in form above. "
                      "Never send them in chat. Reply *cancel* to restart.")
     if not _chat_signup_allowed():
@@ -2195,7 +2234,7 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
         return reply(msisdn, _signup_nudge(
             ob, "📱 Please enter your phone number on the *secure screen* above - "
                 "or reply \"cancel\" to start over."))
-    if ob.step == FLOW_PHONE_CODE_STATE:
+    if ob.step in (FLOW_PHONE_CODE_STATE, FLOW_VERIFY_PW_STATE):
         if re.fullmatch(r"\d{4,8}", val):
             return reply(msisdn, "📲 Please enter the code on the *secure screen* above - not in "
                                  "the chat. Delete the message you just sent (press and hold -> "
@@ -5528,6 +5567,11 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return handle_inbound(msisdn, text)
         return reply(msisdn, "📱 Please use the secure *Airtime & data* form above - "
                              "or reply \"cancel\".")
+    if pa.state == FLOW_BILL_STATE:
+        # The secure bill form is open; the chat sub-menu stays usable beside it.
+        from .release2 import advance_bill_chat
+
+        return advance_bill_chat(pa, user, msisdn, text)
     if pa.state == FLOW_PIN_STATE:
         # A secure PIN Flow is open: the PIN is entered there, never in chat.
         #

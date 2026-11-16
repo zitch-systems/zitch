@@ -101,7 +101,7 @@ class DeployFlowCommandTests(SimpleTestCase):
         self.post.assert_not_called()
         self.assertNotIn("publish", self.delegate.call_args.kwargs)
         self.assertIn(_digest(), self.out.getvalue())
-        self.assertIn("24 screens", self.out.getvalue())
+        self.assertIn("35 screens", self.out.getvalue())
         self.assertNotIn("test-token-never-print", self.out.getvalue() + self.err.getvalue())
 
     def test_retry_reuses_exact_named_draft_and_never_creates_again(self):

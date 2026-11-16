@@ -56,6 +56,26 @@ SERVER_TRANSITIONS = [
     ("PIN_RETRY", "SUCCESS"),
     ("PIN_CONFIRM", "PIN_CONFIRM_RETRY"), ("PIN_CONFIRM", "SUCCESS"),
     ("PIN_CONFIRM_RETRY", "SUCCESS"),
+    # Release 2 (whatsapp/release2.py, every one behind a default-off flag).
+    ("PRIVACY_NOTICE", "DETAILS_CHAIN"),
+    *[(src, dst) for src in ("SIGNUP_DETAILS", "DETAILS_CHAIN")
+      for dst in (src, "VERIFY_PASSWORD", "SIGNUP_PHONE_CODE", "SIGNUP_PASSWORD",
+                  "PIN_CHAIN", "SUCCESS")],
+    ("SIGNUP_PHONE", "VERIFY_PASSWORD"),
+    # Visible code box; the password boxes are kept exactly as SIGNUP_PASSWORD keeps them.
+    ("VERIFY_PASSWORD", "VERIFY_PASSWORD"), ("VERIFY_PASSWORD", "PIN_CHAIN"),
+    ("VERIFY_PASSWORD", "SUCCESS"),
+    # A wrong code lands on the empty twin; a right code + wrong PIN on PIN_RETRY.
+    ("LOGIN_SCREEN", "LOGIN_RETRY"), ("LOGIN_SCREEN", "PIN_RETRY"), ("LOGIN_SCREEN", "RESULT"),
+    ("LOGIN_RETRY", "PIN_RETRY"), ("LOGIN_RETRY", "RESULT"),
+    ("MENU", "MENU"), ("MENU", "TRANSFER_CHAIN"), ("MENU", "VTU_CHAIN"), ("MENU", "BILL_CHAIN"),
+    ("MENU", "RESULT"), ("MENU", "SUCCESS"),
+    ("TRANSFER_CHAIN", "TRANSFER_CHAIN"), ("TRANSFER_CHAIN", "PIN_CHAIN"),
+    ("TRANSFER_CHAIN", "SUCCESS"),
+    ("VTU_CHAIN", "VTU_CHAIN"), ("VTU_CHAIN", "VTU_NETWORK"), ("VTU_CHAIN", "SUCCESS"),
+    *[(src, dst) for src in ("BILL_SCREEN", "BILL_CHAIN")
+      for dst in (src, "BILL_AMOUNT", "SUCCESS")],
+    ("BILL_AMOUNT", "BILL_AMOUNT"), ("BILL_AMOUNT", "PIN_CHAIN"), ("BILL_AMOUNT", "SUCCESS"),
 ]
 
 #: Same-id answers that DO still happen, each one a masked box that comes back
@@ -130,7 +150,8 @@ class FlowFileContractTests(SimpleTestCase):
                 for v in node:
                     yield from pin_inputs(v)
 
-        for sid in ("PIN_SCREEN", "PIN_CHAIN", "PIN_RETRY", "PIN_CONFIRM", "PIN_CONFIRM_RETRY"):
+        for sid in ("PIN_SCREEN", "PIN_CHAIN", "PIN_RETRY", "PIN_CONFIRM", "PIN_CONFIRM_RETRY",
+                    "LOGIN_SCREEN", "LOGIN_RETRY"):
             for inp in pin_inputs(BY_ID[sid]["layout"]):
                 self.assertEqual((inp.get("min-chars"), inp.get("max-chars")), (6, 6), sid)
                 self.assertNotIn("4–6", inp.get("helper-text", ""))
@@ -150,13 +171,15 @@ class FlowFileContractTests(SimpleTestCase):
                     yield from secret_inputs(v)
 
         found = [inp for s in FLOW["screens"] for inp in secret_inputs(s["layout"])]
-        self.assertEqual(len(found), 11)
+        # 11 before Release 2, plus the code and the PIN on LOGIN_SCREEN and
+        # on its LOGIN_RETRY twin.
+        self.assertEqual(len(found), 15)
         for inp in found:
             # The email ADDRESS rides the same field name but is not digits —
             # it keeps the email keyboard. Everything else is a passcode pad.
             expected = "email" if inp.get("input-type") == "email" else "passcode"
             self.assertEqual(inp.get("input-type"), expected)
-        self.assertEqual(sum(1 for i in found if i.get("input-type") == "passcode"), 10)
+        self.assertEqual(sum(1 for i in found if i.get("input-type") == "passcode"), 14)
 
     def test_identity_fields_are_eleven_and_code_fields_six(self):
         """An incomplete BVN is refused AT THE FIELD (red outline), and a code
@@ -197,14 +220,17 @@ class FlowFileContractTests(SimpleTestCase):
                 for v in node:
                     yield from named_inputs(v)
 
-        found = list(named_inputs(BY_ID["SIGNUP_SCREEN"]["layout"]))
-        self.assertEqual(len(found), 2)
-        for inp in found:
-            self.assertEqual(inp.get("min-chars"), 2, inp["name"])
+        for sid in ("SIGNUP_SCREEN", "SIGNUP_DETAILS", "DETAILS_CHAIN"):
+            found = list(named_inputs(BY_ID[sid]["layout"]))
+            self.assertEqual(len(found), 2, sid)
+            for inp in found:
+                self.assertEqual(inp.get("min-chars"), 2, (sid, inp["name"]))
 
     def test_the_logo_is_the_same_bytes_on_every_screen(self):
-        # Two images per screen by design: the Zitch logo, and the small
-        # Wema / CBN / NDIC trust strip. Each must be identical everywhere.
+        # The Zitch logo is on every screen. The Wema / CBN / NDIC logo strip
+        # is only on the privacy notice (the forms carry the partnership
+        # caption and link instead), which also keeps the Flow JSON under the
+        # upload limit. Each image must be identical wherever it appears.
         def srcs(node, alt):
             if isinstance(node, dict):
                 if node.get("type") == "Image" and node.get("alt-text") == alt:
@@ -215,11 +241,13 @@ class FlowFileContractTests(SimpleTestCase):
                 for v in node:
                     yield from srcs(v, alt)
 
-        for alt in ("Zitch", "Wema Bank, CBN and NDIC"):
-            with self.subTest(image=alt):
-                found = [s for screen in FLOW["screens"] for s in srcs(screen["layout"], alt)]
-                self.assertEqual(len(found), len(FLOW["screens"]))
-                self.assertEqual(len(set(found)), 1)
+        found = [s for screen in FLOW["screens"] for s in srcs(screen["layout"], "Zitch")]
+        self.assertEqual(len(found), len(FLOW["screens"]))
+        self.assertEqual(len(set(found)), 1)
+        strip = {screen["id"]: list(srcs(screen["layout"], "Wema Bank, CBN and NDIC"))
+                 for screen in FLOW["screens"]}
+        self.assertEqual([sid for sid, s in strip.items() if s], ["PRIVACY_NOTICE"])
+        self.assertEqual(len(strip["PRIVACY_NOTICE"]), 1)
 
     def test_every_screen_carries_the_partnership_notice(self):
         for screen in FLOW["screens"]:

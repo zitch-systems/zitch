@@ -17,16 +17,22 @@ from pathlib import Path
 from django.test import SimpleTestCase
 
 import whatsapp
-from whatsapp.flows import (CODE_RETRY, CODE_SCREEN, EMAIL_SCREEN, IDENTITY_CHAIN,
-                            IDENTITY_RETRY, IDENTITY_SCREEN,
+from whatsapp.flows import (BILL_CHAIN, BILL_SCREEN, CODE_RETRY, CODE_SCREEN, DETAILS_CHAIN,
+                            EMAIL_SCREEN, IDENTITY_CHAIN,
+                            IDENTITY_RETRY, IDENTITY_SCREEN, LOGIN_RETRY, LOGIN_SCREEN,
+                            MENU_SCREEN,
                             PIN_CHAIN, PIN_CONFIRM, PIN_CONFIRM_RETRY, PIN_RETRY, PIN_SCREEN,
-                            SIGNUP_SCREEN, TRANSFER_FORM, VTU_SCREEN)
+                            SIGNUP_DETAILS, SIGNUP_SCREEN, TRANSFER_CHAIN, TRANSFER_FORM,
+                            VTU_CHAIN, VTU_SCREEN)
 
 FLOW = json.loads((Path(whatsapp.__file__).parent / "flow_assets" / "pin_flow.json").read_text())
 
 #: Every screen the router opens a Flow message on (send_flow(screen=...)).
 OPENING_SCREENS = {PIN_SCREEN, IDENTITY_SCREEN, EMAIL_SCREEN, SIGNUP_SCREEN, TRANSFER_FORM,
-                   CODE_SCREEN, VTU_SCREEN}
+                   CODE_SCREEN, VTU_SCREEN,
+                   # Release 2 (each behind its flag): the one-page signup, the
+                   # one-page sign-in, the menu form and the bill form.
+                   SIGNUP_DETAILS, LOGIN_SCREEN, MENU_SCREEN, BILL_SCREEN}
 
 
 def _incoming():
@@ -59,6 +65,8 @@ class OpeningScreensAreRoutingRootsTests(SimpleTestCase):
         self.assertTrue(incoming[PIN_RETRY], "PIN_RETRY is unreachable")
         self.assertTrue(incoming[PIN_CONFIRM_RETRY], "PIN_CONFIRM_RETRY is unreachable")
         self.assertTrue(incoming[CODE_RETRY], "CODE_RETRY is unreachable")
+        for twin in (DETAILS_CHAIN, LOGIN_RETRY, TRANSFER_CHAIN, VTU_CHAIN, BILL_CHAIN):
+            self.assertTrue(incoming[twin], f"{twin} is unreachable")
 
     def test_a_twin_renders_exactly_what_its_root_renders(self):
         """Same layout, different id — otherwise a customer arriving by chain
@@ -69,7 +77,10 @@ class OpeningScreensAreRoutingRootsTests(SimpleTestCase):
         # CODE_SCREEN instead.
         for root, twin in ((PIN_SCREEN, PIN_CHAIN), (IDENTITY_SCREEN, IDENTITY_RETRY),
                            (PIN_SCREEN, PIN_RETRY), (PIN_CONFIRM, PIN_CONFIRM_RETRY),
-                           (CODE_SCREEN, CODE_RETRY), (CODE_SCREEN, IDENTITY_CHAIN)):
+                           (CODE_SCREEN, CODE_RETRY), (CODE_SCREEN, IDENTITY_CHAIN),
+                           (SIGNUP_DETAILS, DETAILS_CHAIN), (LOGIN_SCREEN, LOGIN_RETRY),
+                           (TRANSFER_FORM, TRANSFER_CHAIN), (VTU_SCREEN, VTU_CHAIN),
+                           (BILL_SCREEN, BILL_CHAIN)):
             self.assertEqual(by_id[root]["layout"], by_id[twin]["layout"], f"{twin} drifted")
             self.assertEqual(by_id[root]["data"], by_id[twin]["data"], f"{twin} drifted")
 
