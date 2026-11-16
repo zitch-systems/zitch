@@ -994,17 +994,17 @@
           "type": "boolean",
           "__example__": false
         },
-        "face_link": {
-          "type": "boolean",
-          "__example__": false
-        },
-        "can_skip": {
-          "type": "boolean",
-          "__example__": false
-        },
         "error": {
           "type": "string",
           "__example__": ""
+        },
+        "alt_link": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "alt_text": {
+          "type": "string",
+          "__example__": "Use face check instead"
         }
       },
       "layout": {
@@ -1074,25 +1074,14 @@
               },
               {
                 "type": "EmbeddedLink",
-                "text": "Use face check instead",
-                "visible": "${data.face_link}",
+                "text": "${data.alt_text}",
+                "visible": "${data.alt_link}",
                 "on-click-action": {
                   "name": "data_exchange",
                   "payload": {
-                    "face": true
+                    "alt": true
                   }
                 }
-              },
-              {
-                "type": "EmbeddedLink",
-                "text": "Do this later",
-                "on-click-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "later": true
-                  }
-                },
-                "visible": "${data.can_skip}"
               },
               {
                 "type": "Footer",

@@ -335,8 +335,8 @@ flags.
 1. **Deploy this code** with both Release 4 flags unset.
 2. **Compute the reviewed SHA256** exactly as in Release 2 step 2. For this
    release's file it is
-   `0cc373bc322598646ae3723a4f0bfc179bfd780bd4241abcb4e29f8cd277db3a`
-   (537,865 bytes, 47 screens) — recompute rather than trust this line if the
+   `d2c6e691a64519750890dc6183ed35bab814ee96d038f34e3d56f8883ff2b530`
+   (537,530 bytes, 47 screens) — recompute rather than trust this line if the
    file has changed since.
 3. **Create the draft** (`…_REQUEST=release4-<date>`) and check the build log for
    `Reviewed Flow: SHA256 …; 47 screens.` and the draft's ID; confirm Meta lists

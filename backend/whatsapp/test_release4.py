@@ -115,6 +115,14 @@ class Release4FlowJsonTests(SimpleTestCase):
         self.assertLessEqual({"BILL_TYPE_CHAIN", "CABLE_SCREEN", "CABLE_PLAN", "SIGNUP_BVN",
                               "SIGNUP_BVN_RETRY", "SIGNUP_ADDRESS"}, incoming)
 
+    def test_meta_per_screen_component_limits(self):
+        """At most two EmbeddedLinks per screen: Meta refused a draft with three
+        (COMPONENT_TYPE_MAX_NUMBER_PER_SCREEN)."""
+        for screen in _DOC["screens"]:
+            with self.subTest(sid=screen["id"]):
+                links = [n for n in _walk(screen["layout"]) if n.get("type") == "EmbeddedLink"]
+                self.assertLessEqual(len(links), 2)
+
     def test_only_known_components_and_a_footer_last(self):
         allowed = {"SingleColumnLayout", "Image", "TextHeading", "TextBody", "TextCaption",
                    "TextInput", "Dropdown", "RadioButtonsGroup", "EmbeddedLink", "Form", "Footer"}
@@ -161,7 +169,7 @@ class Release4FlowJsonTests(SimpleTestCase):
         self.assertEqual((code["label"], code["visible"], code["required"]),
                          ("SMS code", "${data.code_sent}", False))
         links = [c["text"] for c in _form("SIGNUP_BVN")["children"] if c["type"] == "EmbeddedLink"]
-        self.assertEqual(links, ["Didn't get it? Resend code", "Use face check instead", "Do this later"])
+        self.assertEqual(links, ["Didn't get it? Resend code", "${data.alt_text}"])
         address = _BY_ID["SIGNUP_ADDRESS"]
         self.assertIn("Step 4 of 5", [c.get("text") for c in address["layout"]["children"]])
         self.assertEqual([c.get("label") for c in _form("SIGNUP_ADDRESS")["children"][:4]],
@@ -421,7 +429,8 @@ class SignupBvnTests(FlowContractMixin, TestCase):
         self.assertEqual(submit.call_args.args[3], "22345678901")
         self.assertEqual(resp["screen"], flows.SIGNUP_BVN)
         self.assertTrue(resp["data"]["code_sent"])
-        self.assertTrue(resp["data"]["face_link"])
+        self.assertEqual((resp["data"]["alt_link"], resp["data"]["alt_text"]),
+                         (True, "Use face check instead"))
         self.assertIn("Code sent", resp["data"]["notice"])
 
     def test_a_wrong_code_lands_on_the_empty_twin_then_the_right_one_goes_on(self):
@@ -446,15 +455,15 @@ class SignupBvnTests(FlowContractMixin, TestCase):
         with patch("whatsapp.router._account_submit_identity", return_value="fail"):
             resp = self.submit(bvn="22345678901")
         self.assertEqual(resp["screen"], flows.SIGNUP_BVN)
-        self.assertTrue(resp["data"]["can_skip"])
+        self.assertEqual((resp["data"]["alt_link"], resp["data"]["alt_text"]), (True, "Do this later"))
         self.assertIn("Do this later", resp["data"]["error"])
-        later = self.submit(later=True)
+        later = self.submit(alt=True)
         self.assertEqual(later["screen"], flows.SIGNUP_ADDRESS)
 
     def test_face_check_instead(self):
         with patch("whatsapp.router._account_submit_identity", side_effect=_otp):
             self.submit(bvn="22345678901")
-        mode = self.submit(face=True)
+        mode = self.submit(alt=True)
         self.assertFalse(mode["data"]["code_sent"])
         self.assertIn("face check link", mode["data"]["notice"])
         with patch("whatsapp.router._account_submit_identity", return_value="face") as submit:
