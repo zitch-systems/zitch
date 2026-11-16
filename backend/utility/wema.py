@@ -2197,9 +2197,19 @@ def resolve_account(account_number: str, bank_code: str) -> dict:
             # wrong — our bank_codes are a NIBSS/Paystack mirror, not the rail's own
             # list (see wema_banks_sync).
             out["message"] = _msg(data)
+            # Which check refused it, by name. On 16 Nov 2026 a Moniepoint enquiry
+            # came back with an accountName and was still refused, and the log
+            # could not say whether the name was blank, the envelope flagged an
+            # error, or the bank/account echoed back did not match.
+            why = {"http_ok": 200 <= resp.status_code < 300 and resp.status_code != 202,
+                   "envelope_ok": bool(_ok(data)), "has_name": bool(name),
+                   "bank_match": returned_bank == str(bank_code).strip(),
+                   "account_match": returned_account == str(account_number).strip()}
             log.warning(
-                "wema_name_enquiry_failed bank_code=%s account=%s meta=%s raw=%s",
-                bank_code, _mask_account(account_number), _response_meta(resp, data), _trim(data),
+                "wema_name_enquiry_failed bank_code=%s account=%s failed=%s meta=%s raw=%s",
+                bank_code, _mask_account(account_number),
+                ",".join(k for k, v in why.items() if not v) or "-",
+                _response_meta(resp, data), _trim(data),
             )
         return out
     except (requests.RequestException, ValueError) as exc:

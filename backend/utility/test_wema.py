@@ -345,6 +345,20 @@ class WemaLiveTests(SimpleTestCase):
                          "Account enquiry failed, confirm that the account number is valid")
 
     @patch("utility.wema.requests.get")
+    def test_a_refused_enquiry_names_the_check_that_refused_it(self, mock_get):
+        # 16 Nov 2026: a Moniepoint enquiry came back WITH an accountName and was
+        # refused; the log could not say why.
+        mock_get.return_value = _resp(
+            {"result": {"accountName": "ADA EZE", "accountNumber": "5486951723",
+                        "bankCode": None}, "hasError": True, "errorMessage": "x"})
+        with self.assertLogs("zitch", level="WARNING") as logs:
+            r = wema.resolve_account("5486951723", "090405")
+        self.assertFalse(r["success"])
+        line = "\n".join(logs.output)
+        self.assertIn("failed=envelope_ok", line)
+        self.assertNotIn("has_name", line)
+
+    @patch("utility.wema.requests.get")
     def test_a_provider_branded_enquiry_reason_is_not_leaked(self, mock_get):
         mock_get.return_value = _resp({"result": {}, "hasError": True,
                                        "errorMessage": "Kindly download ALAT to continue"})
