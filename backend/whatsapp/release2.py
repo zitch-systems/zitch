@@ -176,6 +176,10 @@ def submit_verify_password(ob, data: dict) -> dict:
                 status="failed")
     # Only the hash is ever written - see flows._submit_signup_password.
     ob.payload["flow_pw_hash"] = make_password(str(data.get("password", "")))
+    from .release4 import signup_after_password
+    following = signup_after_password(ob)
+    if following is not None:
+        return following
     ob.step = F.FLOW_PIN_STATE
     ob.payload["flow_screen"] = F.PIN_CHAIN
     ob.save(update_fields=["payload", "step"])
@@ -296,6 +300,12 @@ def start_bill_form(user, msisdn: str) -> bool:
     from .router import (SERVICE_MENUS, _blocked_from_spending, _clear_actions, _new_flow,
                          flows_live, reply_list, send_flow, sign_flow_token)
 
+    if F.bill_cable_form_live():
+        # Release 4: "Which bill?" first, with cable TV in the form too.
+        from .release4 import start_bill_type_form
+
+        if start_bill_type_form(user, msisdn):
+            return True
     if not (F.bill_form_live() and flows_live()):
         return False
     if _blocked_from_spending(user, msisdn, biller=True):
@@ -496,7 +506,7 @@ def submit_menu(link, token: str, session: str, data: dict) -> dict:
         return menu_screen(error="Pick one of the options.")
     key = menu_keyword(item)
     opener = {"send money": _open_transfer, "3": _open_vtu}.get(key)
-    if key == "bill" and F.bill_form_live():
+    if key == "bill" and (F.bill_form_live() or F.bill_cable_form_live()):
         opener = _open_bill
     response = opener(user, msisdn, token, session) if opener else None
     if response is not None:
@@ -548,6 +558,11 @@ def _open_bill(user, msisdn, token, session):
 
     if _blocked_from_spending(user, msisdn, biller=True):
         return F._close_flow(token)
+    if F.bill_cable_form_live():
+        # Release 4: "Which bill?" first, on its own chained twin.
+        from .release4 import open_bill_type_chain
+
+        return open_bill_type_chain(user, msisdn, session)
     pa = _new_flow(user, msisdn, "electricity", F.FLOW_BILL_STATE,
                    {"bill_step": BILL_DETAILS_STEP, "pin_attempts": 0, "menu_session": session,
                     "flow_screen": F.BILL_CHAIN})

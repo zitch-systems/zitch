@@ -171,6 +171,24 @@ VTU_FORM_CHAIN = "VTU_FORM_CHAIN"
 VTU_PLAN = "VTU_PLAN"
 SEND_MONEY = "SEND_MONEY"
 SEND_MONEY_CHAIN = "SEND_MONEY_CHAIN"
+#: Release 4 screens (see whatsapp/release4.py), each unreachable until its
+#: WHATSAPP_FLOW flag is on, for the same reason as Release 2's.
+#:
+#: BILL_TYPE asks "Which bill?" (electricity or cable TV) and goes on to the
+#: electricity page (BILL_CHAIN) or the cable pages: CABLE_SCREEN (provider and
+#: smartcard) then CABLE_PLAN (the package). BILL_TYPE_CHAIN is the menu's twin.
+BILL_TYPE = "BILL_TYPE"
+BILL_TYPE_CHAIN = "BILL_TYPE_CHAIN"
+CABLE_SCREEN = "CABLE_SCREEN"
+CABLE_PLAN = "CABLE_PLAN"
+#: Sign-up's BVN step (the BVN and the bank's SMS code on one page, the code box
+#: appearing once the bank has sent it), the empty twin a wrong code lands on,
+#: and the address step. Reached after the password, before the PIN.
+SIGNUP_BVN = "SIGNUP_BVN"
+SIGNUP_BVN_RETRY = "SIGNUP_BVN_RETRY"
+SIGNUP_ADDRESS = "SIGNUP_ADDRESS"
+FLOW_BVN_STATE = "flow_bvn"             # WaOnboarding.step while SIGNUP_BVN is open
+FLOW_ADDRESS_STATE = "flow_address"     # WaOnboarding.step while SIGNUP_ADDRESS is open
 FLOW_VERIFY_PW_STATE = "flow_verify_pw"   # WaOnboarding.step while VERIFY_PASSWORD is open
 FLOW_BILL_STATE = "flow_bill"             # PendingAction.state while the bill form is open
 FLOW_FORM_STATE = "flow_transfer_form"   # PendingAction.state while the transfer form is open
@@ -238,7 +256,7 @@ def resolve_onboarding_token(token: str):
             FLOW_PRIVACY_STATE,
             FLOW_SIGNUP_STATE, FLOW_PHONE_STATE,
             FLOW_PHONE_CODE_STATE, FLOW_PASSWORD_STATE, FLOW_PIN_STATE,
-            FLOW_VERIFY_PW_STATE):
+            FLOW_VERIFY_PW_STATE, FLOW_BVN_STATE, FLOW_ADDRESS_STATE):
         return None
     if not hmac.compare_digest(sig, _sig(f"{_OB_PREFIX}{ob.id}:{ob.msisdn}")):
         return None
@@ -1023,6 +1041,12 @@ def _handle_flow_request(payload: dict) -> dict:
                 return _submit_signup_phone_code(ob, data)
             if ob.step == FLOW_PASSWORD_STATE:
                 return _submit_signup_password(ob, data)
+            if ob.step == FLOW_BVN_STATE:
+                from .release4 import submit_signup_bvn
+                return submit_signup_bvn(ob, data)
+            if ob.step == FLOW_ADDRESS_STATE:
+                from .release4 import submit_signup_address
+                return submit_signup_address(ob, data)
             return _submit_onboarding_pin(ob, data)
         if ob.step == FLOW_PRIVACY_STATE:
             return _privacy_screen()
@@ -1037,6 +1061,12 @@ def _handle_flow_request(payload: dict) -> dict:
             return verify_password_screen(ob)
         if ob.step == FLOW_PASSWORD_STATE:
             return _signup_password_screen()
+        if ob.step == FLOW_BVN_STATE:
+            from .release4 import signup_bvn_screen
+            return signup_bvn_screen(ob)
+        if ob.step == FLOW_ADDRESS_STATE:
+            from .release4 import signup_address_screen
+            return signup_address_screen(ob)
         return (_confirm_pin_screen() if ob.payload.get("flow_pin_hash")
                 else _pin_screen(_ob_summary(ob), screen=_flow_screen(ob, PIN_SCREEN)))
 
@@ -1096,6 +1126,9 @@ def _handle_flow_request(payload: dict) -> dict:
         if pa.state == FLOW_VTU_STATE:
             return _vtu_screen_for(pa)
         if pa.state == FLOW_BILL_STATE:
+            from . import release4
+            if release4.is_bill_type(pa):
+                return release4.bill_type_screen_for(pa)
             from .release2 import bill_screen_for
             return bill_screen_for(pa)
         if pa.action_type == "setpin":
@@ -1123,6 +1156,9 @@ def _handle_flow_request(payload: dict) -> dict:
         if pa is not None and pa.state == FLOW_VTU_STATE:
             return on_twin(standing, _submit_vtu(pa, data))
         if pa is not None and pa.state == FLOW_BILL_STATE:
+            from . import release4
+            if release4.is_bill_type(pa):
+                return release4.submit_bill_type(pa, data)
             from .release2 import submit_bill
             return submit_bill(pa, data)
         return _submit_pin(token, data)
@@ -1403,6 +1439,18 @@ def transfer_form_v2_live() -> bool:
     return _release2_flag("TRANSFER_FORM_V2")
 
 
+def bill_cable_form_live() -> bool:
+    """Release 4. BILL_TYPE / BILL_TYPE_CHAIN / CABLE_SCREEN / CABLE_PLAN: "Which
+    bill?" in the form, and cable TV paid in it."""
+    return _release2_flag("BILL_CABLE_FORM")
+
+
+def signup_bvn_live() -> bool:
+    """Release 4. SIGNUP_BVN / SIGNUP_BVN_RETRY / SIGNUP_ADDRESS: the BVN with the
+    bank's SMS code, and the home address, inside the sign-up form."""
+    return _release2_flag("SIGNUP_BVN_FORM")
+
+
 def _signup_password_screen(error: str = "") -> dict:
     return {"screen": SIGNUP_PASSWORD,
             "data": {"summary": "This is the password you'll use to sign in to "
@@ -1432,6 +1480,10 @@ def _submit_signup_password(ob, data: dict) -> dict:
     if rejection:
         return _signup_password_screen(error=rejection)
     ob.payload["flow_pw_hash"] = make_password(password)
+    from .release4 import signup_after_password
+    following = signup_after_password(ob)
+    if following is not None:
+        return following
     ob.step = FLOW_PIN_STATE
     ob.payload["flow_screen"] = PIN_CHAIN
     ob.save(update_fields=["payload", "step"])
@@ -1484,6 +1536,10 @@ def _signup_to_pin(ob) -> dict:
         ob.step = FLOW_PASSWORD_STATE
         ob.save(update_fields=["step"])
         return _signup_password_screen()
+    from .release4 import signup_after_password
+    following = signup_after_password(ob)
+    if following is not None:
+        return following
     ob.payload["flow_screen"] = PIN_CHAIN   # SIGNUP pages route to PIN_CHAIN
     ob.step = FLOW_PIN_STATE
     ob.save(update_fields=["payload", "step"])

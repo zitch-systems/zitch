@@ -858,6 +858,17 @@ WHATSAPP_FLOW = {
                       in ("1", "true", "yes", "on"),
     "TRANSFER_FORM_V2": os.environ.get("WHATSAPP_FLOW_TRANSFER_FORM_V2", "").strip().lower()
                         in ("1", "true", "yes", "on"),
+    # Release 4 screens (whatsapp/release4.py). Same gate, same reason: OFF
+    # until `publish_flow` lists the screens as live. See flow_assets/README.md,
+    # "Release 4 go-live".
+    #   BILL_CABLE_FORM  BILL_TYPE / BILL_TYPE_CHAIN / CABLE_SCREEN / CABLE_PLAN
+    #                    ("Which bill?", and cable TV paid in the form)
+    #   SIGNUP_BVN_FORM  SIGNUP_BVN / SIGNUP_BVN_RETRY / SIGNUP_ADDRESS (the BVN
+    #                    with the bank's SMS code, and the address, in sign-up)
+    "BILL_CABLE_FORM": os.environ.get("WHATSAPP_FLOW_BILL_CABLE_FORM", "").strip().lower()
+                       in ("1", "true", "yes", "on"),
+    "SIGNUP_BVN_FORM": os.environ.get("WHATSAPP_FLOW_SIGNUP_BVN_FORM", "").strip().lower()
+                       in ("1", "true", "yes", "on"),
 }
 
 # LLM intent layer for WhatsApp. Blank API_KEY => AI off (deterministic router
