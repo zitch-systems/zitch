@@ -74,7 +74,7 @@ const cases: [string, React.ComponentType, (tree: renderer.ReactTestRenderer) =>
   ['airtime', BuyAirtime, async (t) => { await type(t, 'Or enter amount', '1000'); }, true],
   ['data', BuyData, async (t) => { await tap(t, 'Data plan'); }, true],
   ['cable', BuyCable, async (t) => { await type(t, 'Smartcard / IUC number', '1234567890'); await tap(t, 'TV plan'); }, true],
-  ['electricity', BuyElectricity, async (t) => { await type(t, 'Meter number', '1234567890'); await type(t, 'Enter amount (min 500)', '1000'); }, true],
+  ['electricity', BuyElectricity, async (t) => { await type(t, 'Meter number', '1234567890'); await type(t, 'Enter amount (min 1,000)', '1000'); }, true],
   ['betting', Betting, async (t) => { await type(t, 'User ID', '123456'); await type(t, 'Enter amount', '1000'); }, false],
   ['exams', Exams, async () => {}, false],
   ['remita', Remita, async (t) => { await type(t, 'Enter the RRR on your bill', '123456789012'); await tap(t, 'Verify RRR'); }, false],
@@ -216,7 +216,7 @@ describe.each(cases)('%s account session boundaries', (_name, Component, prepare
 });
 
 it.each([
-  [BuyAirtime, 'Or enter amount'], [BuyElectricity, 'Enter amount (min 500)'], [Betting, 'Enter amount'],
+  [BuyAirtime, 'Or enter amount'], [BuyElectricity, 'Enter amount (min 1,000)'], [Betting, 'Enter amount'],
 ] as const)('preserves pasted kobo and rejects ambiguous edits in %s', async (Component, label) => {
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Component />); });
