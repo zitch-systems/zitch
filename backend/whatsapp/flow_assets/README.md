@@ -253,10 +253,15 @@ Order matters: code first (flags off), then the Flow, then the flags.
    already open on a new screen is dispatched by its stored state, not the flag,
    so it finishes normally.
 
-8. *(Optional)* retire the previous Flow with
-   `WHATSAPP_FLOW_DEPLOY_OPERATION=deprecate`, `…_FLOW_ID=<old>`,
-   `…_REPLACEMENT_FLOW_ID=<new>` — only once the new ID is selected, and only for
-   an old Flow that still carries the retired setup screens (the command checks).
+8. *(Optional)* retire old Flows with
+   `WHATSAPP_FLOW_DEPLOY_OPERATION=deprecate`, `…_FLOW_ID=<old>[,<old>…]` (up to
+   ten), `…_REPLACEMENT_FLOW_ID=<new>`, and the replacement's own `…_REQUEST`,
+   `…_SHA256` and `…_ENDPOINT_URI` — only once the new ID is selected as
+   `WHATSAPP_FLOW_ID`. A published old release named "Zitch Partnership …" can be
+   deprecated; any other Flow only if it still carries the retired setup screens.
+   A draft cannot be deprecated: `…_OPERATION=delete-draft` deletes old drafts
+   this pipeline created, with the same replacement checks. Deprecation is final,
+   and an old card in a chat stops opening.
 
 ## Release 3 screens
 

@@ -26,6 +26,8 @@ from whatsapp.models import SystemSetting
 PREFIX = "WHATSAPP_FLOW_DEPLOY_"
 MAX_LIST_PAGES = 10
 RETIRED_SETUP_SCREENS = {"VAS_SETUP", "VAS_IDENTITY", "VAS_CODE", "VAS_CODE_RETRY", "VAS_REENTRY"}
+#: Every Flow this pipeline creates is named "<prefix><request>".
+RELEASE_NAME_PREFIX = "Zitch Partnership "
 
 
 def _read(*args, **kwargs):
@@ -104,8 +106,9 @@ class Command(BaseCommand):
         if not operation:
             self.stdout.write("No WhatsApp Flow deployment operation requested.")
             return
-        if operation not in {"create-draft", "publish", "deprecate"}:
-            raise CommandError("WHATSAPP_FLOW_DEPLOY_OPERATION must be create-draft, publish or deprecate.")
+        if operation not in {"create-draft", "publish", "deprecate", "delete-draft"}:
+            raise CommandError("WHATSAPP_FLOW_DEPLOY_OPERATION must be create-draft, publish, deprecate "
+                               "or delete-draft.")
         request = os.environ.get(PREFIX + "REQUEST", "").strip()
         expected = os.environ.get(PREFIX + "SHA256", "").strip()
         endpoint = _endpoint(os.environ.get(PREFIX + "ENDPOINT_URI", ""))
@@ -138,17 +141,26 @@ class Command(BaseCommand):
         name = f"Zitch Partnership {request}"
         flow_id = os.environ.get(PREFIX + "FLOW_ID", "").strip()
         replacement = os.environ.get(PREFIX + "REPLACEMENT_FLOW_ID", "").strip()
-        if operation in {"publish", "deprecate"}:
+        retiring = operation in {"deprecate", "delete-draft"}
+        old_ids = []
+        if retiring:
+            # Retirement may name several old Flows, comma-separated; each one
+            # is checked on its own and none may be the selected replacement.
+            old_ids = [_meta_id(part, "Explicit old Flow ID") for part in flow_id.split(",")]
+            if not 1 <= len(old_ids) <= 10 or len(set(old_ids)) != len(old_ids):
+                raise CommandError("Name between one and ten distinct old Flow IDs.")
+            flow_id = old_ids[0]
+        elif operation == "publish":
             flow_id = _meta_id(flow_id, "Explicit target Flow ID")
         elif flow_id:
-            raise CommandError("FLOW_ID is only allowed for explicit publish or deprecate operations.")
-        if operation == "deprecate":
+            raise CommandError("FLOW_ID is only allowed for explicit publish or retirement operations.")
+        if retiring:
             replacement = _meta_id(replacement, "Published replacement Flow ID")
             configured = str((getattr(settings, "WHATSAPP_FLOW", {}) or {}).get("FLOW_ID") or "")
-            if replacement == flow_id or configured != replacement:
-                raise CommandError("Select the verified replacement as WHATSAPP_FLOW_ID before deprecating a different old Flow.")
+            if replacement in old_ids or configured != replacement:
+                raise CommandError("Select the verified replacement as WHATSAPP_FLOW_ID before retiring a different old Flow.")
         elif replacement:
-            raise CommandError("REPLACEMENT_FLOW_ID is only allowed for the explicit deprecate operation.")
+            raise CommandError("REPLACEMENT_FLOW_ID is only allowed for the explicit retirement operations.")
         headers = {"Authorization": f"Bearer {cfg['TOKEN']}"}
         with _operation_lock(waba_id):
             record, state = _request_record(waba_id, request, digest, endpoint)
@@ -156,8 +168,9 @@ class Command(BaseCommand):
             matches = [row for row in owned if row.get("name") == name]
             if len(matches) > 1:
                 raise CommandError("Multiple Flows match this deployment request; inspect Meta before proceeding.")
-            if operation == "deprecate":
-                return self._deprecate(flow_id, replacement, owned, matches, base, headers, digest, endpoint)
+            if retiring:
+                return self._retire(operation, old_ids, replacement, owned, matches, base, headers,
+                                    digest, endpoint, waba_id)
             if operation == "create-draft":
                 if not matches:
                     # A retry after a lost response finds the deterministic name
@@ -206,13 +219,46 @@ class Command(BaseCommand):
                 "WHATSAPP_FLOW_ID remains unchanged."
             ))
 
-    def _deprecate(self, flow_id, replacement, owned, matches, base, headers, digest, endpoint):
+    def _retire(self, operation, old_ids, replacement, owned, matches, base, headers, digest,
+                endpoint, waba_id):
+        """Deprecate published old Flows, or delete old drafts, once the reviewed
+        replacement is selected and verified. Every target must be in this
+        account's inventory; the replacement is checked once, before any target
+        is touched."""
         if len(matches) != 1 or str(matches[0].get("id") or "") != replacement:
             raise CommandError("Replacement ID does not match this request's owned Flow.")
-        if sum(str(row.get("id") or "") == flow_id for row in owned) != 1:
-            raise CommandError("Old Flow ownership could not be verified; nothing deprecated.")
+        rows = {}
+        for flow_id in old_ids:
+            found = [row for row in owned if str(row.get("id") or "") == flow_id]
+            if len(found) != 1:
+                raise CommandError("Old Flow ownership could not be verified; nothing retired.")
+            rows[flow_id] = found[0]
         validator = PublishCommand(stdout=self.stdout, stderr=self.stderr)
         validator._report_drift(replacement, digest, strict=True, endpoint=endpoint)
+        for flow_id in old_ids:
+            if operation == "deprecate":
+                self._deprecate(flow_id, rows[flow_id], replacement, base, headers, digest)
+            else:
+                self._delete_draft(flow_id, rows[flow_id], base, headers, waba_id)
+
+    def _delete_draft(self, flow_id, row, base, headers, waba_id):
+        """A draft cannot be deprecated, only deleted. Only a draft this pipeline
+        created (named "Zitch Partnership <request>") is ever deleted."""
+        if (str(row.get("status") or "").upper() != "DRAFT"
+                or not str(row.get("name") or "").startswith(RELEASE_NAME_PREFIX)):
+            raise CommandError("Only a draft created by this deployment pipeline can be deleted.")
+        info = _request(_read, f"{base}/{flow_id}", "Draft inspection", headers=headers,
+                        params={"fields": "id,status"})
+        if str(info.get("id") or "") != flow_id or str(info.get("status") or "").upper() != "DRAFT":
+            raise CommandError("The old Flow is no longer a draft; nothing deleted.")
+        result = _request(requests.delete, f"{base}/{flow_id}", "Draft deletion", headers=headers)
+        if result.get("success") is not True:
+            raise CommandError("Meta did not confirm the draft deletion; inspect it before retrying.")
+        if any(str(r.get("id") or "") == flow_id for r in _owned_flows(base, waba_id, headers)):
+            raise CommandError("Draft deletion could not be verified; no success claimed.")
+        self.stdout.write(self.style.SUCCESS(f"Draft Flow {flow_id} deleted."))
+
+    def _deprecate(self, flow_id, row, replacement, base, headers, digest):
         info = _request(_read, f"{base}/{flow_id}", "Retirement inspection", headers=headers,
                         params={"fields": "id,status"})
         if str(info.get("id") or "") != flow_id:
@@ -223,12 +269,16 @@ class Command(BaseCommand):
             return
         if status != "PUBLISHED":
             raise CommandError("Only an explicitly selected published old Flow can be deprecated.")
-        report = published_flow_report(force=True, flow_id=flow_id)
-        screens = report.get("published_screens")
-        if (report.get("flow_id") != flow_id or report.get("status") != "published"
-                or not isinstance(screens, list) or not all(isinstance(s, str) for s in screens)
-                or not RETIRED_SETUP_SCREENS.intersection(screens)):
-            raise CommandError("The old Flow's retired account setup screens could not be verified; nothing deprecated.")
+        # A release this pipeline published ("Zitch Partnership <request>") and
+        # since replaced may be retired; anything else only if it still carries
+        # the retired account setup screens.
+        if not str(row.get("name") or "").startswith(RELEASE_NAME_PREFIX):
+            report = published_flow_report(force=True, flow_id=flow_id)
+            screens = report.get("published_screens")
+            if (report.get("flow_id") != flow_id or report.get("status") != "published"
+                    or not isinstance(screens, list) or not all(isinstance(s, str) for s in screens)
+                    or not RETIRED_SETUP_SCREENS.intersection(screens)):
+                raise CommandError("The old Flow's retired account setup screens could not be verified; nothing deprecated.")
         result = _request(requests.post, f"{base}/{flow_id}/deprecate", "Deprecate", headers=headers)
         if result.get("success") is not True:
             raise CommandError("Meta did not confirm deprecation; inspect the old Flow before retrying.")

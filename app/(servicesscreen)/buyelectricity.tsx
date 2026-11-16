@@ -56,6 +56,8 @@ const BuyElectricity = () => {
   const [amt, setAmt] = useState('');
   const [customerName, setCustomerName] = useState('');
   const [customerAddress, setCustomerAddress] = useState('');
+  // The bank's charge on this disco's bill, debited with it (from the meter check).
+  const [fee, setFee] = useState(0);
   const [validating, setValidating] = useState(false);
   const [validatedFor, setValidatedFor] = useState('');
   // The meter check that last failed, so "Try again" shows only for that one.
@@ -77,7 +79,10 @@ const BuyElectricity = () => {
   const amount = Number(amt || 0);
   const validationKey = `${disco}|${meterType}|${meter.trim()}`;
   const verifiedCustomer = validatedFor === validationKey ? customerName : '';
-  const valid = billPaymentsAvailable === true && meter.length >= 8 && !!verifiedCustomer && amount >= MIN_ELECTRICITY && amount <= balance;
+  const bankFee = verifiedCustomer ? fee : 0;
+  const total = amount + bankFee;
+  const valid = billPaymentsAvailable === true && meter.length >= 8 && !!verifiedCustomer && amount >= MIN_ELECTRICITY && total <= balance;
+  const feeRows: [string, string][] = bankFee > 0 ? [['Amount', money(amount)], ['Bank fee', money(bankFee)]] : [];
 
   const validateMeter = async () => {
     if (!isCurrentSession()) return;
@@ -100,6 +105,8 @@ const BuyElectricity = () => {
       if (response.ok && result.success === true) {
         setCustomerName(result.customer_name || result.name || 'Verified');
         setCustomerAddress(String(result.customer_address || result.address || ''));
+        const charge = Number(result.bank_fee ?? 0);
+        setFee(Number.isFinite(charge) && charge > 0 ? charge : 0);
         setValidatedFor(requestedFor);
       } else {
         setCheckFailedFor(requestedFor);
@@ -120,6 +127,7 @@ const BuyElectricity = () => {
     setValidating(false);
     setCustomerName('');
     setCustomerAddress('');
+    setFee(0);
     setValidatedFor('');
     setCheckFailedFor('');
   };
@@ -181,7 +189,7 @@ const BuyElectricity = () => {
   const purchase = async (enteredPin: string) => {
     if (!isCurrentSession() || !valid || done || purchaseInFlight.current) return;
     const fingerprint = [disco, meterType, meter.trim(), String(amount)].join('|');
-    if (reviewedPayment.current !== null && reviewedPayment.current !== JSON.stringify([fingerprint, amount])) {
+    if (reviewedPayment.current !== null && reviewedPayment.current !== JSON.stringify([fingerprint, total])) {
       setStep('confirm');
       notify('Review payment again', 'The payment details changed. Check them before entering your PIN.');
       return;
@@ -264,7 +272,8 @@ const BuyElectricity = () => {
             ['Meter', meter],
             ['Type', meterType],
             ...(purchasedToken ? ([['Token', purchasedToken]] as [string, string][]) : []),
-            ['Total', money(amount), true],
+            ...feeRows,
+            ['Total', money(total), true],
           ]}
           reference={txnRef}
           status={pending ? 'Processing' : 'Successful'}
@@ -332,7 +341,14 @@ const BuyElectricity = () => {
         prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
       />
       <View style={{ height: 6 }} />
-      <BalanceHint amount={amount} balance={balance} min={MIN_ELECTRICITY} />
+      {bankFee > 0 && amount > 0 ? (
+        <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12.5, marginBottom: 4 }}>
+          Bank fee {money(bankFee)} · Total {money(total)}
+        </Text>
+      ) : null}
+      {/* The minimum is on the bill; the balance has to cover the bill and the fee. */}
+      <BalanceHint amount={amount > 0 && amount < MIN_ELECTRICITY ? amount : amount > 0 ? total : 0}
+        balance={balance} min={MIN_ELECTRICITY} />
       {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
       <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
@@ -341,15 +357,15 @@ const BuyElectricity = () => {
         open={step === 'confirm'}
         onClose={() => setStep(null)}
         title="Confirm payment"
-        total={amount}
+        total={total}
         balance={balance}
-        rows={[['Customer', verifiedCustomer], ['Disco', provider.name], ['Meter', meter], ['Type', meterType]]}
-        onPay={() => { reviewedPayment.current = JSON.stringify([[disco, meterType, meter.trim(), String(amount)].join('|'), amount]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
+        rows={[['Customer', verifiedCustomer], ['Disco', provider.name], ['Meter', meter], ['Type', meterType], ...feeRows]}
+        onPay={() => { reviewedPayment.current = JSON.stringify([[disco, meterType, meter.trim(), String(amount)].join('|'), total]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
       <Sheet protectScreen open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
         <Text style={{ fontSize: 13.5, lineHeight: 20, color: c.ink3, marginBottom: 16, marginTop: 0, fontFamily: font.regular }}>
-          {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
+          {busy ? 'Authorizing payment…' : `Confirm payment of ${money(total)}`}
         </Text>
         <PinPad onComplete={(p) => purchase(p)} busy={busy} error={pinError} />
       </Sheet>

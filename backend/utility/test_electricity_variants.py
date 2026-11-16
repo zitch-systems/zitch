@@ -37,6 +37,18 @@ class CableCatalogueSyncTests(TestCase):
             ["mapped"],
         )
 
+    def test_the_price_quote_carries_the_bank_fee_the_app_shows_before_the_pin(self):
+        CablePlan.objects.create(provider="3", name="GOtv Jolli", cable_plan_code="jolli",
+                                 wema_code="1629", active=True, price=5800, wema_charge=100)
+        response = self.client.post(
+            "/api/utility/get_cable_plans_price/",
+            data=json.dumps({"cable_plan_code": "jolli"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["cable_plans_price"], "5800.00")
+        self.assertEqual(response.json()["bank_fee"], "100.00")
+
     def test_sync_updates_only_the_exact_monthly_package_and_preserves_the_price(self):
         call_command("seed_plans", stdout=StringIO())
         with mock.patch("utility.wema.get_bills", return_value={

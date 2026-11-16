@@ -133,6 +133,27 @@ describe('electricity meter validation binding', () => {
     ]);
   });
 
+  it('shows the bank fee before the PIN and needs the balance to cover bill and fee', async () => {
+    mockApiPost.mockResolvedValue({ ok: true, json: async () => ({ success: true, customer_name: 'Fee Customer', bank_fee: '100.00' }) });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<BuyElectricity />); });
+    await act(async () => {
+      control(tree, 'Meter number').props.onChangeText('1234567890');
+      control(tree, 'Pick amount').props.onPress();
+    });
+    expect(tree.root.findAll((n) => n.props.children?.join?.('') === 'Bank fee ₦100 · Total ₦1100').length).toBeGreaterThan(0);
+    const ConfirmSheet = (jest.requireMock('@/components/design/flowkit') as { ConfirmSheet: unknown }).ConfirmSheet;
+    const confirm = tree.root.find((n) => n.type === ConfirmSheet);
+    expect(confirm.props.total).toBe(1100);
+    expect(confirm.props.rows).toEqual(expect.arrayContaining([['Amount', '₦1000'], ['Bank fee', '₦100']]));
+    expect(control(tree, 'Continue').props.disabled).toBe(false);
+
+    // ₦19,950 + ₦100 is more than the ₦20,000 balance.
+    await act(async () => { control(tree, 'Enter amount (min 500)').props.onChangeText('19950'); });
+    expect(control(tree, 'Continue').props.disabled).toBe(true);
+    act(() => tree.unmount());
+  });
+
   it('opens on the disco and meter of the most recent payment', async () => {
     const recents = {
       phones: [], smartcards: [], betting: [], exam_phones: [],
