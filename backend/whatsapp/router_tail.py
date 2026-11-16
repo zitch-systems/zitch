@@ -1151,8 +1151,8 @@ def _vtu_outcome(pa: PendingAction, user, msisdn: str, amount: Decimal, label: s
 
         mark_awaiting_settlement(txn)
         line = (f"⏳ Your {label} ({detail}) is still processing - we'll confirm shortly. "
-                f"If the bank can't complete it, the money is returned to your account "
-                f"automatically. Ref {txn.reference}.")
+                f"If it doesn't go through, your money will be returned to your Zitch "
+                f"account automatically. Ref {txn.reference}.")
         reply(msisdn, line)
         return Outcome(line, OUTCOME_PENDING)
 
