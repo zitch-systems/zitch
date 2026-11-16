@@ -388,11 +388,20 @@ def signup_bvn_screen(ob, error: str = "", notice: str = "") -> dict:
         return {"screen": F.SIGNUP_BVN_RETRY,
                 "data": {"summary": notice or "Enter the code your bank sent by SMS.",
                          "error": _warn(error)}}
+    # One link serves two purposes - Meta allows two EmbeddedLinks per screen
+    # and "Resend code" is the other. They never apply at once: "Do this later"
+    # when the bank step can't finish here, else "Use face check instead" while
+    # a code is out. The choice is kept so the tap is read back the same way.
+    alt = "later" if (error or face_sent) else "face" if code_sent else ""
+    if p.get("bvn_alt", "") != alt:
+        p["bvn_alt"] = alt
+        ob.save(update_fields=["payload"])
     return {"screen": F.SIGNUP_BVN,
             "data": {"summary": "✓ Phone number verified", "notice": notice,
                      "code_sent": code_sent,
-                     "face_link": code_sent and not face_sent,
-                     "can_skip": bool(error) or face_sent,
+                     "alt_link": bool(alt),
+                     "alt_text": {"later": "Do this later",
+                                  "face": "Use face check instead"}.get(alt, " "),
                      "error": _warn(error)}}
 
 
@@ -451,6 +460,9 @@ def submit_signup_bvn(ob, data: dict) -> dict:
         return F._success_screen("This signup expired. Send us a message to start again.",
                                  status="failed")
     p = ob.payload
+    if data.get("alt"):
+        # The page's second link: whichever option it was showing.
+        data = {"later": True} if p.get("bvn_alt") == "later" else {"face": True}
     if data.get("later"):
         return _to_address(ob)
     if data.get("resend"):
