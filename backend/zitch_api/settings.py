@@ -70,7 +70,6 @@ INSTALLED_APPS = [
     "corsheaders",
     "accounts",
     "wallet",
-    "legacy_funding.apps.LegacyFundingConfig",
     "utility",
     "exams",
     "loans",

@@ -21,13 +21,7 @@ def install(_apps, schema_editor):
             IF TG_TABLE_NAME = 'wallet_billfundingbinding' THEN
                 IF NOT EXISTS (SELECT 1 FROM wallet_transaction t
                     WHERE t.id = NEW.transaction_id AND t.direction = 'out'
-                      AND t.currency = 'NGN' AND t.transaction_status = 'Pending'
-                      AND (NEW.vas_account_id IS NULL OR EXISTS (
-                        SELECT 1 FROM wema_vas_virtualaccount v
-                        WHERE v.id = NEW.vas_account_id AND v.user_id = t.user_id
-                          AND v.mode = 'live' AND v.prefix <> '711'
-                          AND v.number <> NEW.source_account
-                          AND NEW.approval_reference <> ''))) THEN
+                      AND t.currency = 'NGN' AND t.transaction_status = 'Pending') THEN
                     RAISE EXCEPTION 'Invalid bill funding reservation'
                         USING ERRCODE = 'integrity_constraint_violation';
                 END IF;

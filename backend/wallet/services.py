@@ -627,13 +627,18 @@ def customer_safe_failure(result: dict, *, service: str = "",
         return PROVIDER_FLOAT_MESSAGE
     if message and _PROVIDER_REFUSED_RE.search(message):
         # Paged for the same reason the float is: it fails EVERY purchase of the
-        # product, silently, one refunded customer at a time — and no code change
-        # clears it, someone has to get the tenant entitled for the product.
+        # product, silently, one refunded customer at a time, and no code change
+        # clears it. It is the BANK refusing the payment at its authentication
+        # step, not a missing product: on 16 Nov 2026 bills ValidateCustomer
+        # worked with the same access while PayBill was refused, and Wema never
+        # called our Authentication URL for it (it does for transfers). The fix
+        # is on Wema's side: profile our Authentication URL for that product.
         try:
             from utility.alerts import alert
 
-            alert("VAS product is not entitled for this tenant - the gateway is "
-                  "refusing every purchase until the subscription is provisioned",
+            alert("Wema refused this payment at authentication - ask Wema to profile "
+                  "our Authentication URL for this product (every payment of it fails "
+                  "until they do)",
                   level="error", service=service or "?", provider_said=message[:200])
         except Exception:  # noqa: BLE001
             log.exception("vas_refused_alert_failed service=%s", service)

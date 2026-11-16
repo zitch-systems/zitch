@@ -185,7 +185,7 @@ shape (masked PAN / expiry / CVV) and the `cardKey` product id (`WEMA_CARD_PRODU
 Set these in the host (never in source). Boolean-only status is visible at `/healthz`.
 
 - `WEMA_CHANNEL_ID` — the channel id (sent as `x-api-key`, or `access` on
-  the credit/debit-wallet/VAS products).
+  the credit/debit-wallet, Airtime and Data, Bills Payment and Remita products).
 - `WEMA_WALLET_KEY` — **Wallet Services** subscription. The live product page lists
   six capabilities: wallet creation, credit wallet, debit wallet, bills payment,
   transaction notification and account management.

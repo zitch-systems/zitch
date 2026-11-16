@@ -80,9 +80,9 @@ _PATH = {
     "upgrade": "/account-upgrade",           # tier upgrade + KYC/PND status read
     "credit": "/credit-wallet",              # fund a wallet from the channel account
     "debit": "/debit-wallet",                # payout / name enquiry / banks
-    "airtime": "/airtime-data",              # airtime + data (VAS)
-    "bills": "/bills-payment",               # bills payment (VAS)
-    "remita": "/remita-payment",             # Remita RRR bill payment (VAS)
+    "airtime": "/airtime-data",              # Airtime and Data API
+    "bills": "/bills-payment",               # Bills Payment API (Wallet Services)
+    "remita": "/remita-payment",             # Remita Payment API
     "bnpl": "/alat-bnpl",                    # Buy-Now-Pay-Later (merchant-auth)
     "kyc": "/kyc",                           # Nigeria identity lookups (see KYC section)
     "card": "/card-management",              # Virtual Naira Card (partnerCard endpoints)
