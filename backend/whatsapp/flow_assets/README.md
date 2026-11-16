@@ -258,6 +258,62 @@ Order matters: code first (flags off), then the Flow, then the flags.
    `…_REPLACEMENT_FLOW_ID=<new>` — only once the new ID is selected, and only for
    an old Flow that still carries the retired setup screens (the command checks).
 
+## Release 3 screens
+
+Added the same way as Release 2: additively, version **6.0**, handlers in
+`whatsapp/release3.py`, each behind a `WHATSAPP_FLOW` flag that defaults
+**off**. No existing screen's id, declared `data` or submit payload changed
+(`test_release3` freezes a digest of all 35); `MENU` gains two routes.
+
+| Flag (env var) | Screens | What it does |
+|---|---|---|
+| `WHATSAPP_FLOW_VTU_ONE_SCREEN` | `VTU_FORM` (root), `VTU_FORM_CHAIN` (from `MENU`), `VTU_PLAN` | "Airtime / Data": Airtime/Data choice (pre-selected by how it was opened: menu 3 → Airtime, typing "data" → Data), the phone number prefilled with the customer's own, the network pre-selected from the number's prefix (the chat's `_network_from_prefix`; a different network for a typed number is questioned once, then kept), and the airtime amount with "Available balance ₦X · Minimum ₦50". Data goes on to `VTU_PLAN` ("Choose a plan", that network's plans with price). Both end on `PIN_CHAIN`, armed by the same `flows.arm_vtu` the four-page ladder uses. Replaces `VTU_SCREEN → VTU_NETWORK → VTU_AIRTIME / VTU_DATA` for new sessions. |
+| `WHATSAPP_FLOW_TRANSFER_FORM_V2` | `SEND_MONEY` (root), `SEND_MONEY_CHAIN` (from `MENU`) | "Send money": account number (10 digits), bank (blank = detected from the account number; or type to search), amount with "Available balance ₦X", note. Then the existing `TRANSFER_FORM` checks (`flows._submit_transfer_form`: bank detection and search, name enquiry, fee, limits, balance) and `PIN_CHAIN`. |
+
+If a Release 3 form cannot be sent, the previous form (still published) is
+tried, then the chat, exactly as before. A session is dispatched by the mark
+it was opened with, not the flag, so one open when a flag is turned off finishes.
+
+Two static changes ride the same publish and need no flag (layout and labels
+only; no data property is involved):
+
+- **No "(optional)" in labels.** WhatsApp appends it to every non-required
+  input, so "Narration (optional)" rendered as "Narration (optional) (optional)".
+- **No partnership notice on forms.** The Wema / CBN / NDIC caption and its
+  "Learn more" link are now only on `PRIVACY_NOTICE` and the outcome screens
+  (`RESULT`, `SUCCESS`); the chat still carries it.
+
+## Release 3 go-live
+
+Same order as Release 2: code first (flags off), then the Flow, then the flags.
+
+1. **Deploy this code** with both Release 3 flags unset. Nothing changes for
+   customers until the next publish; that publish also brings the two static
+   changes above to every existing screen.
+2. **Compute the reviewed SHA256** exactly as in Release 2 step 2. For this
+   release's file it is
+   `016aee5c99f5088d5912eddf5423fa19f71e028cd66779edd26b69cc57c9ba6b`
+   (624,191 bytes, 40 screens) — recompute rather than trust this line if the
+   file has changed since.
+3. **Create the draft**: `WHATSAPP_FLOW_DEPLOY_OPERATION=create-draft`,
+   `…_REQUEST=release3-<date>`, `…_SHA256=<digest>`, `…_ENDPOINT_URI=…`. The
+   build log prints `Reviewed Flow: SHA256 …; 40 screens.` and the draft's ID.
+4. **Review the draft** in WhatsApp Manager (preview `VTU_FORM`, `VTU_PLAN`
+   and `SEND_MONEY`).
+5. **Publish it**: `WHATSAPP_FLOW_DEPLOY_OPERATION=publish`,
+   `…_FLOW_ID=<draft Flow ID>`, same REQUEST / SHA256 / ENDPOINT_URI.
+6. **Switch the channel**: `WHATSAPP_FLOW_ID=<new Flow ID>`, clear every
+   `WHATSAPP_FLOW_DEPLOY_*`, redeploy, and confirm with
+   `python manage.py publish_flow --dry-run` (no missing or drifted screens).
+7. **Turn the flags on, one at a time**, testing each on a real phone:
+   ```sh
+   WHATSAPP_FLOW_TRANSFER_FORM_V2=true
+   WHATSAPP_FLOW_VTU_ONE_SCREEN=true
+   ```
+   With `WHATSAPP_FLOW_MENU_FORM` on, the menu's Send money / Airtime & data
+   items open the new twins. Rollback is the variable set back to `false`.
+8. *(Optional)* deprecate the Release 2 Flow as in Release 2 step 8.
+
 > **Re-publish after updating.** `IDENTITY_SCREEN` and `EMAIL_SCREEN` were added
 > after the first release, and `PIN_SCREEN` now carries the bank and account on
 > their own lines. Meta serves the version published in WhatsApp Manager, not

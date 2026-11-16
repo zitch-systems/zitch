@@ -76,6 +76,14 @@ SERVER_TRANSITIONS = [
     *[(src, dst) for src in ("BILL_SCREEN", "BILL_CHAIN")
       for dst in (src, "BILL_AMOUNT", "SUCCESS")],
     ("BILL_AMOUNT", "BILL_AMOUNT"), ("BILL_AMOUNT", "PIN_CHAIN"), ("BILL_AMOUNT", "SUCCESS"),
+    # Release 3 (whatsapp/release3.py, every one behind a default-off flag).
+    # Visible fields again, so same-screen re-renders keep what was typed.
+    ("MENU", "SEND_MONEY_CHAIN"), ("MENU", "VTU_FORM_CHAIN"),
+    *[(src, dst) for src in ("SEND_MONEY", "SEND_MONEY_CHAIN")
+      for dst in (src, "PIN_CHAIN", "SUCCESS")],
+    *[(src, dst) for src in ("VTU_FORM", "VTU_FORM_CHAIN")
+      for dst in (src, "VTU_PLAN", "PIN_CHAIN", "SUCCESS")],
+    ("VTU_PLAN", "VTU_PLAN"), ("VTU_PLAN", "PIN_CHAIN"), ("VTU_PLAN", "SUCCESS"),
 ]
 
 #: Same-id answers that DO still happen, each one a masked box that comes back
@@ -228,9 +236,9 @@ class FlowFileContractTests(SimpleTestCase):
 
     def test_the_logo_is_the_same_bytes_on_every_screen(self):
         # The Zitch logo is on every screen. The Wema / CBN / NDIC logo strip
-        # is only on the privacy notice (the forms carry the partnership
-        # caption and link instead), which also keeps the Flow JSON under the
-        # upload limit. Each image must be identical wherever it appears.
+        # is only on the privacy notice (the outcome screens carry the
+        # partnership caption and link instead), which also keeps the Flow JSON
+        # under the upload limit. Each image must be identical wherever it appears.
         def srcs(node, alt):
             if isinstance(node, dict):
                 if node.get("type") == "Image" and node.get("alt-text") == alt:
@@ -249,16 +257,62 @@ class FlowFileContractTests(SimpleTestCase):
         self.assertEqual([sid for sid, s in strip.items() if s], ["PRIVACY_NOTICE"])
         self.assertEqual(len(strip["PRIVACY_NOTICE"]), 1)
 
-    def test_every_screen_carries_the_partnership_notice(self):
-        for screen in FLOW["screens"]:
-            with self.subTest(screen=screen["id"]):
+    #: Where the Wema / CBN / NDIC notice and its "Learn more" link are shown.
+    #:
+    #: Release 3's approved design took the notice off the FORM screens: on a
+    #: phone it pushed the fields - and on the PIN pages the amount and the
+    #: recipient - below the fold, on every page of every journey. It stays where
+    #: it is read rather than scrolled past: PRIVACY_NOTICE, where an account is
+    #: opened and the partnership is explained (with the logo strip), and the two
+    #: outcome screens every journey ends on (RESULT, and SUCCESS on a Flow
+    #: published before RESULT). The chat also carries it (router.PARTNER_NOTICE).
+    NOTICE_SCREENS = {"PRIVACY_NOTICE", "RESULT", "SUCCESS"}
+    NOTICE = "Banking services by Wema Bank Plc, licensed by the CBN. Deposits insured by NDIC."
+
+    def _notice(self, screen):
+        children = screen["layout"]["children"]
+        captions = [c for c in children if c.get("type") == "TextCaption" and c.get("text") == self.NOTICE]
+        links = [c for c in children if c.get("type") == "EmbeddedLink"
+                 and (c.get("on-click-action") or {}).get("url") == "https://zitch.ng/partnership"]
+        return captions, links
+
+    def test_the_partnership_notice_is_on_the_privacy_notice_and_the_outcome_screens(self):
+        for sid in sorted(self.NOTICE_SCREENS):
+            with self.subTest(screen=sid):
+                screen = BY_ID[sid]
+                captions, links = self._notice(screen)
+                self.assertEqual(len(captions), 1)
+                self.assertEqual([link["on-click-action"] for link in links],
+                                 [{"name": "open_url", "url": "https://zitch.ng/partnership"}])
                 kinds = [c.get("type") for c in screen["layout"]["children"]]
-                self.assertIn("TextCaption", kinds)
-                link = next(c for c in screen["layout"]["children"] if c.get("type") == "EmbeddedLink")
-                self.assertEqual(link["on-click-action"],
-                                 {"name": "open_url", "url": "https://zitch.ng/partnership"})
                 # The footer button stays last: the notice sits above it.
                 self.assertIn(kinds[-1], ("Form", "Footer"))
+
+    def test_no_form_screen_carries_the_partnership_notice(self):
+        """Every other screen is a form, and the design removed it from forms."""
+        for screen in FLOW["screens"]:
+            if screen["id"] in self.NOTICE_SCREENS:
+                continue
+            with self.subTest(screen=screen["id"]):
+                self.assertEqual(self._notice(screen), ([], []))
+                self.assertEqual(screen["layout"]["children"][-1]["type"], "Form")
+
+    def test_no_label_says_optional_because_whatsapp_already_does(self):
+        """WhatsApp appends "(optional)" to every input that is not required, so
+        a label that says it too reads "Narration (optional) (optional)"."""
+        def labels(node):
+            if isinstance(node, dict):
+                if isinstance(node.get("label"), str):
+                    yield node["label"]
+                for v in node.values():
+                    yield from labels(v)
+            elif isinstance(node, list):
+                for v in node:
+                    yield from labels(v)
+
+        found = [label for s in FLOW["screens"] for label in labels(s["layout"])]
+        self.assertTrue(found)
+        self.assertEqual([label for label in found if "optional" in label.lower()], [])
 
 
 class BuildersMatchDeclaredKeysTests(TestCase):
