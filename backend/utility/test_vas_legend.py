@@ -32,6 +32,28 @@ class VasLegendParsingTests(TestCase):
             self.assertEqual(_vas_legend("airtime"),
                              {"200": "success", "400": "failed", "401": "failed"})
 
+    def test_the_production_legend_of_16_nov_2026(self):
+        # As set on the API, worker and reconcile cron: 404 and 500 never settle or
+        # refund on their own, because neither proves the purchase did not run.
+        legend = "200=success 400=failed 401=failed 404=pending 500=pending"
+        with mock.patch.dict(settings.WEMA, {"VAS_STATUS_LEGEND": legend,
+                                             "BILLS_STATUS_LEGEND": legend}):
+            for product in ("airtime", "bills"):
+                self.assertEqual(_vas_legend(product),
+                                 {"200": "success", "400": "failed", "401": "failed",
+                                  "404": "pending", "500": "pending"})
+            for code in (404, 500):
+                out = _parse_vas(_int_shape(code), "REF1", product="bills")
+                self.assertEqual((out["success"], out["pending"]), (False, True), code)
+
+    def test_the_built_in_default_is_the_full_legend(self):
+        # With no Render variable, airtime/data and bills fall back to this.
+        from zitch_api.settings import WEMA_CONFIRMED_PAYMENT_LEGEND
+        with mock.patch.dict(settings.WEMA, {"VAS_STATUS_LEGEND": WEMA_CONFIRMED_PAYMENT_LEGEND}):
+            self.assertEqual(_vas_legend("airtime"),
+                             {"200": "success", "400": "failed", "401": "failed",
+                              "404": "pending", "500": "pending"})
+
     def test_airtime_and_bills_legends_are_separate_ladders(self):
         # The two endpoints publish different enums; decoding a bills code against the
         # airtime map would settle the wrong purchases.

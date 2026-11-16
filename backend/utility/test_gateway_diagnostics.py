@@ -184,6 +184,48 @@ class PurchaseOutcomeIsRecordedTests(SimpleTestCase):
         self.assertNotIn("0123456789", line)
 
     @override_settings(WEMA=WEMA_LIVE)
+    def test_a_409_authentication_refusal_is_refunded_not_held(self):
+        # 16 Nov 2026 production body, trimmed: refused at the gate, never processed.
+        body = {"result": {"status": "Failed", "message": "Authentication Failed",
+                           "transactionReference": "ZTCH-BILL-AUTH"},
+                "errorMessage": None}
+        exc = requests.HTTPError("bank gateway returned HTTP 409",
+                                 response=self._json(409, body))
+        with mock.patch.object(wema, "_post", side_effect=exc), \
+             self.assertLogs("zitch", level="ERROR") as logs:
+            bill = wema.pay_bill(1000, "ZTCH-BILL-AUTH", package_id="7", identifier="1234567",
+                                 source_account="0100000001")
+        self.assertEqual((bill["success"], bill["pending"]), (False, False))
+        self.assertEqual(bill["status"], "REFUSED_409")
+        self.assertIn("wema_vas_refused ref=ZTCH-BILL-AUTH product=bills http_status=409",
+                      "\n".join(logs.output))
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_any_other_409_is_still_held(self):
+        for body in ({"result": {"status": "Failed", "message": "Duplicate transaction"}},
+                     {"result": {"status": "Pending", "message": "Authentication Failed"}},
+                     {"message": "Conflict"}):
+            exc = requests.HTTPError("409", response=self._json(409, body))
+            with mock.patch.object(wema, "_post", side_effect=exc), \
+                 self.assertLogs("zitch", level="WARNING"):
+                bill = wema.pay_bill(1000, "ZTCH-BILL-HOLD", package_id="7",
+                                     identifier="1234567", source_account="0100000001")
+            self.assertEqual((bill["success"], bill["pending"]), (False, True), body)
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_a_refused_meter_check_is_logged_without_the_meter(self):
+        refused = self._json(401, {"statusCode": 401, "message": "Access denied due to invalid "
+                                                              "subscription key."})
+        with mock.patch.object(wema, "_post", return_value=refused), \
+             self.assertLogs("zitch", level="WARNING") as logs:
+            res = wema.validate_bill_customer("45058723664", "7")
+        self.assertFalse(res["success"])
+        line = "\n".join(logs.output)
+        self.assertIn("wema_bill_validate_failed package=7", line)
+        self.assertIn("http_status': 401", line)
+        self.assertNotIn("45058723664", line)
+
+    @override_settings(WEMA=WEMA_LIVE)
     def test_a_settled_purchase_adds_no_warning(self):
         done = {"hasError": False, "result": {"status": "SUCCESS",
                                               "transactionReference": "ZTCH-AIR-3"}}

@@ -2671,11 +2671,47 @@ def _vas_unanswered(product: str, reference: str, exc: Exception) -> dict:
     nothing here shows whether the bank took the instruction, and it is logged,
     because until now it was held in silence."""
     response = getattr(exc, "response", None)
+    refusal = _conflict_refusal(response)
+    if refusal:
+        # 16 Nov 2026: two Ikeja PayBills came back 409 with result.status "Failed"
+        # and "Authentication Failed". Authentication is decided before the bank
+        # processes anything (see _VAS_NOT_ENTITLED_RE), and no authorisation
+        # callback ever arrived for either, so nothing was executed: refund now
+        # rather than hold the customer's money for the 20-minute release.
+        log.error("wema_vas_refused ref=%s product=%s http_status=409 by=conflict message=%r "
+                  "(definitive failure — refunding, not left pending)",
+                  _log_safe(reference), product, _log_safe(refusal))
+        return {"success": False, "pending": False, "status": "REFUSED_409",
+                "reference": reference, "message": refusal}
     log.warning("wema_vas_purchase_unanswered ref=%s product=%s error_type=%s http_status=%s "
                 "meta=%s raw=%s (held PENDING)", _log_safe(reference), product,
                 type(exc).__name__, getattr(response, "status_code", None),
                 *_unanswered_evidence(response))
     return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+
+
+def _conflict_refusal(response) -> str:
+    """The refusal message of a 409 that is an explicit authentication refusal, else "".
+
+    Only an HTTP 409 whose body says result.status "Failed" AND carries wording
+    _VAS_NOT_ENTITLED_RE recognises (refused at the gate, before processing). Any
+    other 409 - a duplicate reference among them - stays ambiguous and pending.
+    """
+    if response is None or getattr(response, "status_code", None) != 409:
+        return ""
+    try:
+        data = response.json()
+    except ValueError:
+        return ""
+    r = data.get("result") if isinstance(data, dict) else None
+    if not isinstance(r, dict):
+        return ""
+    status = r.get("status")
+    message = _first_text(r.get("message")) or _msg(data)
+    if (isinstance(status, str) and status.strip().upper() == "FAILED"
+            and message and _VAS_NOT_ENTITLED_RE.search(message)):
+        return message
+    return ""
 
 
 def _unanswered_evidence(response) -> tuple:
@@ -2899,6 +2935,13 @@ def validate_bill_customer(identifier: str, package_id: str) -> dict:
         valid_envelope = 200 <= response.status_code < 300 and _ok(data) and bool(r)
         if not valid_envelope or r.get("isValidated", True) is not True:
             invalid_identifier = valid_envelope and r.get("isValidated") is False
+            # Without this a refused check left no trace: on 16 Nov 2026 every Ikeja
+            # meter failed for over ten minutes after a key change and the logs
+            # held nothing. Status, flags and the bank's message only - no identifier.
+            log.warning("wema_bill_validate_failed package=%s meta=%s is_validated=%s "
+                        "result_message=%r", _log_safe(str(package_id)),
+                        _response_meta(response, data), r.get("isValidated"),
+                        _log_safe(_first_text(r.get("message")) or ""))
             return {"success": False,
                     "message": ("The selected biller could not verify this customer number."
                                 if invalid_identifier else
@@ -3166,8 +3209,12 @@ _LEGEND_SETTING = {
 def _vas_legend(product: str) -> dict[str, str]:
     """The configured integer→outcome map for a VAS status check, or {} when unset.
 
-    The live integration's confirmed payment legend is 200=success, 400=failed and
-    401=unauthorized/authentication-failed/invalid-API. This still reads a separate
+    The live integration's confirmed payment legend (16 Nov 2026) is 200=success,
+    400=failed, 401=unauthorized/authentication-failed/invalid-API, 404=not found and
+    500=internal server error. Production maps it as
+    ``200=success 400=failed 401=failed 404=pending 500=pending``: neither a 404 nor a
+    500 proves the purchase did not run, so both stay pending, and a purchase the bank
+    never asked to authorise is still released by providers.vas_never_authorised. This still reads a separate
     map per product from configuration: contract changes then fail closed instead of
     silently reclassifying in-flight money.
 

@@ -402,8 +402,12 @@ WA_REAUTH_IDLE_MINUTES = 0 if TESTING else int(os.environ.get("WA_REAUTH_IDLE_MI
 # channel; the notification is only ever a trigger. Blank keys => MOCK; WEMA_SIMULATION=true serves the mock
 # flow even in prod (no real money or debt). securityInfo is a per-reference
 # HMAC derived from WEMA_SECURITY_INFO, a private seed chosen by Zitch. See utility.wema.
+# Wema's payment legend (16 Nov 2026): 200 success, 400 failed, 401 unauthorized /
+# authentication failed / invalid API, 404 not found, 500 internal server error.
+# 404 and 500 stay pending: neither proves the purchase did not run.
 WEMA_CONFIRMED_PAYMENT_LEGEND = (
-    "200=success,400=failed,401=unauthorized_authentication_failed_or_invalid_api")
+    "200=success,400=failed,401=unauthorized_authentication_failed_or_invalid_api,"
+    "404=pending,500=pending")
 WEMA = {
     "BASE_URL": os.environ.get("WEMA_BASE_URL", "https://apiplayground.alat.ng"),
     # Optional per-product host override for cases where Wema profiles one live
