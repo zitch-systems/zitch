@@ -4,8 +4,10 @@ Detection runs on the customer's device with MediaPipe Tasks Vision
 FaceLandmarker (Apache-2.0), self-hosted under ``static/whatsapp/liveness/`` so
 the pages keep ``script-src 'nonce-…'`` and ``connect-src 'self'``. The only CSP
 addition is ``'wasm-unsafe-eval'`` (WebAssembly compilation), on these pages
-only. Nothing is sent to us by the check: the page posts the best frontal frame
-as the selfie, exactly as before, and the bank's face match stays the decision.
+only. The check guides the customer and picks the frames: the clearest straight
+frames and the widest point of each head turn. It is not trusted on its own;
+our server measures those frames (``wallet.selfie``) before anything reaches the
+bank, and the bank's face match stays the identity decision.
 
 Vendored files (``@mediapipe/tasks-vision`` 0.10.21 from npm, model from
 storage.googleapis.com/mediapipe-models, float16 v1); ``sourceMappingURL``
@@ -77,9 +79,10 @@ def secure_camera_headers(response, nonce: str):
 @require_GET
 def app_liveness_page(request):
     """The app's in-app check (react-native-webview). No identity, no token and
-    no submission here: the frame goes back to the app by ``postMessage`` and the
-    app sends it to the bank with BVN/NIN as before. Any other page or browser
-    that opens this only sees the check run locally."""
+    no submission here: the frames go back to the app by ``postMessage``; the
+    app has our server check them (``/api/wallet/wema/tier2-face-check/``) and
+    sends the chosen photo, its proof and BVN/NIN to the bank. Any other page or
+    browser that opens this only sees the check run locally."""
     nonce = secrets.token_urlsafe(24)
     response = render(request, "whatsapp/liveness_app.html", liveness_context(nonce))
     return secure_camera_headers(response, nonce)

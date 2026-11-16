@@ -45,7 +45,8 @@ export type KycStatus = ApiResult<{
   id_document_verified?: boolean;
   face_rail?: 'document' | 'wema';
   tier2_face_rail?: 'prembly' | 'wema';
-  tier2_face_flow?: 'prembly_sdk';
+  tier2_face_flow?: 'prembly_sdk' | 'wema_selfie';
+  tier2_face_pending?: boolean;
   tier2_requires_nin?: boolean;
   tier2_face_available?: boolean;
   tier2_unavailable_reason?: string;
@@ -140,9 +141,6 @@ export const kycService = {
     ? walletService.resendWemaOtp(trackingId)
     : apiJson<KycStatus>(EP.kyc.nin, { nin }),
   verifyNin: (nin: string, ninImage: string) => apiJson<KycStatus>(EP.kyc.nin, { nin, nin_image: ninImage }),
-  verifyFace: (selfie: string) => apiJson<KycStatus>(EP.kyc.face, { selfie }),
-  startLiveness: () => apiJson<KycStatus & { url?: string; session?: string }>(EP.kyc.livenessStart),
-  getLivenessStatus: (session: string) => apiJson<KycStatus>(EP.kyc.livenessStatus, { session }),
   verifyAddress: (address: ResidentialAddress, document?: string) => {
     const fullAddress = address.fullAddress || [
       [address.buildingNumber, address.apartment, address.street].filter(Boolean).join(' '),
@@ -167,6 +165,8 @@ export const kycService = {
   // The route out of `upgrade_required`. startNin/startBvn cannot finish an
   // account the bank has already opened — they come back with that flag and
   // nothing else will move the customer forward.
-  upgradeTier2: (bvn: string, nin: string, liveImage: string) =>
-    walletService.upgradeTier2(bvn, nin, liveImage),
+  upgradeTier2: (bvn: string, nin: string, liveImage: string, livenessToken?: string) =>
+    walletService.upgradeTier2(bvn, nin, liveImage, livenessToken),
+  /** The Tier 2 live face check (FaceLivenessModal): nothing reaches the bank. */
+  checkTier2Face: (frames: string[], turns: string[]) => walletService.checkTier2Face(frames, turns),
 };

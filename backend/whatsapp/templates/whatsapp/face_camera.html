@@ -20,6 +20,7 @@
     button.link { min-height: 0; padding: 6px; background: none; color: #14583d; font-weight: 600; text-decoration: underline; }
     button:disabled { opacity: .6; }
     button:focus, .pick:focus-within, .back:focus { outline: 3px solid #acdfaa; outline-offset: 2px; }
+    .pick { position: relative; }
     .pick input { position: absolute; width: 1px; height: 1px; opacity: 0; }
     .message { background: #fff5de; border-radius: 10px; padding: 12px; margin-top: 14px; text-align: left; }
     .message.ok { background: #e6f5e8; font-weight: 600; }
@@ -56,7 +57,8 @@
 
   <div id="check" class="hidden">
     {% include "whatsapp/_liveness_stage.html" %}
-    <!-- Fallbacks only: no model, a blocked camera, or a WebView. -->
+    <!-- Fallbacks only: no model, a blocked camera, or a WebView. Each still
+         takes a straight photo and a head turn. -->
     <button type="button" id="capture" class="hidden">Take photo</button>
     <label class="pick hidden" id="pick">
       <span id="pick-label">Open camera</span>
@@ -74,7 +76,7 @@
     <li>Keep your whole face inside the circle.</li>
   </ul>
 
-  <p class="trust">Banking services by Wema Bank Plc, licensed by the CBN. Deposits insured by NDIC. Your BVN, NIN and photo are sent only to your bank for this check and are not stored by Zitch. The face check runs on your phone.</p>
+  <p class="trust">Banking services by Wema Bank Plc, licensed by the CBN. Deposits insured by NDIC. The face check runs on your phone; Zitch checks the photos for this request only and does not store them. Your BVN, NIN and photo are sent only to your bank.</p>
   <noscript><p class="message">Enable JavaScript in your browser to take your selfie.</p></noscript>
 </main>
 {{ liveness_assets|json_script:"lv-assets" }}
@@ -85,12 +87,22 @@
   var nonce = (document.currentScript && document.currentScript.nonce) || '';
   var LV = window.ZitchLiveness || null;
   var DONE_TEXT = '✅ Tier 2 complete — Verification ongoing. We’ll confirm in WhatsApp shortly.';
+  var MANUAL_TEXT = 'Tap “Take photo”, look straight at the camera, then turn your head to the left when asked.';
+  // Straight photos go to the bank (our server keeps the clearest); the
+  // head-turn frames are only measured by our server. Never mirrored: the
+  // bank compares the photo with the one on the customer's ID.
+  var FRONT_SIDE = 1280, TURN_SIDE = 480;
+  var STRAIGHT_FRAMES = 3, STRAIGHT_GAP = 250, TURN_FRAMES = 8, TURN_GAP = 250, TURN_LEAD = 700;
+  var STALE_PHOTO_MS = 10 * 60 * 1000;
   var $ = function (id) { return document.getElementById(id); };
   var form = $('face'), idsBox = $('ids'), check = $('check');
   var video = $('video'), shot = $('shot'), hint = $('hint'), moves = $('lv-moves');
-  var capture = $('capture'), pick = $('pick'), file = $('file'), send = $('send');
-  var retake = $('retake'), manualBtn = $('manual'), status = $('status');
-  var stream = null, run = null, lock = null, image = '', busy = false, done = false;
+  var chips = document.querySelector('.lv-chips');
+  var capture = $('capture'), pick = $('pick'), pickLabel = $('pick-label'), file = $('file');
+  var send = $('send'), retake = $('retake'), manualBtn = $('manual'), status = $('status');
+  var stream = null, run = null, lock = null, busy = false, done = false;
+  var frames = [], turns = [], mirrored = false, pickStep = 'straight';
+  var capturing = 0, manualRunning = false;
 
   // Start fetching the self-hosted model while the customer types.
   var engine = null;
@@ -108,6 +120,7 @@
     status.classList.toggle('ok', !!ok);
     show(status, !!text);
   }
+  function sleep(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
   function digits(id) { return $(id).value.replace(/\D/g, ''); }
   function idsValid() {
     var bad = null;
@@ -126,6 +139,8 @@
 
   function flash(on) { document.body.classList.toggle('lv-flash', on); }
   function stopCamera() {
+    capturing += 1;
+    manualRunning = false;
     if (run) { run.stop(); run = null; }
     if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
     if (lock) { lock.release(); lock = null; }
@@ -133,38 +148,116 @@
   }
   function setHint(text) { hint.textContent = text; show(hint, !!text); }
 
-  function preview(dataUrl) {
-    image = dataUrl;
+  // --- frames ----------------------------------------------------------------
+  function grab(source, width, height, side) {
+    var scale = Math.min(1, side / Math.max(width, height));
+    var canvas = document.createElement('canvas');
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  }
+  function jpeg(canvas, quality) { return canvas.toDataURL('image/jpeg', quality); }
+  function videoFrame(side, quality) {
+    return jpeg(grab(video, video.videoWidth, video.videoHeight, side), quality);
+  }
+  function b64(dataUrl) { return dataUrl.split(',')[1] || ''; }
+
+  // A camera frame is shown the way the (mirrored) preview looked.
+  function preview(dataUrl, fromCamera) {
+    mirrored = !!fromCamera;
     shot.src = dataUrl;
+    shot.classList.toggle('lv-mirror', mirrored);
     show(shot, true); show(video, false); setHint('');
     show(capture, false); show(pick, false); show(moves, false); show(manualBtn, false);
   }
 
+  // The fallbacks' own instructions, in the stage's prompt line.
+  var PROMPTS = {
+    frontal: ['Look straight at the camera and hold still', '•'],
+    left: ['Now slowly turn your head to the left', '←']
+  };
+  function showPrompt(name) {
+    show(moves, true); show(chips, false);
+    $('lv-prompt').textContent = PROMPTS[name][0];
+    var arrow = $('lv-arrow');
+    arrow.textContent = PROMPTS[name][1];
+    arrow.className = 'lv-arrow lv-' + name;
+  }
+  function clearPrompt() {
+    $('lv-prompt').textContent = '';
+    $('lv-arrow').textContent = '';
+  }
+
+  // --- camera-app fallback: one photo looking straight, one turned ------------
   function usePicker(reason) {
     stopCamera();
-    show(video, false); show(capture, false); show(moves, false); show(manualBtn, false);
-    setHint(reason || 'Tap “Open camera” to take your selfie.');
+    frames = []; turns = []; pickStep = 'straight';
+    show(video, false); show(shot, false); show(capture, false); show(moves, false); show(manualBtn, false);
+    clearPrompt();
+    pickLabel.textContent = 'Take a photo looking straight at the camera';
+    setHint(reason || 'Your camera opens twice: once looking straight, then with your head turned to the left.');
     show(pick, true);
   }
 
-  // The model could not run here: a plain front-camera photo instead.
+  // --- the model could not run here: a guided camera capture instead ---------
   function manual(reason) {
     if (run) { run.stop(); run = null; }
-    show(moves, false); show(manualBtn, false);
+    capturing += 1;
+    manualRunning = false;
+    frames = []; turns = [];
+    show(manualBtn, false);
     say(reason || '');
     if (!stream) return usePicker();
+    showPrompt('frontal');
     show(capture, true);
   }
 
+  async function manualCapture() {
+    if (!stream || !video.videoWidth || busy || done || manualRunning) return;
+    var mine = ++capturing;
+    var stale = function () { return mine !== capturing || !stream; };
+    manualRunning = true;
+    frames = []; turns = [];
+    say('');
+    show(capture, false); show(manualBtn, false);
+    showPrompt('frontal');
+    await sleep(600);
+    for (var i = 0; i < STRAIGHT_FRAMES; i++) {
+      if (stale()) return;
+      frames.push(videoFrame(FRONT_SIDE, 0.85));
+      await sleep(STRAIGHT_GAP);
+    }
+    if (stale()) return;
+    showPrompt('left');
+    await sleep(TURN_LEAD);
+    for (var k = 0; k < TURN_FRAMES; k++) {
+      if (stale()) return;
+      turns.push(videoFrame(TURN_SIDE, 0.8));
+      await sleep(TURN_GAP);
+    }
+    if (stale()) return;
+    manualRunning = false;
+    stopCamera();
+    preview(frames[0], true);
+    send.textContent = 'Use this photo';
+    show(send, true); show(retake, true);
+    say('Check the photo shows your whole face clearly, then tap “Use this photo”.');
+  }
+
+  // --- the guided moves (on-device check) --------------------------------------
   var liveUi = {
     step: ui.step, prompt: ui.prompt, hint: ui.hint, dark: ui.dark,
-    done: function (dataUrl) {
+    done: function (result) {
       run = null;
       stopCamera();
-      preview(dataUrl);
+      frames = (result && result.frames) || [];
+      turns = (result && result.turns) || [];
+      if (!frames.length || !turns.length) return begin('Turn your head only part of the way, about a quarter turn, and try again.');
+      preview(frames[0], true);
       submit();
     },
-    error: function () { manual('Take a clear selfie in good light, then tap “Use this photo”.'); },
+    error: function () { manual(MANUAL_TEXT); },
     slow: function () { show(manualBtn, true); }
   };
 
@@ -176,35 +269,41 @@
     });
   }
 
-  function begin() {
-    image = '';
-    say('');
+  function begin(message) {
+    stopCamera();
+    frames = []; turns = [];
+    say(message || '');
     show(shot, false); show(send, false); show(retake, false); show(capture, false);
+    show(moves, false); show(manualBtn, false);
+    retake.textContent = 'Retake';
+    clearPrompt();
     if (pickerOnly || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       return usePicker();
     }
+    show(pick, false);
     setHint('Starting your front camera…');
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
       .then(function (s) {
+        if (done) { s.getTracks().forEach(function (t) { t.stop(); }); return; }
         stream = s;
         video.srcObject = s;
         if (video.play) { var p = video.play(); if (p && p.catch) p.catch(function () {}); }
-        show(video, true); show(pick, false);
+        show(video, true);
         flash(true);
         lock = LV ? LV.wakeLock() : null;
-        if (!engine) return manual();
+        if (!engine) return manual(MANUAL_TEXT);
         setHint('Getting the face check ready…');
         withTimeout(engine, 20000).then(function (lm) {
-          if (!stream || done) return;
+          if (!stream || done || stream !== s) return;
           setHint('');
-          show(moves, true);
+          show(moves, true); show(chips, true);
           run = LV.session(lm, video, liveUi);
         }, function () {
-          if (stream) { setHint(''); manual('Take a clear selfie in good light, then tap “Use this photo”.'); }
+          if (stream === s) { setHint(''); manual(MANUAL_TEXT); }
         });
       })
       .catch(function () {
-        usePicker('Camera access was blocked. Tap “Open camera” to take your selfie instead.');
+        usePicker('Camera access was blocked. Tap “Take a photo looking straight at the camera” to use your camera app instead.');
       });
   }
 
@@ -213,46 +312,45 @@
     if (done || busy || !idsValid()) return;
     say('');
     show(idsBox, false); show($('lead'), false); show(check, true);
-    // An ID-only correction keeps the photo already taken.
-    if (image) { preview(image); return submit(); }
+    // An ID-only correction keeps the photos already checked.
+    if (frames.length && turns.length) { preview(frames[0], mirrored); return submit(); }
     begin();
   });
 
-  capture.addEventListener('click', function () {
-    if (!video.videoWidth) return;
-    var dataUrl = toJpeg(video, video.videoWidth, video.videoHeight, true);
-    stopCamera();
-    preview(dataUrl);
-    show(send, true); show(retake, true);
-  });
+  capture.addEventListener('click', function () { manualCapture(); });
 
-  manualBtn.addEventListener('click', function () {
-    manual('Take a clear selfie in good light, then tap “Use this photo”.');
-  });
-
-  function toJpeg(source, width, height, mirror) {
-    if (LV) return LV.snapshot(source, width, height, mirror);
-    var scale = Math.min(1, 720 / Math.max(width, height));
-    var canvas = document.createElement('canvas');
-    canvas.width = Math.round(width * scale);
-    canvas.height = Math.round(height * scale);
-    var ctx = canvas.getContext('2d');
-    if (mirror) { ctx.translate(canvas.width, 0); ctx.scale(-1, 1); }
-    ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.85);
-  }
+  manualBtn.addEventListener('click', function () { manual(MANUAL_TEXT); });
 
   file.addEventListener('change', function () {
     var chosen = file.files && file.files[0];
     file.value = '';
     if (!chosen || !/^image\//.test(chosen.type)) return;
+    // The camera app's new photo, not one saved earlier.
+    if (chosen.lastModified && Date.now() - chosen.lastModified > STALE_PHOTO_MS) {
+      say('Use your camera to take a new photo now. Saved photos cannot be used.');
+      return;
+    }
     var url = URL.createObjectURL(chosen);
     var img = new Image();
     img.onload = function () {
-      var dataUrl = toJpeg(img, img.naturalWidth, img.naturalHeight, false);
+      var straight = pickStep === 'straight';
+      var canvas = grab(img, img.naturalWidth, img.naturalHeight, straight ? FRONT_SIDE : TURN_SIDE);
       URL.revokeObjectURL(url);
-      preview(dataUrl);
-      show(send, true); show(retake, true);
+      if (straight) {
+        frames = [jpeg(canvas, 0.85)];
+        turns = [];
+        preview(frames[0], false);
+        pickStep = 'turn';
+        pickLabel.textContent = 'Now take one with your head turned to the left';
+        show(pick, true);
+        say('Step 2 of 2: turn your head to the left, then take the photo.');
+      } else {
+        turns = [jpeg(canvas, 0.8)];
+        show(pick, false);
+        send.textContent = 'Use these photos';
+        show(send, true); show(retake, true);
+        say('Check the first photo shows your whole face clearly, then tap “Use these photos”.');
+      }
     };
     img.onerror = function () { URL.revokeObjectURL(url); say('We could not read that photo. Please take it again.'); };
     img.src = url;
@@ -274,15 +372,17 @@
   }
 
   async function submit() {
-    if (!image || busy || done) return;
+    if (!frames.length || !turns.length || busy || done) return;
     if (!idsValid()) { show(check, false); show(idsBox, true); show($('lead'), true); return; }
     busy = true;
     send.disabled = true; retake.disabled = true;
     show(send, false); show(retake, false);
-    say('Checking with your bank. Please keep this page open…');
+    say('Checking your face, then sending it to your bank. Please keep this page open…');
     var body = new URLSearchParams();
     body.set('csrfmiddlewaretoken', form.elements.csrfmiddlewaretoken.value);
-    body.set('image', image.split(',')[1] || '');
+    // Base64 never contains a comma.
+    body.set('image', frames.map(b64).join(','));
+    body.set('turns', turns.map(b64).join(','));
     body.set('bvn', digits('bvn'));
     body.set('nin', digits('nin'));
     var result;
@@ -301,28 +401,35 @@
     }
     busy = false;
     send.disabled = false; retake.disabled = false;
-    var idRetry = result.status === 'retry' && /BVN|NIN/.test(result.message || '');
+    var idRetry = result.status === 'retry' &&
+      (result.field === 'ids' || (!result.field && /BVN|NIN/.test(result.message || '')));
     if (result.status === 'verified' || result.status === 'pending') {
-      image = '';
+      frames = []; turns = [];
       finish();
     } else if (result.status === 'closed') {
-      image = '';
+      frames = []; turns = [];
       done = true;
       show(check, false); show(idsBox, false);
       say(result.message);
       show($('back'), true);
     } else if (idRetry) {
-      // Keep the photo; correct the numbers and continue.
+      // The face check passed; keep the photos and correct the numbers.
       show(check, false); show(idsBox, true); show($('lead'), true);
       say(result.message);
+      $(/\bNIN\b/.test(result.message || '') && !/\bBVN\b/.test(result.message || '') ? 'nin' : 'bvn').focus();
     } else {
-      image = '';
-      say(result.message || 'Please take the photo again.');
+      // The face check or the bank refused the photo: take it again.
+      frames = []; turns = [];
+      say(result.message || 'Please take the face check again.');
       retake.textContent = 'Try again';
       show(retake, true);
     }
   }
 
+  document.addEventListener('visibilitychange', function () {
+    // Leaving mid-capture would record the wrong thing: start that part again.
+    if (document.hidden && manualRunning) manual('Take the photos again with this page open.');
+  });
   window.addEventListener('pagehide', stopCamera);
 })();
 </script>

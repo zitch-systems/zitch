@@ -593,6 +593,7 @@ def _face_resolve(claims, *, lock=False):
 
 
 def _face_get(request, token):
+    from wallet import selfie
     from wallet.views import tier2_face_available
 
     pa, user = _face_resolve(_decode(token))
@@ -604,7 +605,7 @@ def _face_get(request, token):
         return _page(request, "face_pending", status=202)
     if pa.state == FACE_FAILED or pa.expired:
         return _page(request, status=410)
-    if not tier2_face_available():
+    if not tier2_face_available() or not selfie.face_checks_available():
         return _page(request, "unavailable", status=503, message=FACE_UNAVAILABLE)
     if _is_preview_fetch(request):
         return _page(request, "closed", status=200)
@@ -622,34 +623,66 @@ def _json(http_status, **body):
     return JsonResponse(body, status=http_status)
 
 
-@sensitive_variables("image")
+def _face_link_closed(pa, user):
+    """The answer for a link that can no longer take a photo, or None."""
+    if pa is None or pa.payload.get("tier") != 2 or pa.state == FACE_FAILED:
+        return _json(410, status="closed", message="This link has closed. Reply 8 in WhatsApp for a new one.")
+    if pa.state in (FACE_PROCESSING, FACE_PENDING):
+        return _json(202, status="pending", message=FACE_PENDING_TEXT)
+    if pa.state == COMPLETE or (user.face_verified and user.tier >= 2):
+        return _json(200, status="verified", message="Tier 2 is already complete.")
+    return None
+
+
+@sensitive_variables("image", "turns", "bvn", "nin")
 def _face_post(request, token):
-    """Send BVN, NIN and the selfie to the bank once (Wema Tier 2). Retry only
-    after an explicit refusal. BVN/NIN are never stored or logged raw."""
+    """Check the live face here (the straight photo and the head-turn frames),
+    then send BVN, NIN and the photo to the bank once (Wema Tier 2). A photo
+    the bank could not use, or a turn that did not happen, is refused before
+    the link is claimed, so the customer simply tries again. Retry after a
+    bank answer only on an explicit refusal. BVN/NIN are never stored or
+    logged raw."""
+    from wallet import face_check
     from wallet.views import upgrade_wema_identity
 
     if (request.content_type not in ("application/x-www-form-urlencoded", "multipart/form-data")
-            or set(request.POST) - {"image", "bvn", "nin", "csrfmiddlewaretoken"} or request.FILES
-            or any(len(request.POST.getlist(k)) != 1 for k in request.POST)):
-        return _json(400, status="retry", message="Take the photo using this page.")
-    image = request.POST.get("image", "")
+            or set(request.POST) - {"image", "turns", "bvn", "nin", "csrfmiddlewaretoken"}
+            or request.FILES or any(len(request.POST.getlist(k)) != 1 for k in request.POST)):
+        return _json(400, status="retry", field="face", message="Take the photo using this page.")
+    # Base64 never contains a comma: "image" is 1-3 straight photos (the
+    # server keeps the clearest) and "turns" the head-turn frames.
+    image = [frame for frame in request.POST.get("image", "").split(",") if frame]
+    turns = [frame for frame in request.POST.get("turns", "").split(",") if frame]
     bvn, nin = request.POST.get("bvn", "").strip(), request.POST.get("nin", "").strip()
     if not (re.fullmatch(r"[0-9]{11}", bvn) and re.fullmatch(r"[0-9]{11}", nin)):
-        return _json(400, status="retry", message="Enter your 11-digit BVN and NIN.")
+        return _json(400, status="retry", field="ids", message="Enter your 11-digit BVN and NIN.")
+    if not turns:
+        # A page loaded before the head-turn step existed.
+        return _json(400, status="retry", field="face", code="liveness_missing",
+                     message=FACE_REFRESH_TEXT)
+    if len(image) > face_check.MAX_FRONTAL_FRAMES or len(turns) > face_check.MAX_TURN_FRAMES:
+        return _json(400, status="retry", field="face", message="Take the photo using this page.")
+    pa, user = _face_resolve(_decode(token))
+    closed = _face_link_closed(pa, user)
+    if closed:
+        return closed
+    checked = face_check.check_live_face(image, turns)
+    face_check.log_outcome("whatsapp", user, checked)
+    if checked.code == "face_check_unavailable":
+        return _json(503, status="retry", field="face", code=checked.code, message=checked.message)
+    if not checked.ok:
+        return _json(422, status="retry", field="face", code=checked.code, message=checked.message)
     with transaction.atomic():
         pa, user = _face_resolve(_decode(token), lock=True)
-        if pa is None or pa.payload.get("tier") != 2 or pa.state == FACE_FAILED:
-            return _json(410, status="closed", message="This link has closed. Reply 8 in WhatsApp for a new one.")
-        if pa.state in (FACE_PROCESSING, FACE_PENDING):
-            return _json(202, status="pending", message=FACE_PENDING_TEXT)
-        if pa.state == COMPLETE or (user.face_verified and user.tier >= 2):
-            return _json(200, status="verified", message="Tier 2 is already complete.")
+        closed = _face_link_closed(pa, user)
+        if closed:
+            return closed
         # Claim before the bank call: a timeout or a double tap must not send
         # the photo twice.
         if not PendingAction.objects.filter(pk=pa.pk, state__in=(PIN, READY)).update(state=FACE_PROCESSING):
             return _json(409, status="pending", message=FACE_PENDING_TEXT)
     try:
-        response = upgrade_wema_identity(user, {"live_image": image, "bvn": bvn, "nin": nin})
+        response = upgrade_wema_identity(user, {"bvn": bvn, "nin": nin}, checked=checked.frontal)
         body = json.loads(response.content)
     except Exception:  # Never log the image, identities or provider payloads.
         PendingAction.objects.filter(pk=pa.pk, state=FACE_PROCESSING).update(state=FACE_PENDING)
@@ -660,12 +693,14 @@ def _face_post(request, token):
     if response.status_code == 202:
         PendingAction.objects.filter(pk=pa.pk, state=FACE_PROCESSING).update(state=FACE_PENDING)
         return _json(202, status="pending", message=FACE_PENDING_TEXT)
-    # An explicit refusal: allow another photo from the same link. Only our own
-    # validation messages are shown; bank text may carry account details.
+    # An explicit refusal: allow another try from the same link. Only our own
+    # validation messages are shown; bank text may carry account details. A
+    # BVN/NIN problem keeps the checked photo; anything else needs a new one.
     PendingAction.objects.filter(pk=pa.pk, state=FACE_PROCESSING).update(state=pa.state)
     own = response.status_code in (400, 409, 429)
     message = (body.get("message") if own else "") or FACE_RETRY_TEXT
-    return _json(response.status_code if own else 422, status="retry", message=message)
+    field = "ids" if own and re.search(r"\b(BVN|NIN)\b", message) else "face"
+    return _json(response.status_code if own else 422, status="retry", field=field, message=message)
 
 
 def _finish_face(pa, outcome):
@@ -734,6 +769,8 @@ FACE_PENDING_TEXT = ("Your bank is checking your photo. We'll message you in Wha
                      "with the result - you can close this page.")
 FACE_RETRY_TEXT = ("Your bank could not confirm your face. Take the photo again in good "
                    "light, facing the camera, with nothing covering your face.")
+FACE_REFRESH_TEXT = ("This page has been updated. Refresh it, then take the face check again. "
+                     "Your link still works.")
 FACE_DONE_TEXT = ("✅ *Tier 2 verification complete.*\n\n"
                   "Your face check passed and your account limits have been upgraded.")
 FACE_FAILED_TEXT = ("❌ *Your face check wasn't confirmed.*\n\n"

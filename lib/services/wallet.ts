@@ -81,6 +81,14 @@ export type TransactionHistory = ApiResult<{
   all_site_transactions?: any[];
 }>;
 
+/** The live face check's answer: the straight photo chosen (index into the
+ * frames sent) and its proof, or `code`/`message` saying what to fix. */
+export type Tier2FaceCheck = ApiResult<{
+  frame?: number;
+  liveness_token?: string;
+  expires_in?: number;
+}>;
+
 export type FundingAccount = ApiResult<CapabilityPayload & {
   account_recovery_available?: boolean;
   recovery_identity_type?: 'bvn' | 'nin';
@@ -141,8 +149,12 @@ export const walletService = {
     apiJson<FundingAccount>(EP.wallet.wemaResendOtp, { tracking_id: trackingId }),
   // One request, or nothing: the bank scores BVN, NIN and the live image
   // together for an account it has already opened. `live_image` is base64 with
-  // no data: prefix, matching kycService.verifyFace.
-  upgradeTier2: (bvn: string, nin: string, liveImage: string) =>
+  // no data: prefix; `liveness_token` is the live face check's proof for it.
+  upgradeTier2: (bvn: string, nin: string, liveImage: string, livenessToken?: string) =>
     apiJson<FundingAccount>(EP.wallet.wemaUpgradeTier2,
-                            { bvn, nin, live_image: liveImage }),
+                            { bvn, nin, live_image: liveImage, ...(livenessToken ? { liveness_token: livenessToken } : {}) }),
+  // The live face check before Tier 2: picks the clearest straight photo and
+  // checks the head turn. A minute's upload on a slow line is allowed for.
+  checkTier2Face: (frames: string[], turns: string[]) =>
+    apiJson<Tier2FaceCheck>(EP.wallet.wemaTier2FaceCheck, { frames, turns }, 90000),
 };

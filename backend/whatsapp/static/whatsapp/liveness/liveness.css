@@ -4,6 +4,8 @@
 .lv-frame { position: relative; width: 248px; height: 248px; border-radius: 50%; overflow: hidden; background: #e8eee9; border: 4px solid #14583d; }
 .lv-frame video, .lv-frame img { width: 100%; height: 100%; object-fit: cover; }
 .lv-frame video { transform: scaleX(-1); }
+/* Frames are sent unmirrored; a camera frame is shown the way the preview was. */
+.lv-frame img.lv-mirror { transform: scaleX(-1); }
 .lv-frame .hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; color: #52665c; font-size: 14px; }
 .lv-arrow { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); min-width: 44px; padding: 2px 10px; border-radius: 999px; background: rgba(20, 88, 61, .82); color: #fff; font-size: 22px; line-height: 1.4; }
 .lv-arrow:empty { display: none; }

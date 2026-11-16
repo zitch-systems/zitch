@@ -1,5 +1,3 @@
-import base64
-import binascii
 import hashlib
 import hmac
 import json
@@ -814,13 +812,54 @@ def complete_wema_provisioning(user, otp: str, tracking_id: str,
 @ratelimit("wema_wallet_upgrade_tier2", limit=5, window=60)
 @require_user
 def wema_wallet_upgrade_tier2(request):
-    """POST /api/wallet/wema/upgrade-tier2/ {access_token, live_image, bvn?, nin?}
+    """POST /api/wallet/wema/upgrade-tier2/
+       {access_token, bvn, nin, live_image, liveness_token?}
 
     Tier 2 sends the bank this account's number with a live face photo
     (partner-account-upgrade-tier2): account number, BVN, NIN and a live face
     photo. The customer types BVN and NIN; they are never stored raw.
+    ``liveness_token`` is the proof from /tier2-face-check/ for this photo.
     """
     return upgrade_wema_identity(request.user_obj, request.data)
+
+
+@api
+@ratelimit("wema_tier2_face_check", limit=12, window=600)
+@require_user
+def wema_tier2_face_check(request):
+    """POST /api/wallet/wema/tier2-face-check/ {access_token, frames: [b64], turns: [b64]}
+    -> {success, frame, liveness_token, expires_in} | {success: false, code, message}
+
+    The live face check before Tier 2. ``frames`` (1-3) are straight selfies
+    from one burst, ``turns`` (1-8) are taken while the customer turns their
+    head. Picks the clearest straight photo the bank can use, measures the
+    head turn and returns a 15-minute proof bound to that photo, which the
+    app sends with it to /upgrade-tier2/. Nothing goes to the bank and
+    nothing is stored.
+    """
+    from . import face_check
+
+    user = request.user_obj
+    if not tier2_face_available():
+        return fail(TIER2_FACE_UNAVAILABLE, status=503, code="tier2_unavailable")
+    if user.face_verified and user.tier >= 2:
+        return fail("Tier 2 is already complete.", status=409, code="tier2_complete")
+    if not Wallet.objects.filter(user=user).exclude(account_number="").exists():
+        return fail("Set up your partner-bank account first", status=400)
+    frames = face_check.frame_list(request.data.get("frames"), face_check.MAX_FRONTAL_FRAMES)
+    turns = face_check.frame_list(request.data.get("turns"), face_check.MAX_TURN_FRAMES)
+    if frames is None or turns is None:
+        return fail("Take the face check again using the camera in the app.",
+                    status=400, code="face_frames_required")
+    result = face_check.check_live_face(frames, turns)
+    face_check.log_outcome("app", user, result)
+    if result.code == "face_check_unavailable":
+        return fail(result.message, status=503, code=result.code, success=False)
+    if not result.ok:
+        return fail(result.message, status=422, code=result.code, success=False)
+    return ok(success=True, frame=result.index,
+              liveness_token=face_check.issue_proof(user, result.frontal),
+              expires_in=face_check.PROOF_TTL_SECONDS)
 
 
 TIER2_FACE_UNAVAILABLE = ("Tier 2 face verification is temporarily unavailable. Your verified "
@@ -840,28 +879,34 @@ def tier2_face_available() -> bool:
 
 
 def _live_image(data):
-    """Return (base64 image, error)."""
-    live_image = (data.get("live_image") or data.get("liveImageOfFace")
-                  or data.get("selfie") or "")
-    if not isinstance(live_image, str) or not live_image.strip():
-        return "", "Take a live selfie to complete Tier 2"
-    live_image = live_image.strip()
-    if len(live_image) > 2_800_000:
-        return "", "Selfie is too large. Retake it at a lower resolution."
-    if live_image.startswith("data:"):
-        header, separator, encoded = live_image.partition(",")
-        if not separator or not re.fullmatch(r"data:image/[a-zA-Z0-9.+-]+;base64", header):
-            return "", "Take a new live selfie and submit its base64 image."
-        live_image = encoded
-    try:
-        if not base64.b64decode(live_image, validate=True):
-            return "", "Take a new live selfie and submit its base64 image."
-    except (ValueError, binascii.Error):
-        return "", "Take a new live selfie and submit its base64 image."
-    return live_image, ""
+    """The submitted photo as sent: ``live_image`` (current clients) or the
+    older ``liveImageOfFace``/``selfie`` keys."""
+    return data.get("live_image") or data.get("liveImageOfFace") or data.get("selfie") or ""
 
 
-def upgrade_wema_identity(user, data):
+def _checked_selfie(user, data):
+    """``(selfie, None)`` for an app/API photo that may go to the bank, else
+    ``(None, refusal)``. The photo must suit a face match; a live face check
+    proof must belong to this customer and this exact photo."""
+    from . import face_check, selfie
+
+    photo = selfie.assess(_live_image(data))
+    if not photo.ok:
+        return None, fail(photo.message, status=422, code=photo.code)
+    token = data.get("liveness_token")
+    if token:
+        if not face_check.proof_matches(user, token, photo):
+            return None, fail(face_check.EXPIRED, status=422, code="liveness_expired")
+    elif face_check.liveness_required():
+        return None, fail(face_check.UPDATE_REQUIRED, status=422, code="liveness_required")
+    else:
+        # App builds from before the live face check. Logged so the switch to
+        # TIER2_LIVENESS_REQUIRED can be timed on real traffic.
+        log.warning("tier2_upgrade_without_live_face_check user=%s", user.pk)
+    return photo, None
+
+
+def upgrade_wema_identity(user, data, *, checked=None):
     """Shared Tier 2 service for authenticated, rate-limited app/WhatsApp handlers.
 
     Tier 2 follows Wema's partner-account-upgrade-tier2 contract: the account
@@ -870,7 +915,12 @@ def upgrade_wema_identity(user, data):
     each is checked against the hash already verified on the account, sent to
     the bank and then discarded. Account selection and identity ownership remain
     server-side, and the bank's read-back - not the submission - is what raises
-    the tier."""
+    the tier.
+
+    The photo is checked before the bank sees it (wallet/selfie.py) and goes
+    on upright, without metadata and at a bounded size. ``checked`` is a
+    selfie the caller already put through the live face check in this
+    request (the WhatsApp page); app callers send its proof instead."""
     if not partnership_new_business_allowed(user):
         return fail("Bank account upgrades are temporarily unavailable.",
                     status=409, code="partnership_archived")
@@ -889,16 +939,18 @@ def upgrade_wema_identity(user, data):
         return fail("That BVN does not match the BVN already verified on this account.", status=409)
     if nin and user.nin_verified and not hmac.compare_digest(hash_identifier(nin), user.nin_hash):
         return fail("That NIN does not match the NIN already verified on this account.", status=409)
-    live_image, error = _live_image(data)
-    if error:
-        return fail(error)
+    photo = checked
+    if photo is None:
+        photo, refusal = _checked_selfie(user, data)
+        if refusal:
+            return refusal
     if _identity_owned_by_another_user(user, WemaProvisioningAttempt.BVN, bvn):
         return fail("This BVN is already linked to another Zitch account", status=409)
     if _identity_owned_by_another_user(user, WemaProvisioningAttempt.NIN, nin):
         return fail("This NIN is already linked to another Zitch account", status=409)
 
     res = wema_provider.upgrade_tier2(wallet.account_number, bvn=bvn, nin=nin,
-                                     live_image=live_image)
+                                     live_image=photo.bank_base64())
     if res.get("pending"):
         return _tier2_pending(user, bvn, nin)
     if not res.get("success"):

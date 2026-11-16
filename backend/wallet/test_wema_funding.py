@@ -28,6 +28,7 @@ from wallet.models import (
     WemaProvisioningAttempt,
 )
 from wallet.services import apply_wema_credit, wema_account_reference
+from wallet import selfie_fixtures as fx
 from wallet.tests import make_transaction_at, make_user
 
 
@@ -379,11 +380,13 @@ class WemaWalletProvisioningTests(TestCase):
         wallet.account_name = "ADA EZE"
         wallet.bank_name = "Wema Bank"
         wallet.save(update_fields=["account_number", "account_name", "bank_name"])
-        r = self._post("/api/wallet/wema/upgrade-tier2/", {
-            "bvn": "22222222222",
-            "nin": "12345678901",
-            "live_image": "ZmFrZQ==",
-        })
+        selfie = fx.selfie_b64()
+        with fx.detector():
+            r = self._post("/api/wallet/wema/upgrade-tier2/", {
+                "bvn": "22222222222",
+                "nin": "12345678901",
+                "live_image": selfie,
+            })
         self.assertEqual(r.status_code, 200)
         self.user.refresh_from_db()
         self.assertTrue(self.user.bvn_verified)
@@ -391,7 +394,7 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertTrue(self.user.face_verified)
         mock_upgrade.assert_called_once_with(
             "0123456789", bvn="22222222222", nin="12345678901",
-            live_image="ZmFrZQ==")
+            live_image=selfie)
 
     @patch("utility.wema.upgrade_tier2")
     def test_existing_account_upgrade_without_ids_or_photo_never_reaches_wema(self, mock_upgrade):
@@ -404,7 +407,8 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertEqual(r.json()["code"], "identity_required")
         # No photo at all.
         r = self._post("/api/wallet/wema/upgrade-tier2/", {"bvn": "22222222222", "nin": "12345678901"})
-        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.status_code, 422)
+        self.assertEqual(r.json()["code"], "selfie_missing")
         self.assertIn("selfie", r.json()["message"].lower())
         mock_upgrade.assert_not_called()
 

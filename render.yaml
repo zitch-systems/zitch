@@ -193,6 +193,11 @@ services:
         sync: false
       - key: PREMBLY_FACE_SDK_ENABLED
         sync: false
+      # Tier 2 live face check (wallet/face_check.py; docs/tier2-live-face-check.md).
+      # The WhatsApp page always requires it. "true" also refuses app upgrades that
+      # carry no live face check proof: set it once the app with the check is out.
+      - key: TIER2_LIVENESS_REQUIRED
+        value: "false"
       # ---------------------------------------------------------------------
       # Wema / ALAT — the SOLE money-movement + Nigeria-KYC rail. Wallet Services,
       # Card, Airtime, Account Upgrade, Remita and BNPL are distinct subscriptions;

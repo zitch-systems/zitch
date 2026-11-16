@@ -4,17 +4,23 @@
  * Runs entirely on the customer's device with MediaPipe FaceLandmarker
  * (vendored next to this file, served by our own static host, so the page's
  * `script-src 'nonce-…'` and `connect-src 'self'` still hold). Nothing here
- * talks to a server: it hands the best frontal frame back to the page, which
- * sends it to the bank exactly as before. The bank's face match stays the
- * decision; this is anti-spoofing and a better photo.
+ * talks to a server: it guides the moves and hands the page the frames to
+ * send, the clearest straight frames (for the bank) and the widest point of
+ * each head turn. Our server measures those frames itself before the bank
+ * sees anything (wallet/selfie.py), so a page that skipped the moves gains
+ * nothing; the bank's face match stays the identity decision.
+ *
+ * Frames are NOT mirrored (only the preview is): the bank compares them with
+ * the photo on the customer's ID, which is not mirrored either.
  *
  * Shared by the WhatsApp face page and the app's in-app check.
  *
  *   ZitchLiveness.load(assets)            -> Promise<landmarker>
  *   ZitchLiveness.session(lm, video, ui)  -> { stop() }
+ *       ui.done({ frames: [jpeg, ...], turns: [jpeg, ...] })
  *   ZitchLiveness.stage(document)         -> ui callbacks for the shared markup
  *   ZitchLiveness.wakeLock()              -> { release() }
- *   ZitchLiveness.snapshot(source, w, h, mirror) -> JPEG data URL
+ *   ZitchLiveness.snapshot(source, w, h, mirror, side) -> JPEG data URL
  *
  * Classic script, no modules: the MediaPipe CommonJS bundle and its WASM
  * loader are added as nonced <script> elements, because MediaPipe's own
@@ -26,8 +32,13 @@
   var STEPS = ['left', 'right', 'smile'];
   // Yaw is the nose tip's offset from the middle of the face (between the
   // contour points by the ears), as a share of half the face width. Roughly
-  // 1.3 x tan(angle): 0 frontal, 0.4 at ~17 degrees, 0.75 at 30 degrees.
-  var TURN = 0.4;
+  // 1.3 x sin(angle): 0 frontal, 0.4 at ~18 degrees, 0.6 at ~27 degrees.
+  // A move needs ~27 degrees: the server's own measure (the nose against the
+  // eyes, wallet/selfie.py MIN_TURN) then sees the turn on flatter noses too.
+  var TURN = 0.6;
+  var TURN_FROM = 0.35;          // turn frames are kept from here ...
+  var TURN_MAX = 1.0;            // ... up to ~50 degrees (past it the far eye hides)
+  var NUDGE_MS = 1200;           // part of the way for this long: "a little further"
   var FRONTAL = 0.15;
   var SMILE = 0.5;
   var EYES_OPEN = 0.45;
@@ -38,7 +49,11 @@
   var LIGHT = 85;                // ... and the level that clears the hint
   var LOST_RESET_MS = 4000;      // face gone this long: start the moves again
   var SLOW_MS = 60000;           // offer the manual photo after this long
-  var MAX_SIDE = 720;
+  var FRONT_SIDE = 1280;         // straight frames: the photo the bank matches
+  var TURN_SIDE = 480;           // turn frames: only measured by our server
+  var FRONT_KEEP = 3;            // straight candidates; the server keeps the clearest
+  var FRONT_GAP_MS = 400;        // ... from moments at least this far apart
+  var TURN_SNAP_MS = 100;
 
   function now() { return (window.performance && performance.now) ? performance.now() : Date.now(); }
 
@@ -138,16 +153,22 @@
     return loading;
   }
 
-  /** JPEG of a video frame or image, longest side <= 720 px. */
-  function snapshot(source, width, height, mirror) {
-    var scale = Math.min(1, MAX_SIDE / Math.max(width, height));
+  /** A copy of a video frame or image, longest side <= `side` px. Copies are
+   * cheap; JPEG encoding waits until the frames are chosen. */
+  function grab(source, width, height, side, mirror) {
+    var scale = Math.min(1, side / Math.max(width, height));
     var canvas = document.createElement('canvas');
     canvas.width = Math.round(width * scale);
     canvas.height = Math.round(height * scale);
     var ctx = canvas.getContext('2d');
     if (mirror) { ctx.translate(canvas.width, 0); ctx.scale(-1, 1); }
     ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.85);
+    return canvas;
+  }
+
+  /** JPEG of a video frame or image, longest side <= `side` (default 1280) px. */
+  function snapshot(source, width, height, mirror, side) {
+    return grab(source, width, height, side || FRONT_SIDE, mirror).toDataURL('image/jpeg', 0.85);
   }
 
   function blend(shapes) {
@@ -228,17 +249,69 @@
     var stopped = false, raf = 0;
     var step = 0, hold = 0, frontHold = 0, errors = 0;
     var lastRun = 0, lastVideoTime = -1, lastTs = 0, lastSeen = now(), lastLuma = 0, lastSnap = 0;
+    var lastTurnSnap = 0, partSince = 0;
     var started = now(), slowSent = false, dark = false, hint = '';
-    var best = null, bestScore = -Infinity;
+    // Straight candidates ({score, t, canvas}) and, per side, the widest turn
+    // ({amount, peak, steady}: steady is the first frame past TURN).
+    var fronts = [], turned = { left: null, right: null };
 
     function setHint(text) {
       if (text !== hint) { hint = text; call('hint', text); }
     }
 
     function reset() {
-      step = 0; hold = 0; best = null; bestScore = -Infinity;
+      step = 0; hold = 0; partSince = 0;
+      fronts = []; turned = { left: null, right: null };
       call('step', 0, STEPS[0]);
       call('prompt', STEPS[0]);
+    }
+
+    // Keep up to FRONT_KEEP straight frames from different moments: a better
+    // frame replaces one taken close to it, or else the weakest.
+    function keepFront(score, t) {
+      var slot = -1, i;
+      for (i = 0; i < fronts.length; i++) {
+        if (Math.abs(fronts[i].t - t) < FRONT_GAP_MS) {
+          slot = score > fronts[i].score + 0.02 ? i : -2;
+          break;
+        }
+      }
+      if (slot === -1) {
+        if (fronts.length < FRONT_KEEP) {
+          slot = fronts.length;
+        } else {
+          var worst = 0;
+          for (i = 1; i < fronts.length; i++) if (fronts[i].score < fronts[worst].score) worst = i;
+          if (score > fronts[worst].score + 0.02) slot = worst;
+        }
+      }
+      if (slot < 0) return;
+      lastSnap = t;
+      fronts[slot] = { score: score, t: t, canvas: grab(video, video.videoWidth, video.videoHeight, FRONT_SIDE) };
+    }
+
+    // The widest point of each head turn, for the server to measure.
+    function keepTurn(side, amount, t) {
+      if (amount < TURN_FROM || amount > TURN_MAX) return;
+      var held = turned[side] || (turned[side] = { amount: 0, peak: null, steady: null });
+      if (amount < held.amount + 0.05 || t - lastTurnSnap < TURN_SNAP_MS) return;
+      lastTurnSnap = t;
+      held.amount = amount;
+      held.peak = grab(video, video.videoWidth, video.videoHeight, TURN_SIDE);
+      if (!held.steady && amount >= TURN) held.steady = held.peak;
+    }
+
+    function chosenFrames() {
+      var frames = fronts.slice().sort(function (a, b) { return b.score - a.score; })
+        .map(function (front) { return front.canvas.toDataURL('image/jpeg', 0.85); });
+      var turns = [];
+      ['left', 'right'].forEach(function (side) {
+        var held = turned[side];
+        if (!held) return;
+        if (held.steady && held.steady !== held.peak) turns.push(held.steady.toDataURL('image/jpeg', 0.8));
+        if (held.peak) turns.push(held.peak.toDataURL('image/jpeg', 0.8));
+      });
+      return { frames: frames, turns: turns };
     }
 
     function finish() {
@@ -246,7 +319,7 @@
       if (raf) cancelAnimationFrame(raf);
       call('step', STEPS.length, 'done');
       call('prompt', 'done');
-      call('done', best);
+      call('done', chosenFrames());
     }
 
     function analyse(result, t) {
@@ -262,9 +335,14 @@
       var m = measure(faces[0], result.faceBlendshapes && result.faceBlendshapes[0], video.videoWidth, video.videoHeight);
       var sized = m.w >= 0.22 && m.w <= 0.95;
       var centred = Math.abs(m.cx - 0.5) < 0.22 && Math.abs(m.cy - 0.5) < 0.25;
+      var want = STEPS[step];
+      var toward = want === 'left' ? m.yaw : want === 'right' ? -m.yaw : 0;
+      partSince = toward >= TURN_FROM && toward < TURN ? (partSince || t) : 0;
       if (m.w < 0.22) setHint('Move a little closer');
       else if (m.w > 0.95) setHint('Move back a little');
-      else if (!centred) setHint('Centre your face in the circle');
+      else if (partSince && t - partSince > NUDGE_MS) setHint('Turn a little further');
+      // Turning moves the face off centre; only nudge when not mid-turn.
+      else if (!centred && toward < TURN_FROM) setHint('Centre your face in the circle');
       else setHint('');
 
       if (t - lastLuma > 400) {
@@ -276,22 +354,17 @@
         }
       }
 
-      // The selfie: the best frontal frame seen while the moves run.
+      // The selfie: the best frontal frames seen while the moves run.
       var frontal = Math.abs(m.yaw) < FRONTAL && m.pitch > 0.2 && m.pitch < 0.75 &&
         m.blink < EYES_OPEN && sized && centred;
       frontHold = frontal ? frontHold + 1 : 0;
-      if (frontal && frontHold >= 2) {
-        var score = 1 - 2.5 * Math.abs(m.yaw) - Math.abs(m.cx - 0.5) - Math.abs(m.cy - 0.5) -
-          0.6 * m.blink - 0.3 * m.smile - Math.abs(m.w - 0.55) - (dark ? 0.3 : 0);
-        if (score > bestScore + 0.02 && t - lastSnap > SNAP_MS) {
-          lastSnap = t;
-          bestScore = score;
-          best = snapshot(video, video.videoWidth, video.videoHeight, true);
-        }
+      if (frontal && frontHold >= 2 && t - lastSnap > SNAP_MS) {
+        keepFront(1 - 2.5 * Math.abs(m.yaw) - Math.abs(m.cx - 0.5) - Math.abs(m.cy - 0.5) -
+          0.6 * m.blink - 0.3 * m.smile - Math.abs(m.w - 0.55) - (dark ? 0.3 : 0), t);
       }
+      if (sized) keepTurn(m.yaw > 0 ? 'left' : 'right', Math.abs(m.yaw), t);
 
       if (step < STEPS.length) {
-        var want = STEPS[step];
         var ok = sized && (want === 'left' ? m.yaw > TURN
           : want === 'right' ? m.yaw < -TURN
             : m.smile > SMILE && Math.abs(m.yaw) < 0.25);
@@ -300,12 +373,13 @@
           hold = 0;
           step += 1;
           if (navigator.vibrate) { try { navigator.vibrate(25); } catch (e) { /* optional */ } }
+          partSince = 0;
           call('step', step, STEPS[step] || 'frontal');
-          call('prompt', STEPS[step] || (best ? 'done' : 'frontal'));
+          call('prompt', STEPS[step] || (fronts.length ? 'done' : 'frontal'));
         }
       }
       if (step >= STEPS.length) {
-        if (best) finish();
+        if (fronts.length) finish();
         else call('prompt', 'frontal');
       }
     }
@@ -413,6 +487,7 @@
     snapshot: snapshot,
     stage: stage,
     wakeLock: wakeLock,
+    TURN: TURN,
     // Exposed for tests of the geometry.
     _measure: measure
   };

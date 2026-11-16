@@ -35,6 +35,9 @@ export const EP = {
     // without it the app's NIN screen dead-ends on the same refusal WhatsApp
     // was hitting.
     wemaUpgradeTier2: '/api/wallet/wema/upgrade-tier2/',
+    // Tier 2 live face check: straight photos + head-turn frames, checked
+    // before the upgrade; returns the chosen photo's proof. Nothing goes to the bank.
+    wemaTier2FaceCheck: '/api/wallet/wema/tier2-face-check/',
   },
   kyc: {
     status: '/api/kyc/status/',
@@ -44,11 +47,8 @@ export const EP = {
     ninConfirm: '/api/kyc/nin/confirm/',
     address: '/api/kyc/address/',
     addressSave: '/api/kyc/address/save/',
-    face: '/api/kyc/face/',
     identityFaceStart: '/api/kyc/face/start/',
     identityFaceStatus: '/api/kyc/face/status/',
-    livenessStart: '/api/kyc/liveness/start/',
-    livenessStatus: '/api/kyc/liveness/status/',
   },
   transfers: {
     // Canonical (plural) paths.

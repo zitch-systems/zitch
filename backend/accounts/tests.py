@@ -722,7 +722,8 @@ class KycTierTests(TestCase):
                 "session_id": "untrusted-session", "verified": True,
             })
         self.assertEqual(res.status_code, 503)
-        self.assertEqual(body["code"], "tier2_liveness_unavailable")
+        # Tier 2 is the bank's upgrade with the live face check now.
+        self.assertEqual(body["code"], "tier2_moved_to_bank")
         image.assert_not_called()
         self.user.refresh_from_db()
         self.assertFalse(self.user.face_verified)

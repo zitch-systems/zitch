@@ -35,6 +35,7 @@
     }
   }
   var $ = function (id) { return document.getElementById(id); };
+  function b64(dataUrl) { return String(dataUrl).split(',')[1] || ''; }
   var video = $('video'), shot = $('shot'), hint = $('hint'), moves = $('lv-moves'), status = $('status');
   var LV = window.ZitchLiveness || null;
   var stream = null, run = null, lock = null, over = false;
@@ -80,16 +81,21 @@
         post({ type: 'ready' });
         run = LV.session(lm, video, {
           step: base.step, prompt: base.prompt, hint: base.hint, dark: function (on) { base.dark(on); post({ type: 'dark', on: !!on }); },
-          done: function (dataUrl) {
+          done: function (result) {
             over = true;
             run = null;
             stop();
-            shot.src = dataUrl;
+            var shown = (result && result.frames) || [];
+            var frames = shown.map(b64);
+            var turns = ((result && result.turns) || []).map(b64);
+            shot.src = shown[0] || '';
+            shot.classList.add('lv-mirror');
             show(shot, true); show(video, false); show(moves, false);
-            status.textContent = '✅ Face check complete';
-            status.classList.add('ok');
+            status.textContent = 'Checking your face…';
             show(status, true);
-            post({ type: 'capture', image: dataUrl.split(',')[1] || '' });
+            // The app sends these to our server's face check, which picks the
+            // straight photo for the bank and measures the head turn.
+            post({ type: 'capture', image: frames[0] || '', frames: frames, turns: turns });
           },
           error: function () { unavailable('model'); },
           slow: function () { post({ type: 'slow' }); }

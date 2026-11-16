@@ -406,12 +406,12 @@ it('rejects a face capture from a session that no longer owns the KYC screen', a
     bank_upgrade_required: true, tier2_face_available: true });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  act(() => { tree.root.findByProps({ accessibilityLabel: 'Tier 2 · Face verification, Enter your BVN and NIN, then take a selfie' }).props.onPress(); });
-  act(() => { tree.root.findByProps({ accessibilityLabel: 'Take a selfie' }).props.onPress(); });
+  act(() => { tree.root.findByProps({ accessibilityLabel: 'Tier 2 · Face verification, Your BVN and NIN, then a live face check' }).props.onPress(); });
+  act(() => { tree.root.findByProps({ accessibilityLabel: 'Take the live face check' }).props.onPress(); });
   const capture = tree.root.findByProps({ testID: 'face-capture' });
   mockGeneration += 1;
-  act(() => { capture.props.onCapture('old-customer-face'); });
-  expect(JSON.stringify(tree.toJSON())).not.toContain('Selfie captured');
+  act(() => { capture.props.onCapture({ image: 'old-customer-face', token: 'old-proof' }); });
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Face check passed');
   expect(mockApiJson).toHaveBeenCalledTimes(1);
   act(() => tree.unmount());
 });
@@ -452,7 +452,7 @@ it.each([undefined, '0', '50000.00'])('leaves the per-transaction limit off the 
 });
 
 
-it('Tier 2 on the bank rail sends BVN, NIN and a selfie together', async () => {
+it('Tier 2 on the bank rail sends BVN, NIN and the checked photo with its proof together', async () => {
   mockParams.verify_identity = '';
   const verified = { ...state, bvn_verified: true, email_verified: true, phone_verified: true,
     tier: 1, bank_upgrade_required: true, tier2_face_rail: 'wema', tier2_face_flow: 'wema_selfie',
@@ -465,24 +465,25 @@ it('Tier 2 on the bank rail sends BVN, NIN and a selfie together', async () => {
   });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Tier 2 · Face verification, Enter your BVN and NIN, then take a selfie' }).props.onPress(); });
+  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Tier 2 · Face verification, Your BVN and NIN, then a live face check' }).props.onPress(); });
   // Wema's Tier 2 takes BVN and NIN with the photo; no third-party face check.
   const inputs = tree.root.findAllByType(TextInput);
   expect(inputs).toHaveLength(2);
   expect(JSON.stringify(tree.toJSON())).not.toContain('Prembly');
   act(() => { inputs[0].props.onChangeText('22222222222'); });
   act(() => { inputs[1].props.onChangeText('33333333333'); });
-  act(() => { tree.root.findByProps({ accessibilityLabel: 'Take a selfie' }).props.onPress(); });
-  // Passing the liveness moves submits straight away with the numbers typed.
-  await act(async () => { tree.root.findByProps({ testID: 'face-capture' }).props.onCapture('SELFIE64'); });
+  act(() => { tree.root.findByProps({ accessibilityLabel: 'Take the live face check' }).props.onPress(); });
+  // Passing the face check submits straight away with the numbers typed.
+  await act(async () => { tree.root.findByProps({ testID: 'face-capture' }).props.onCapture({ image: 'SELFIE64', token: 'PROOF' }); });
   expect(tree.root.findAllByProps({ testID: 'face-capture' })).toHaveLength(0);
   const upgrades = mockApiJson.mock.calls.filter(([path]) => path === EP.wallet.wemaUpgradeTier2);
-  expect(upgrades).toEqual([[EP.wallet.wemaUpgradeTier2, { bvn: '22222222222', nin: '33333333333', live_image: 'SELFIE64' }]]);
+  expect(upgrades).toEqual([[EP.wallet.wemaUpgradeTier2,
+    { bvn: '22222222222', nin: '33333333333', live_image: 'SELFIE64', liveness_token: 'PROOF' }]]);
   expect(mockNotify).toHaveBeenCalledWith('Identity verified — tier upgraded', undefined, 'success');
   await act(async () => tree.unmount());
 });
 
-it('holds a Tier 2 selfie until the BVN and NIN are complete, then Finish sends it', async () => {
+it('holds a passed face check until the BVN and NIN are complete, then Finish sends it with its proof', async () => {
   mockParams.verify_identity = '';
   const verified = { ...state, bvn_verified: true, email_verified: true, phone_verified: true,
     tier: 1, bank_upgrade_required: true, tier2_face_rail: 'wema', tier2_face_flow: 'wema_selfie',
@@ -494,23 +495,24 @@ it('holds a Tier 2 selfie until the BVN and NIN are complete, then Finish sends 
   });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Tier 2 · Face verification, Enter your BVN and NIN, then take a selfie' }).props.onPress(); });
+  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Tier 2 · Face verification, Your BVN and NIN, then a live face check' }).props.onPress(); });
   const inputs = tree.root.findAllByType(TextInput);
   act(() => { inputs[0].props.onChangeText('22222222222'); });
-  act(() => { tree.root.findByProps({ accessibilityLabel: 'Take a selfie' }).props.onPress(); });
-  await act(async () => { tree.root.findByProps({ testID: 'face-capture' }).props.onCapture('SELFIE64'); });
+  act(() => { tree.root.findByProps({ accessibilityLabel: 'Take the live face check' }).props.onPress(); });
+  await act(async () => { tree.root.findByProps({ testID: 'face-capture' }).props.onCapture({ image: 'SELFIE64', token: 'PROOF' }); });
   expect(mockApiJson.mock.calls.map(([path]) => path)).not.toContain(EP.wallet.wemaUpgradeTier2);
-  expect(JSON.stringify(tree.toJSON())).toContain('Selfie captured');
+  expect(JSON.stringify(tree.toJSON())).toContain('Face check passed');
   act(() => { tree.root.findAllByType(TextInput)[1].props.onChangeText('33333333333'); });
   await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Finish verification' }).props.onPress(); });
-  expect(mockApiJson).toHaveBeenCalledWith(EP.wallet.wemaUpgradeTier2, { bvn: '22222222222', nin: '33333333333', live_image: 'SELFIE64' });
+  expect(mockApiJson).toHaveBeenCalledWith(EP.wallet.wemaUpgradeTier2,
+    { bvn: '22222222222', nin: '33333333333', live_image: 'SELFIE64', liveness_token: 'PROOF' });
   await act(async () => tree.unmount());
 });
 
-it('sends a BVN-verified customer to the Tier 2 page without using the bank upgrade', async () => {
+it('sends a customer with no bank account yet to the Tier 2 page without using the bank upgrade', async () => {
   mockParams.verify_identity = '';
   const verified = { ...state, bvn_verified: true, email_verified: true, phone_verified: true,
-    tier: 1, bank_upgrade_required: true, tier2_face_flow: 'prembly_sdk', tier2_face_available: true };
+    tier: 1, bank_upgrade_required: false, has_wema_account: false, tier2_face_available: true };
   mockApiJson.mockImplementation(async (path: string) => {
     if (path === EP.kyc.status) return verified;
     throw new Error(`Unexpected API call: ${path}`);
@@ -521,5 +523,36 @@ it('sends a BVN-verified customer to the Tier 2 page without using the bank upgr
   await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Face verification, Tier 2' }).props.onPress(); });
   expect(mockPush).toHaveBeenCalledWith('/tier2');
   expect(mockApiJson.mock.calls.map(([path]) => path)).not.toContain(EP.wallet.wemaUpgradeTier2);
+  await act(async () => tree.unmount());
+});
+
+
+it('a refused face check must be taken again, but a wrong NIN keeps it', async () => {
+  mockParams.verify_identity = '';
+  const verified = { ...state, bvn_verified: true, email_verified: true, phone_verified: true,
+    tier: 1, bank_upgrade_required: true, tier2_face_rail: 'wema', tier2_face_flow: 'wema_selfie',
+    tier2_face_available: true };
+  const answers = [
+    { success: false, message: 'That NIN does not match the NIN already verified on this account.', _httpStatus: 409 },
+    { success: false, code: 'liveness_expired', message: 'Your face check has expired. Please take it again.', _httpStatus: 422 },
+  ];
+  mockApiJson.mockImplementation(async (path: string) => {
+    if (path === EP.kyc.status) return verified;
+    if (path === EP.wallet.wemaUpgradeTier2) return answers.shift();
+    throw new Error(`Unexpected API call: ${path}`);
+  });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Tier 2 · Face verification, Your BVN and NIN, then a live face check' }).props.onPress(); });
+  const inputs = tree.root.findAllByType(TextInput);
+  act(() => { inputs[0].props.onChangeText('22222222222'); });
+  act(() => { inputs[1].props.onChangeText('44444444444'); });
+  act(() => { tree.root.findByProps({ accessibilityLabel: 'Take the live face check' }).props.onPress(); });
+  // The capture is sent straight away; the wrong NIN keeps the checked photo.
+  await act(async () => { tree.root.findByProps({ testID: 'face-capture' }).props.onCapture({ image: 'SELFIE64', token: 'PROOF' }); });
+  expect(JSON.stringify(tree.toJSON())).toContain('Face check passed');
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Finish verification' }).props.onPress(); });
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Face check passed');
+  expect(tree.root.findByProps({ accessibilityLabel: 'Finish verification' }).props.disabled).toBe(true);
   await act(async () => tree.unmount());
 });

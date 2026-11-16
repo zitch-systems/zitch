@@ -1,4 +1,8 @@
-"""Session ownership and evidence gates; all provider traffic is mocked."""
+"""Session ownership and evidence gates; all provider traffic is mocked.
+
+The adapter serves the new-device sign-in check (purpose "login"). Tier 2 is
+the bank's upgrade with the live face check; its old Prembly purpose is
+refused before any provider call and can never raise a tier."""
 from copy import deepcopy
 from datetime import timedelta
 from unittest.mock import Mock, patch
@@ -30,7 +34,7 @@ class PremblySessionTests(TestCase):
         response = Mock(status_code=201)
         response.json.return_value = {"status": True, "data": {"session": {"session_id": "sdk_session_12345"}}}
         with patch("utility.liveness.requests.post", return_value=response) as call:
-            result = start_tier2_liveness(self.user)
+            result = start_tier2_liveness(self.user, purpose="login")
         self.assertTrue(result["success"], result)
         self.assertEqual(call.call_args.kwargs["json"]["metadata"]["zitch_action"], result["session"])
         self.assertNotIn("nin", call.call_args.kwargs["json"])
@@ -43,7 +47,7 @@ class PremblySessionTests(TestCase):
                 "use_gesture_liveness": True, "metadata": {"image_comparison": True}},
             "status": "completed", "overall_result": "passed",
             "completed_at": timezone.now().isoformat(), "failure_reason": None,
-            "metadata": {"zitch_action": str(session.state), "purpose": "tier2_liveness"},
+            "metadata": {"zitch_action": str(session.state), "purpose": "login"},
             "verification_data": {"number": "12345678901"},
             "liveness": {"enabled": True, "status": "completed", "is_live": True,
                          "process_id": "live-provider-123", "error": None},
@@ -54,10 +58,10 @@ class PremblySessionTests(TestCase):
         response = Mock(status_code=200)
         response.json.return_value = self.attestation() if body is None else body
         with patch("utility.liveness.requests.get", return_value=response) as call:
-            result = verify_tier2_liveness(user or self.user, {"session": session})
+            result = verify_tier2_liveness(user or self.user, {"session": session}, purpose="login")
         return result, call
 
-    def test_bvn_only_live_pass_promotes_local_tier_without_nin_or_bank_upgrade(self):
+    def test_a_passed_sign_in_check_verifies_the_session_but_never_a_tier(self):
         start, _ = self.start()
         wallet = get_or_create_wallet(self.user)
         wallet.bank_tier = 1
@@ -65,19 +69,41 @@ class PremblySessionTests(TestCase):
         result, call = self.verify(start["session"])
         self.assertTrue(result["success"], result)
         self.user.refresh_from_db(); wallet.refresh_from_db()
-        self.assertEqual(self.user.tier, 2)
-        self.assertTrue(self.user.bvn_verified and self.user.face_verified)
-        self.assertFalse(self.user.nin_verified)
+        self.assertEqual(self.user.tier, 1)
+        self.assertFalse(self.user.face_verified)
         self.assertEqual(wallet.bank_tier, 1)
+        self.assertEqual(PremblyFaceSession.objects.get(user=self.user).status, "verified")
         self.assertEqual(call.call_args.kwargs["headers"]["x-api-key"], "secret-test")
         with patch("utility.liveness.requests.get") as again:
-            self.assertTrue(verify_tier2_liveness(self.user, {"session": start["session"]})["success"])
+            self.assertTrue(verify_tier2_liveness(self.user, {"session": start["session"]},
+                                                  purpose="login")["success"])
         again.assert_not_called()
+
+    def test_the_old_tier2_purpose_is_refused_before_any_provider_call(self):
+        with patch("utility.liveness.requests.post") as provider:
+            result = start_tier2_liveness(self.user)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["code"], "tier2_moved_to_bank")
+        provider.assert_not_called()
+        self.assertFalse(PremblyFaceSession.objects.exists())
+        with patch("utility.liveness.requests.get") as provider:
+            self.assertEqual(verify_tier2_liveness(self.user, {"session": "anything"})["code"],
+                             "tier2_moved_to_bank")
+        provider.assert_not_called()
+        for path in ("/api/kyc/liveness/start/", "/api/kyc/liveness/status/", "/api/kyc/face/"):
+            with self.subTest(path=path):
+                response = self.client.post(path, {"access_token": self.token, "session": "anything"},
+                                            content_type="application/json")
+                self.assertEqual(response.status_code, 503, response.content)
+                self.assertEqual(response.json()["code"], "tier2_moved_to_bank")
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.tier, 1)
+        self.assertFalse(self.user.face_verified)
 
     def test_start_reuses_pending_session_without_second_charge(self):
         start, _ = self.start()
         with patch("utility.liveness.requests.post") as provider:
-            self.assertEqual(start_tier2_liveness(self.user)["session"], start["session"])
+            self.assertEqual(start_tier2_liveness(self.user, purpose="login")["session"], start["session"])
         provider.assert_not_called()
 
     def test_client_claims_and_other_customers_session_never_grant_verification(self):
@@ -87,7 +113,7 @@ class PremblySessionTests(TestCase):
         self.assertFalse(result["success"]); call.assert_not_called()
         with patch("utility.liveness.requests.get") as provider:
             result = verify_tier2_liveness(self.user, {"session_id": "sdk_session_12345", "success": True,
-                "live_image": "fake", "status": "verified"})
+                "live_image": "fake", "status": "verified"}, purpose="login")
         self.assertFalse(result["success"]); provider.assert_not_called()
 
     def test_incomplete_wrong_workflow_and_photo_only_results_fail_closed(self):
@@ -103,7 +129,7 @@ class PremblySessionTests(TestCase):
                 body = deepcopy(self.attestation()); body["data"][key] = value
                 result, _ = self.verify(start["session"], body)
                 self.assertFalse(result["success"])
-                self.user.refresh_from_db(); self.assertFalse(self.user.face_verified)
+                self.assertNotEqual(PremblyFaceSession.objects.get(user=self.user).status, "verified")
         body = self.attestation(); body["data"]["face_scan_result"]["comparison_result"][0]["result"]["confidence"] = True
         self.assertFalse(self.verify(start["session"], body)[0]["success"])
 
@@ -139,26 +165,28 @@ class PremblySessionTests(TestCase):
             User.objects.filter(pk=self.user.pk).update(bvn_verified=False)
             return Mock(status_code=200, json=Mock(return_value=self.attestation()))
         with patch("utility.liveness.requests.get", side_effect=changed):
-            result = verify_tier2_liveness(self.user, {"session": start["session"]})
+            result = verify_tier2_liveness(self.user, {"session": start["session"]}, purpose="login")
         self.assertFalse(result["success"])
-        self.user.refresh_from_db(); self.assertFalse(self.user.face_verified)
+        self.assertNotEqual(PremblyFaceSession.objects.get(user=self.user).status, "verified")
 
     def test_revoked_web_grant_and_legacy_bank_images_cannot_use_session(self):
         start, _ = self.start()
         response = Mock(status_code=200, json=Mock(return_value=self.attestation()))
         with patch("utility.liveness.requests.get", return_value=response):
-            result = verify_tier2_liveness(self.user, {"session": start["session"]}, authorize=lambda: False)
+            result = verify_tier2_liveness(self.user, {"session": start["session"]}, authorize=lambda: False,
+                                           purpose="login")
         self.assertFalse(result["success"])
-        self.user.refresh_from_db(); self.assertFalse(self.user.face_verified)
-        result = verify_tier2_liveness(self.user, {"session": start["session"], "live_image": "arbitrary-image"})
+        self.assertNotEqual(PremblyFaceSession.objects.get(user=self.user).status, "verified")
+        result = verify_tier2_liveness(self.user, {"session": start["session"], "live_image": "arbitrary-image"},
+                                       purpose="login")
         self.assertFalse(result["success"])
         self.assertEqual(result["code"], "bank_image_contract_unavailable")
 
     def test_timeout_does_not_duplicate_session_or_promote_tier(self):
         with patch("utility.liveness.requests.post", side_effect=requests.Timeout):
-            self.assertTrue(start_tier2_liveness(self.user)["pending"])
+            self.assertTrue(start_tier2_liveness(self.user, purpose="login")["pending"])
         with patch("utility.liveness.requests.post") as provider:
-            self.assertTrue(start_tier2_liveness(self.user)["pending"])
+            self.assertTrue(start_tier2_liveness(self.user, purpose="login")["pending"])
         provider.assert_not_called()
         self.assertEqual(PremblyFaceSession.objects.count(), 1)
         self.user.refresh_from_db(); self.assertEqual(self.user.tier, 1)
@@ -166,5 +194,5 @@ class PremblySessionTests(TestCase):
     def test_missing_durable_identity_proof_cannot_start(self):
         IdentityProof.objects.all().delete()
         with patch("utility.liveness.requests.post") as provider:
-            self.assertFalse(start_tier2_liveness(self.user)["success"])
+            self.assertFalse(start_tier2_liveness(self.user, purpose="login")["success"])
         provider.assert_not_called()
