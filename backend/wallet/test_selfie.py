@@ -204,6 +204,25 @@ class HeadTurnTests(SimpleTestCase):
         landscape = [fx.b64(fx.portrait(960, 720, tag=1))]
         self.assertEqual(self.check(TURNED, landscape)[0], "liveness_mismatch")
 
+    def test_small_turn_frames_from_a_16_9_camera_are_measured(self):
+        # 16 Nov 2026: an Android phone streams 720x1280; the page scaled turn
+        # frames to 480 on the long side (270x480), under the bank photo's
+        # 320 px minimum, so all four were refused unseen as liveness_no_face.
+        frames = [fx.b64(fx.portrait(270, 480, tag=1))]
+        with fx.detector(TURNED):
+            photo = selfie.assess(fx.b64(fx.portrait(720, 1280, tag=0)))
+            code, metrics = selfie.verify_head_turn(photo, frames)
+        self.assertTrue(photo.ok, photo.code)
+        self.assertEqual(code, "ok", metrics)
+
+    def test_a_turn_frame_too_small_to_measure_is_named_in_the_metrics(self):
+        frames = [fx.b64(fx.portrait(90, 160, tag=1))]
+        with fx.detector(TURNED):
+            photo = selfie.assess(fx.b64(fx.portrait(720, 1280, tag=0)))
+            code, metrics = selfie.verify_head_turn(photo, frames)
+        self.assertEqual(code, "liveness_no_face")
+        self.assertEqual(metrics["frame_codes"], "selfie_too_small:1")
+
     def test_the_same_room_still_matches_when_the_camera_re_exposes(self):
         brighter = [fx.selfie_b64(tag=1, light=1.25)]
         self.assertEqual(self.check(TURNED, brighter)[0], "ok")

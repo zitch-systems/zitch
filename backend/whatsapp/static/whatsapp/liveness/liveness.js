@@ -50,7 +50,9 @@
   var LOST_RESET_MS = 4000;      // face gone this long: start the moves again
   var SLOW_MS = 60000;           // offer the manual photo after this long
   var FRONT_SIDE = 1280;         // straight frames: the photo the bank matches
-  var TURN_SIDE = 480;           // turn frames: only measured by our server
+  // Turn frames are only measured by our server. 640 keeps the short side at
+  // 360 px on a 16:9 camera (480 gave 270x480, which the server once refused).
+  var TURN_SIDE = 640;
   var FRONT_KEEP = 3;            // straight candidates; the server keeps the clearest
   var FRONT_GAP_MS = 400;        // ... from moments at least this far apart
   var TURN_SNAP_MS = 100;
