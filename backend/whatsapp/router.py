@@ -1676,7 +1676,8 @@ def handle_inbound(msisdn: str, text: str, *, list_reply: bool = False) -> None:
     if low in ("cable", "tv", "dstv", "gotv", "startimes"):
         return _start_cable(user, msisdn)
     if low in ("bill", "bills", "pay bill"):
-        if bill_form_live():
+        from .flows import bill_cable_form_live
+        if bill_form_live() or bill_cable_form_live():
             # The secure form, with the chat sub-menu beside it (release2).
             from .release2 import start_bill_form
 
@@ -2298,6 +2299,37 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
 
 
 def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> bool:
+    fn = (ob.payload.get("first_name") or "").strip()
+    # Release 4 opens the account part-way through the form, before the BVN step
+    # (the bank account can only be opened for an account that exists). Then the
+    # PIN is all that is left to set here.
+    from .release4 import signup_user
+    user = signup_user(ob)
+    if user is not None:
+        if pin:
+            user.set_transaction_pin(pin)
+            user.save()
+        _clear_onboarding(msisdn)
+        from .release4 import send_signup_welcome
+        send_signup_welcome(user, msisdn)
+        return True
+    user = _create_onboarded_user(ob, msisdn, pin)
+    if user is None:  # raced with the app / another signup
+        _clear_onboarding(msisdn)
+        reply(msisdn, "This number already has a Zitch account. Reply *2* to sign in securely here.")
+        return False
+    _clear_onboarding(msisdn)
+    pw_hash = (ob.payload.get("flow_pw_hash") or "").strip()
+    _send_signup_welcome_text(user, msisdn, fn, pin, pw_hash)
+    return True
+
+
+def _create_onboarded_user(ob: WaOnboarding, msisdn: str, pin: str):
+    """Create the account a signup describes, its wallet and its chat link.
+
+    None when the phone already has an account. Sends nothing: the caller says
+    what happens next, at the end of the form (_finish_onboarding) or part-way
+    through it (release4, before the BVN step)."""
     wa_local = _local_phone(msisdn)
     # The account phone is the one TYPED on the signup form when there is one -
     # a customer may bank on a different line than they chat on. Falls back to
@@ -2305,10 +2337,8 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> bool:
     local = (ob.payload.get("phone") or "").strip() or wa_local
     fn = (ob.payload.get("first_name") or "").strip()
     ln = (ob.payload.get("last_name") or "").strip()
-    if User.objects.filter(phone=local).exists():  # raced with the app / another signup
-        _clear_onboarding(msisdn)
-        reply(msisdn, "This number already has a Zitch account. Reply *2* to sign in securely here.")
-        return False
+    if User.objects.filter(phone=local).exists():
+        return None
     # WhatsApp onboarding creates an UNVERIFIED account at Tier 0, identically to
     # the app. Tier 1 requires verified contacts and BVN or NIN; the customer completes
     # those checks securely from WhatsApp.
@@ -2354,7 +2384,12 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> bool:
     WhatsAppLink.objects.create(
         user=user, wa_msisdn=msisdn, status=WhatsAppLink.ACTIVE, linked_at=timezone.now(),
     )
-    _clear_onboarding(msisdn)
+    return user
+
+
+def _send_signup_welcome_text(user, msisdn: str, fn: str, pin: str, pw_hash: str) -> None:
+    """The welcome a signup without the in-form BVN step ends on, then straight
+    into account setup in the chat."""
     reply(
         msisdn,
         f"✅ *Welcome to Zitch, {fn.title() or 'there'}!* Your sign-in is ready.\n\n"
@@ -2395,7 +2430,6 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> bool:
     # is off; option 6 offers the same setup any time.
     if wallet_views._wema_funding_enabled():
         _start_add_account(user, msisdn, after_signup=True)
-    return True
 
 
 def send_onboarding_phone_code(ob: WaOnboarding) -> bool:

@@ -314,6 +314,43 @@ Same order as Release 2: code first (flags off), then the Flow, then the flags.
    items open the new twins. Rollback is the variable set back to `false`.
 8. *(Optional)* deprecate the Release 2 Flow as in Release 2 step 8.
 
+## Release 4 screens
+
+All in `whatsapp/release4.py`, each behind a `WHATSAPP_FLOW` flag (default off).
+
+| Flag (env) | Screens | What it does |
+|---|---|---|
+| `WHATSAPP_FLOW_BILL_CABLE_FORM` | `BILL_TYPE` (root), `BILL_TYPE_CHAIN` (menu twin), `CABLE_SCREEN`, `CABLE_PLAN` | "Which bill?" first. Electricity goes on to the existing `BILL_CHAIN` pages; cable TV takes the provider and smartcard (checked with the partner-bank biller before a package is shown), then the package, then `PIN_CHAIN`. Paid by the chat's cable executor. |
+| `WHATSAPP_FLOW_SIGNUP_BVN_FORM` | `SIGNUP_BVN`, `SIGNUP_BVN_RETRY`, `SIGNUP_ADDRESS` | After the password, sign-up opens the account (no PIN yet), then takes the BVN: the bank checks it and sends its SMS code, and the code box appears on the same page. "Use face check instead" sends the bank's face link to the chat; "Do this later" (offered when the bank step can't finish) goes on and the chat's account setup picks it up after the PIN. Then the address (state and LGA from lists, saved as the app saves it), then the PIN. The form ends with one welcome carrying the account number. |
+
+Every screen also carries a lighter copy of the same logo (full colour at twice
+its 48 px display height), which keeps the 47-screen document near 540 KB.
+Screens are ordered so every route goes forward (Meta rejects a backward route).
+
+## Release 4 go-live
+
+Same order as Releases 2 and 3: code first (flags off), then the Flow, then the
+flags.
+
+1. **Deploy this code** with both Release 4 flags unset.
+2. **Compute the reviewed SHA256** exactly as in Release 2 step 2. For this
+   release's file it is
+   `0cc373bc322598646ae3723a4f0bfc179bfd780bd4241abcb4e29f8cd277db3a`
+   (537,865 bytes, 47 screens) — recompute rather than trust this line if the
+   file has changed since.
+3. **Create the draft** (`…_REQUEST=release4-<date>`) and check the build log for
+   `Reviewed Flow: SHA256 …; 47 screens.` and the draft's ID; confirm Meta lists
+   no validation errors on it.
+4. **Publish it**, then **switch the channel** (`WHATSAPP_FLOW_ID=<new ID>`,
+   clear every `WHATSAPP_FLOW_DEPLOY_*`).
+5. **Turn the flags on**, testing each on a real phone:
+   ```sh
+   WHATSAPP_FLOW_BILL_CABLE_FORM=true
+   WHATSAPP_FLOW_SIGNUP_BVN_FORM=true
+   ```
+   Rollback is the variable set back to `false`; a session already open
+   finishes on the screens it started on.
+
 > **Re-publish after updating.** `IDENTITY_SCREEN` and `EMAIL_SCREEN` were added
 > after the first release, and `PIN_SCREEN` now carries the bank and account on
 > their own lines. Meta serves the version published in WhatsApp Manager, not

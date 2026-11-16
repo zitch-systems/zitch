@@ -36,6 +36,9 @@ NEW = ("SEND_MONEY", "SEND_MONEY_CHAIN", "VTU_FORM", "VTU_FORM_CHAIN", "VTU_PLAN
 VTU_ON = {"RESULT_SCREEN": True, "VTU_ONE_SCREEN": True}
 SEND_ON = {"RESULT_SCREEN": True, "TRANSFER_FORM_V2": True}
 OWN = "08031234567"   # an MTN prefix, so the network is detected
+#: Added after this release (see test_release4); kept out of this release's checks.
+RELEASE4 = ("BILL_TYPE", "BILL_TYPE_CHAIN", "CABLE_SCREEN", "CABLE_PLAN", "SIGNUP_BVN",
+            "SIGNUP_BVN_RETRY", "SIGNUP_ADDRESS")
 
 
 class FlagDefaultsTests(SimpleTestCase):
@@ -113,11 +116,12 @@ class Release3FlowJsonTests(SimpleTestCase):
         digest = hashlib.sha256(json.dumps(contract, sort_keys=True,
                                            separators=(",", ":")).encode()).hexdigest()
         self.assertEqual(digest, self.OLD_CONTRACT_SHA256)
-        self.assertEqual([s["id"] for s in _DOC["screens"] if s["id"] not in NEW], self.OLD)
+        self.assertEqual([s["id"] for s in _DOC["screens"]
+                          if s["id"] not in NEW + RELEASE4], self.OLD)
 
     def test_existing_routes_are_kept_and_only_the_menu_gains_new_ones(self):
         expected_menu = ["TRANSFER_CHAIN", "VTU_CHAIN", "BILL_CHAIN", "SEND_MONEY_CHAIN",
-                         "VTU_FORM_CHAIN", "RESULT", "SUCCESS"]
+                         "VTU_FORM_CHAIN", "BILL_TYPE_CHAIN", "RESULT", "SUCCESS"]
         self.assertEqual(_DOC["routing_model"]["MENU"], expected_menu)
         incoming = {t for targets in _DOC["routing_model"].values() for t in targets}
         # The roots stay roots (openable from the chat); the twins and the plan
@@ -130,7 +134,7 @@ class Release3FlowJsonTests(SimpleTestCase):
         path = Path(whatsapp.__file__).parent / "flow_assets" / "pin_flow.json"
         raw = path.read_text()
         self.assertEqual(_DOC["version"], "6.0")
-        self.assertEqual(len(_DOC["screens"]), 40)
+        self.assertEqual(len(_DOC["screens"]), 47)   # 40 + Release 4's 7
         self.assertLess(len(raw.encode()), 750_000)
         self.assertEqual(raw, json.dumps(_DOC, indent=2, ensure_ascii=True) + "\n")
 
