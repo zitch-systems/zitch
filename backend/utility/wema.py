@@ -3011,7 +3011,7 @@ def pay_bill(amount_naira, reference: str, *, package_id: str, identifier: str, 
                 "amount": float(amount_naira), "charge": float(charge),
                 "transactionReference": reference, "packageId": _as_int(package_id),
                 "customerIdentifier": identifier, "customerEmail": email,
-                "customerPhoneNumber": phone, "customerName": name,
+                "customerPhoneNumber": _local_phone(phone), "customerName": name,
                 "securityInfo": _security_info(op="bill", reference=reference, amount=amount_naira)}
         resp = _post("bills", "/api/Shared/PayBill", body)
         data = resp.json()
@@ -3024,6 +3024,16 @@ def pay_bill(amount_naira, reference: str, *, package_id: str, identifier: str, 
     except requests.RequestException as exc:
         _log_bill_refusal(reference, getattr(exc, "response", None), body)
         return _vas_unanswered("bills", reference, exc)
+
+
+def _local_phone(phone: str) -> str:
+    """A Nigerian number in the local 11-digit form the other ALAT products take
+    ("08031234567"). PayBill went out with "2348031234567" while airtime, which
+    the bank accepts, sends the local form; anything else is left as given."""
+    digits = re.sub(r"\D", "", str(phone or ""))
+    if len(digits) == 13 and digits.startswith("234"):
+        return "0" + digits[3:]
+    return str(phone or "")
 
 
 def _body_shape(body: dict) -> dict:
