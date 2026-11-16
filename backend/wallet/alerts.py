@@ -69,7 +69,34 @@ def _alerts_on(channel: str) -> bool:
     business decision rather than a default we should make silently. Email costs
     effectively nothing and is on."""
     cfg = getattr(settings, "TXN_ALERTS", {}) or {}
-    return bool(cfg.get(channel.upper(), channel == "email"))
+    on = bool(cfg.get(channel.upper(), channel == "email"))
+    if on and not _provider_ready(channel):
+        # Switched on with no provider key (TXN_ALERTS_SMS=true, no TERMII_API_KEY):
+        # nothing can ever be sent. Queuing every transaction for it built a pile
+        # that waited six hours and emailed the operator about each batch, so the
+        # channel counts as off until the key is set, with one warning per process.
+        if channel not in _UNCONFIGURED_WARNED:
+            _UNCONFIGURED_WARNED.add(channel)
+            log.warning("txn_alert_channel_on_without_provider channel=%s: set its provider key "
+                        "or switch TXN_ALERTS_%s off", channel, channel.upper())
+        return False
+    return on
+
+
+_UNCONFIGURED_WARNED: set = set()
+
+
+def _provider_ready(channel: str) -> bool:
+    """Whether opt-in SMS has a provider key. Local and test runs use mocks.
+
+    Only SMS: it is off by default and paid per message, so "on without a key"
+    is a configuration slip. Email and WhatsApp are core channels; a missing key
+    there is an outage, which still waits for the fix and pages the operator."""
+    if channel != "sms" or settings.DEBUG or getattr(settings, "TESTING", False):
+        return True
+    from utility.providers import sms_live
+
+    return sms_live()
 
 
 def _narration_line(txn) -> str:

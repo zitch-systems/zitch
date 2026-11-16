@@ -50,6 +50,36 @@ class DuplicateTransaction(Exception):
     should replay the original outcome instead of debiting again."""
 
 
+class UnbackedCredit(Exception):
+    """A credit to a wallet with no partner-bank account while money is live.
+
+    Every naira a live customer holds must sit in their own Wema account; the
+    settlement report adds those accounts up and compares them with the ledger.
+    A credit to a wallet without one creates a balance that no bank holds: a
+    settlement shortfall nothing can reconcile (settlement_report "customer
+    balances with no Wema account behind them"). So it is refused, and the
+    caller tells the customer to open their account first.
+    """
+
+
+UNBACKED_CREDIT_MESSAGE = ("Your Zitch bank account isn't open yet, so money can't be added. "
+                           "Open it first, then try again. Nothing was credited.")
+
+
+def wallet_holds_live_money(wallet) -> bool:
+    """True when this wallet has a real partner-bank account to hold its balance."""
+    return bool(re.fullmatch(r"\d{10}", wallet.account_number or "")) and not is_demo_account(wallet)
+
+
+def assert_backed_credit(wallet) -> None:
+    """Refuse, on a live deploy, any credit that no bank account would hold."""
+    from utility import wema
+
+    if wema.wema_live() and not wallet_holds_live_money(wallet):
+        log.warning("unbacked_credit_refused user=%s", wallet.user_id)
+        raise UnbackedCredit(UNBACKED_CREDIT_MESSAGE)
+
+
 def existing_for_key(user, key: str) -> Transaction | None:
     """The prior ledger row for this user + idempotency key, if any."""
     if not key:
@@ -346,11 +376,15 @@ def credit(user, amount, service: str, meta: dict | None = None, reference: str 
     DuplicateTransaction and the credit is rolled back, so a retried/raced
     request never credits twice. Server-originated credits (settlements,
     funding) pass no key and are unconstrained.
+
+    On a live deploy the wallet must have its own partner-bank account
+    (UnbackedCredit otherwise): a balance no bank holds is a shortfall.
     """
     amount = Decimal(str(amount))
     wallet = Wallet.objects.select_for_update().get(user=user)
     if expected_account is not None and wallet.account_number != expected_account:
         return None
+    assert_backed_credit(wallet)
     wallet.balance += amount
     wallet.save(update_fields=["balance", "updated"])
     try:
@@ -3279,6 +3313,15 @@ def provision_wema_account(user, *, account_number: str, account_name: str = "",
             defaults={"opening_review_required": source not in {"otp", "callback"}},
         )
     log.info("wema_account_provisioned user=%s account=%s source=%s", user.id, number, source)
+    if wallet.balance > 0:
+        # A balance from before the account existed is money no bank holds yet.
+        # It can now be settled into this account: tell the operator exactly how.
+        from utility.alerts import alert
+
+        alert("Customer opened a Wema account carrying a balance no bank holds yet",
+              level="error", user_id=user.id, amount=str(wallet.balance),
+              next_step=f"python manage.py prepare_settlement_funding --user-id {user.id} --apply "
+                        "--operator-reference '<who approved>'")
     # A customer given a new account number usually pays into it at once.
     from wallet.deposit_sync import expect_deposit
     expect_deposit(wallet=wallet, minutes=30)

@@ -1201,7 +1201,7 @@ def _perform_manual_credit(*, user, amount, reason, actor, idempotency_key=None,
 
     from accounts.models import User as _User
     from common.http import idempotent_replay, spend_key
-    from wallet.services import (DuplicateTransaction, credit, existing_for_key,
+    from wallet.services import (DuplicateTransaction, UnbackedCredit, credit, existing_for_key,
                                  get_or_create_wallet)
     from whatsapp.models import AuditLog as _AL
 
@@ -1266,6 +1266,10 @@ def _perform_manual_credit(*, user, amount, reason, actor, idempotency_key=None,
             )
         except DuplicateTransaction:
             return idempotent_replay(existing_for_key(u, key))
+        except UnbackedCredit:
+            return fail("This customer has no Wema account yet, so no bank would hold this "
+                        "credit (a settlement shortfall). Open their account first.",
+                        status=409, code="bank_account_required")
         # Written with the ACTOR, not a request: on the approved path there is no
         # request in scope, and attributing the credit to the approver rather than the
         # maker is what makes the trail readable.
