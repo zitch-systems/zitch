@@ -105,7 +105,10 @@ class Release3FlowJsonTests(SimpleTestCase):
     # Release 5 retitled these pages to the approved design, gave the three PIN
     # pages their own `title` and `cta`, and gave MENU's rows a second line
     # (`description`) - all gated by WHATSAPP_FLOW['DESIGN_V5'].
-    OLD_CONTRACT_SHA256 = "4ee480da79bc2cf262d8dd7ae3418f5317bd94d7496a944513f904c5178a5115"
+    # 16 Nov 2026: BILL_SCREEN and BILL_CHAIN's `discos` items gained optional
+    # `image` and `alt-text` (disco logos). The server sends them only once a logo
+    # file exists, and logos are added only after the Flow is republished.
+    OLD_CONTRACT_SHA256 = "44eeda2be6cfddf535b2dcdd3c9006df4bcbf5e6fea70c25cbd68800d02225b1"
 
     def test_the_existing_screens_contract_is_unchanged(self):
         contract = {}
