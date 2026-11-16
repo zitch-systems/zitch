@@ -18,9 +18,9 @@ const path = require('path');
 const FRAMES = 84;          // 2.8s beat at 30fps
 const COLS = 12;
 const ROWS = Math.ceil(FRAMES / COLS);
-const FRAME_W = 168;        // px per cell
-const FRAME_H = 256;
-const SCALE = 1.2;          // px per logical unit (140-unit-wide box → 168px)
+const FRAME_W = 210;        // px per cell (3× the full-screen loader's 70 pt width)
+const FRAME_H = 320;        // 3× the full-screen loader's ~106 pt height, so it is sharp on 3× screens
+const SCALE = 1.5;          // px per logical unit (140-unit-wide box → 210px)
 const SUPER = 4;            // draw 4× then box-filter down for clean edges
 
 const ROOT = path.join(__dirname, '..');

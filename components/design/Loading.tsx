@@ -13,8 +13,8 @@ const SPRITE = require('../../assets/images/zitch-loader-sprite.png');
 const FRAMES = 84;      // one 2.8s beat at 30fps
 const COLS = 12;
 const ROWS = 7;
-const FRAME_W = 168;    // px per cell in the sheet
-const FRAME_H = 256;
+const FRAME_W = 210;    // px per cell in the sheet
+const FRAME_H = 320;    // 3× the full-screen loader, so it stays sharp on 3× screens
 
 /** One beat of the coil: wind up → one full turn → settle and rest on the Z.
  *  Matches the web loader's default, so the two are indistinguishable. */
