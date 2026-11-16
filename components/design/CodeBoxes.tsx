@@ -1,6 +1,7 @@
 import React, { forwardRef, useRef, useImperativeHandle } from 'react';
 import { View, Text, TextInput, Pressable } from 'react-native';
 import { useTheme, font } from '@/lib/theme';
+import { extractCode } from '@/lib/code';
 
 /**
  * A one-time code shown as boxes, one digit each.
@@ -58,10 +59,10 @@ export const CodeBoxes = forwardRef<CodeBoxesHandle, Props>(({
         accessibilityLabel={accessibilityLabel}
         accessibilityHint={accessibilityHint}
         value={value}
-        onChangeText={(t) => onChange(t.replace(/\D/g, '').slice(0, length))}
+        // a pasted SMS arrives whole: keep its code (no maxLength, which would cut it first)
+        onChangeText={(t) => onChange(extractCode(t, length))}
         keyboardType="number-pad"
         inputMode="numeric"
-        maxLength={length}
         autoFocus={autoFocus}
         caretHidden
         editable={editable}

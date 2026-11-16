@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { PasteCode } from '@/components/design/PasteCode';
+import { extractCode } from '@/lib/code';
 import { View, Text, Pressable } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as WebBrowser from 'expo-web-browser';
@@ -411,7 +413,8 @@ const AddMoney = () => {
           {trackingId ? (
             <>
               <Text style={{ color: c.ink2, fontFamily: font.regular, marginBottom: 12 }}>Enter the SMS code{otpDestination ? ` sent to ${otpDestination}` : ` sent to the phone linked to your ${trackingIdentityKind.toUpperCase()}` }.</Text>
-              <Field label="Verification code" value={otp} onChangeText={(v) => setOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="Enter 6-digit SMS code" />
+              <Field label="Verification code" value={otp} onChangeText={(v) => setOtp(extractCode(v, 6))} keyboardType="number-pad" placeholder="Enter 6-digit SMS code"
+                textContentType="oneTimeCode" autoComplete="sms-otp" suffix={<PasteCode onCode={setOtp} />} />
             </>
           ) : (
             <>
