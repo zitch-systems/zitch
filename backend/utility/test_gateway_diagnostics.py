@@ -184,6 +184,32 @@ class PurchaseOutcomeIsRecordedTests(SimpleTestCase):
         self.assertNotIn("0123456789", line)
 
     @override_settings(WEMA=WEMA_LIVE)
+    def test_a_refused_paybill_logs_the_banks_whole_reason_and_what_we_sent(self):
+        # 16 Nov 2026: the reply was cut at 300 characters, exactly where
+        # errorMessages begins, so the bank's own reason was never seen.
+        body = {"result": {"status": "Failed", "message": "Authentication Failed",
+                           "transactionReference": "ZTCH-BILL-WHY"},
+                "errorMessage": "Client not authorised for this biller",
+                "errorMessages": ["securityInfo could not be validated"],
+                "hasError": True}
+        exc = requests.HTTPError("bank gateway returned HTTP 409",
+                                 response=self._json(409, body))
+        with mock.patch.object(wema, "_post", side_effect=exc), \
+             self.assertLogs("zitch", level="ERROR") as logs:
+            wema.pay_bill(1000, "ZTCH-BILL-WHY", package_id="7", identifier="45700012345",
+                          source_account="0100000001", email="ada@example.test",
+                          phone="08031234567", name="ADA EZE", charge=100)
+        line = next(l for l in logs.output if "wema_bill_refused" in l)
+        self.assertIn("Client not authorised for this biller", line)
+        self.assertIn("securityInfo could not be validated", line)
+        self.assertIn('"customerAccount": "str:10"', line)
+        self.assertIn('"securityInfo": "str:64"', line)
+        self.assertIn('"packageId": "int"', line)
+        # Shape only: no value we sent reaches the log.
+        for value in ("0100000001", "45700012345", "ada@example.test", "08031234567", "ADA EZE"):
+            self.assertNotIn(value, line)
+
+    @override_settings(WEMA=WEMA_LIVE)
     def test_a_409_authentication_refusal_is_refunded_not_held(self):
         # 16 Nov 2026 production body, trimmed: refused at the gate, never processed.
         body = {"result": {"status": "Failed", "message": "Authentication Failed",

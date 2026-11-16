@@ -3017,10 +3017,53 @@ def pay_bill(amount_naira, reference: str, *, package_id: str, identifier: str, 
         data = resp.json()
         res = _vas_submitted("bills", reference, resp, data, _parse_vas(
             data, reference, product="bills", http_status=resp.status_code))
+        if not res.get("success") and not res.get("pending"):
+            _log_bill_refusal(reference, resp, body)
         token = _vas_token(data)
         return {**res, "token": token} if token else res
     except requests.RequestException as exc:
+        _log_bill_refusal(reference, getattr(exc, "response", None), body)
         return _vas_unanswered("bills", reference, exc)
+
+
+def _body_shape(body: dict) -> dict:
+    """Each field we sent, as type and length only: enough for the bank to compare
+    with what it expects, without a single value leaving the building."""
+    shape = {}
+    for key, value in (body or {}).items():
+        if value is None:
+            shape[key] = "null"
+        elif isinstance(value, bool):
+            shape[key] = "bool"
+        elif isinstance(value, (int, float)):
+            shape[key] = type(value).__name__ + ("" if value else ":0")
+        else:
+            shape[key] = f"str:{len(str(value))}" if str(value) else "str:empty"
+    return shape
+
+
+def _log_bill_refusal(reference: str, response, body: dict) -> None:
+    """Everything the bank said about a refused PayBill, and the shape of what we
+    sent. Until 16 Nov 2026 only the first 300 characters of the reply were kept,
+    which cut it off exactly where errorMessages begins - the bank's own reason
+    for every "Authentication Failed" was never seen on our side."""
+    if response is None:
+        return
+    try:
+        data = response.json()
+    except ValueError:
+        data = {"text": getattr(response, "text", "") or ""}
+    result = data.get("result") if isinstance(data, dict) else None
+    errors = {
+        "http_status": getattr(response, "status_code", None),
+        "status": (result or {}).get("status") if isinstance(result, dict) else None,
+        "message": (result or {}).get("message") if isinstance(result, dict) else None,
+        "errorMessage": data.get("errorMessage") if isinstance(data, dict) else None,
+        "errorMessages": data.get("errorMessages") if isinstance(data, dict) else None,
+        "request_id": _gateway_request_id(getattr(response, "headers", {}) or {}),
+    }
+    log.error("wema_bill_refused ref=%s detail=%s sent=%s", _log_safe(reference),
+              _trim(errors, 1200), json.dumps(_body_shape(body), sort_keys=True))
 
 
 def vas_status(reference: str, txn_type: str = "") -> dict:
