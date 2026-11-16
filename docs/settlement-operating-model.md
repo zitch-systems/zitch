@@ -107,6 +107,30 @@ Existing ones are listed with where each balance came from and what resolves it:
 
 The alerts stop when `unbacked_balances` reports none.
 
+### When the customer's old account still holds the money
+
+A wallet whose earlier Wema account was detached (for example on 30 Oct 2026)
+lists as `other` but its deposits are real `WEMA-CR-` credits, and the money
+may still sit in that account. Find it before paying anything in: the detached
+number is in the AuditLog (`retired_provider_row_archived`, target
+`banking_previousbankarchive:*`, `after.wallet_id`). Compare that account's
+statement with the ledger, then correct each difference with a reviewed command
+(dry run first, `--apply` to post; each posts once and the customer is alerted):
+
+* Transfer fees the bank took: `post_transfer_fee_correction`.
+* Other bank charges (SMS alerts):
+  `post_statement_correction --kind bank-charges`.
+* A deposit the bank reversed or never settled:
+  `post_statement_correction --kind reversed-deposit --original-reference <WEMA-CR-…>`.
+* A purchase marked Failed that the bank charged and the customer received:
+  `post_statement_correction --kind charged-failed-purchase --original-reference <ZTCH…>`.
+  If the customer did not receive it, Zitch owes them: pay it into their account.
+
+Nothing here credits a wallet. When the ledger and the old account agree, the
+customer replies 6; the bank reports the existing account, and Zitch attaches it
+(holder name must match) with an opening review. `prepare_settlement_funding` is
+only for money that is not already at the bank.
+
 ## 4. Thresholds
 
 | Flag | Launch value | Why |
