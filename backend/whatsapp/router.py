@@ -3369,11 +3369,12 @@ def _tier_ladder_lines(user) -> str:
 
     mark = lambda ok: "✅" if ok else "⬜"  # noqa: E731
     limits = User.DAILY_TRANSFER_LIMITS
-    # The address saved at sign-up is what Tier 3 will check, so the card names it.
+    # The address saved at sign-up is what Tier 3 will check, so the card names
+    # its area. Only the area: the street and house number stay out of the chat.
     saved = (getattr(user, "address", "") or "").strip()
     if saved and not user.address_verified:
         parts = [p.strip() for p in saved.split(",") if p.strip()]
-        saved = ", ".join(parts[:2]) if len(parts) > 2 else saved
+        saved = ", ".join(parts[-2:]) if len(parts) > 2 else ""
     rows = (
         (1, "Tier 1 · Phone number and BVN or NIN"),
         (2, "Tier 2 · BVN, NIN and face check"),
@@ -3513,19 +3514,13 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
     ])
     if user.tier >= 2:
         from accounts.views import _kyc_state
-        from wallet.address_verification import refresh_address_verification, tier3_address_capability
+        from wallet.address_verification import refresh_address_verification
 
         if user.address_verification_pending:
             refresh_address_verification(user)
         address_status = _kyc_state(user)
         if address_status.get("address_verification_pending"):
-            if tier3_address_capability()["tier3_address_available"] is False:
-                return reply(msisdn, "⏳ *Your address request needs review.*\n\n"
-                             "Please contact Zitch Support about your submitted Tier 3 request. "
-                             "Your current verification stays saved. Do not submit your address again.")
-            return reply(msisdn, "⏳ *Your address is being checked.*\n\n"
-                         "Your Tier 3 request is already submitted. You do not need to send it again. "
-                         "Reply *8* to refresh your verification status.")
+            return reply(msisdn, TIER3_PROCESSING_TEXT)
         user.refresh_from_db(fields=["tier", "address_verified"])
     from wallet.views import refresh_tier2_face
 
@@ -3538,12 +3533,14 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
     if user.tier >= 3:
         return reply(msisdn, status + "\n\nYou are already on the highest verification tier.")
     if user.tier >= 2:
-        from wallet.address_verification import tier3_address_capability
+        from accounts.views import saved_address_parts, tier3_claim_state
 
-        capability = tier3_address_capability()
-        if capability["tier3_address_available"] is False:
-            return reply(msisdn, status + "\n\n*Tier 3 · Address verification*\n"
-                         + capability["tier3_address_unavailable_reason"])
+        # Tier 3 is the address, sent to the bank as its own request, as in the
+        # app. A refused one, or none saved, is entered in the app.
+        if tier3_claim_state(user) == "not_confirmed" or not saved_address_parts(user.address):
+            return reply(msisdn, status + "\n\n*Upgrade to Tier 3*\n" + (
+                "Your bank couldn't confirm the address you sent. " if tier3_claim_state(user) == "not_confirmed"
+                else "") + TIER3_IN_APP_TEXT)
     pa = PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="kyc", state=KYC_UPGRADE_STATE,
         payload={}, expires_at=_flow_deadline("idle"),
@@ -3556,14 +3553,68 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
             "Enter your BVN and NIN and take a quick selfie. Your bank checks them together.",
             [("tier2", "Upgrade to Tier 2"), ("later", "Later")],
         )
-    saved = (user.address or "").strip()
+    from accounts.views import saved_address_parts
+
+    _house, _street, lga, state = saved_address_parts(user.address)
+    # Only the area is shown here: the full address stays out of the chat.
     return reply_buttons(
         msisdn,
         status + "\n\n*Upgrade to Tier 3*\n"
-        + (f"We will verify the address you gave at sign-up:\n{saved}" if saved else
-           "Tier 3 adds address verification after Tier 2. You can start it here on WhatsApp."),
-        [("tier3", "Upgrade to Tier 3"), ("later", "Later")],
+        f"We'll send the home address you gave at sign-up (in {lga}, {state}) to your bank. "
+        "Tier 3 then shows Processing until the bank's check can be confirmed.",
+        [("tier3", "Send for Tier 3"), ("later", "Later")],
     )
+
+
+TIER3_PROCESSING_TEXT = ("⏳ *Tier 3 is processing.*\n\n"
+                         "Your address is with your bank. Tier 3 opens once the bank's check can be "
+                         "confirmed. You don't need to send it again.")
+TIER3_IN_APP_TEXT = ("Add your home address in the Zitch app: Account limits, then Verify Tier 3.")
+TIER2_PROCESSING_TEXT = ("⏳ *Tier 2 is processing.*\n\n"
+                         "Your NIN and face check are with your bank. You don't need to send them again. "
+                         "Reply *8* to check again.")
+
+
+def _send_tier3_from_chat(user, msisdn: str) -> None:
+    """Send the sign-up address as the Tier 3 request, the same way the app does."""
+    from accounts.views import saved_address_parts, send_tier3_address
+
+    _clear_actions(msisdn)
+    parts = saved_address_parts(user.address)
+    if not parts:
+        return reply(msisdn, TIER3_IN_APP_TEXT)
+    house, street, lga, state = parts
+    sent, state3, _address = send_tier3_address(user, house, street, state, lga)
+    if state3 == "processing":
+        return reply(msisdn, TIER3_PROCESSING_TEXT)
+    if state3 == "done":
+        return reply(msisdn, "✅ You are already on Tier 3.")
+    if state3 == "not_confirmed":
+        return reply(msisdn, "Your bank couldn't confirm that address. " + TIER3_IN_APP_TEXT)
+    return reply(msisdn, "We couldn't send your address right now. Please try again later. "
+                 "Your verification so far is saved.")
+
+
+def _tier2_from_chat(user, msisdn: str) -> None:
+    """Upgrade to Tier 2 in the chat: apply a check the bank already confirmed
+    (sign-up sent it), say Processing for one it is still checking, and only
+    otherwise open the face check link."""
+    from accounts.views import apply_confirmed_tier, tier2_claim_state
+
+    state = tier2_claim_state(user)
+    if state == "ready":
+        _clear_actions(msisdn)
+        if apply_confirmed_tier(user, 2) >= 2:
+            from accounts.models import User
+
+            return reply(msisdn, "✅ *You're now Tier 2.*\n\nYour bank confirmed your NIN and face check. "
+                         f"Up to {_money(User.DAILY_TRANSFER_LIMITS[2])} a day.")
+        return _start_kyc(user, msisdn)
+    if state == "processing":
+        _clear_actions(msisdn)
+        return reply(msisdn, TIER2_PROCESSING_TEXT)
+    _clear_actions(msisdn)
+    return _send_web_verification(user, msisdn, 2)
 
 
 def _kyc_bank_upgrade_notice(user, msisdn: str) -> None:
@@ -4019,14 +4070,12 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if low in ("tier2", "2", "upgrade", "upgrade to tier 2", "tier2_app", "nin_face"):
             if not user.tier1_identity_verified:
                 return _start_kyc(user, msisdn)
-            _clear_actions(msisdn)
-            return _send_web_verification(user, msisdn, 2)
-        if low in ("tier3", "3", "upgrade to tier 3"):
+            return _tier2_from_chat(user, msisdn)
+        if low in ("tier3", "3", "upgrade to tier 3", "send for tier 3"):
             if user.tier < 2:
                 return reply(msisdn, "Tier 3 starts after Tier 2. Reply *tier2* to review your identity and live face checks.")
-            _clear_actions(msisdn)
-            return _send_web_verification(user, msisdn, 3)
-        choice = ("tier3", "Upgrade to Tier 3") if user.tier >= 2 else ("tier2", "Upgrade to Tier 2")
+            return _send_tier3_from_chat(user, msisdn)
+        choice = ("tier3", "Send for Tier 3") if user.tier >= 2 else ("tier2", "Upgrade to Tier 2")
         return reply_buttons(msisdn, "Choose the upgrade you want:", [choice, ("later", "Later")])
 
     if state == BVN_METHOD_STATE:

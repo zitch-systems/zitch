@@ -144,7 +144,7 @@ const Tier3 = () => {
         <Card style={{ marginTop: 14, gap: 8 }}>
           <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>Tier 3 is processing</Text>
           <Text style={{ fontSize: 13.5, fontFamily: font.regular, color: c.ink3, lineHeight: 20 }}>
-            Your address is with the bank. Tier 3 opens once the check can be confirmed, and we’ll let you know.
+            Your address is with the bank. Tier 3 opens once the bank’s check can be confirmed. You don’t need to send it again.
           </Text>
         </Card>
       ) : tier < 2 ? (

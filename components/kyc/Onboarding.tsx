@@ -294,7 +294,7 @@ export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face
         else notify('NIN and face check', v2?.message || 'Could not send them. Check your connection and try again.');
         return;
       }
-      if (sent.current.tier2 || sent.current.tier3) notify('Sent for checking', 'You’re on Tier 1. Verify Tier 2 and Tier 3 in Account limits when you’re ready.', 'success');
+      if (sent.current.tier2 || sent.current.tier3) notify('Sent for checking', 'Your bank is checking them. Verify Tier 2 and Tier 3 in Account limits when you’re ready.', 'success');
       onDone();
     } finally {
       inFlight.current = false;

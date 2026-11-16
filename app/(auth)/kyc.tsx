@@ -1,11 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { View, Text } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import * as ImagePicker from 'expo-image-picker';
 import { notify } from '@/components/design/Notify';
 import { getSessionGeneration, getToken } from '@/lib/secureStore';
-import { beginExternalActivity, endExternalActivity } from '@/lib/session';
-import { classifyKycResponse, isAccountOtpPending, kycService, resolveIdentityOtpRoute, resolveOwnershipOtpRoute, type KycStatus, type KycVerificationFlag, type ResidentialAddress } from '@/lib/services/kyc';
+import { classifyKycResponse, isAccountOtpPending, kycService, resolveIdentityOtpRoute, resolveOwnershipOtpRoute, type KycStatus, type KycVerificationFlag } from '@/lib/services/kyc';
 import type { FundingAccount } from '@/lib/services/wallet';
 import FaceLivenessModal, { type FaceCapture } from '@/components/design/FaceLivenessModal';
 import FaceVerifyModal from '@/components/design/FaceVerifyModal';
@@ -48,6 +46,9 @@ type Status = {
   tier2_unavailable_reason?: string;
   tier3_address_available?: boolean;
   tier3_address_unavailable_reason?: string;
+  // Where Verify Tier 2 / Tier 3 stand (same as Account limits).
+  tier2_state?: 'done' | 'ready' | 'processing' | 'not_confirmed';
+  tier3_state?: 'done' | 'ready' | 'processing' | 'not_confirmed' | 'not_sent';
   address_rail?: 'document' | 'wema' | 'none';
   // Set once the bank has opened the account number: from then on it will not
   // accept a lone BVN or NIN, only all of it at once. Read here so the menu can
@@ -64,12 +65,6 @@ type Method = 'menu' | 'email' | 'bvn' | 'nin' | 'upgrade' | 'address';
 const C_BVN = '#0FA295';
 const C_NIN = '#2D7FF9';
 const C_SELFIE = '#7A5CFF';
-
-const EMPTY_ADDRESS: ResidentialAddress = {
-  buildingNumber: '', apartment: '', street: '', city: '', town: '', state: '',
-  lga: '', lcda: '', landmark: '', additionalInformation: '', country: 'Nigeria',
-  fullAddress: '', postalCode: '',
-};
 
 /** How often an open face page asks our server for the result. */
 const FACE_POLL_MS = 3000;
@@ -167,14 +162,11 @@ const Kyc = () => {
   const [faceSheet, setFaceSheet] = useState<FaceSheet | null>(null);
   const faceChecking = useRef(false);
   const [bvnResendIn, setBvnResendIn] = useState(0);
-  const [address, setAddress] = useState<ResidentialAddress>(EMPTY_ADDRESS);
-  const [addressDocument, setAddressDocument] = useState('');
   const [upgradeCameraOpen, setUpgradeCameraOpen] = useState(false);
   const actionInFlight = useRef(false);
   const facePollGeneration = useRef(0);
   const mounted = useRef(true);
   const screenGeneration = useRef(getSessionGeneration()).current;
-  const captureInFlight = useRef(false);
   const upgradeCaptureOwner = useRef<(() => boolean) | null>(null);
   const loadGeneration = useRef(0);
 
@@ -285,8 +277,6 @@ const Kyc = () => {
     setNinTrackingId(''); setNinOtpDestination('');
     setNinDeliveryNotice('');
     setUpBvn(''); setUpNin(''); setUpFace(null);
-    setAddress(EMPTY_ADDRESS);
-    setAddressDocument('');
     setUpgradeCameraOpen(false);
     setFaceSheet(null);
     setBusy(false);
@@ -311,13 +301,10 @@ const Kyc = () => {
   const tier2Pending = faceOnly && status?.tier2_face_pending === true;
   const needsBankUpgrade = !!status?.bank_upgrade_required || needsUpgrade;
   const tier2Unavailable = status?.tier2_face_available === false;
-  const tier3Unavailable = status?.tier3_address_available === false;
   const addressPending = status?.address_verification_pending === true || status?.address_verification_state === 'pending';
   const addressVerificationAvailable = status?.account_provider === 'partnership'
     && status?.address_verification_required !== false
     && status?.address_rail !== 'none';
-  const setAddressField = (field: keyof ResidentialAddress, value: string) =>
-    setAddress((current) => ({ ...current, [field]: value }));
 
   const startEmail = async () => {
     const target = (email || status?.email || '').trim().toLowerCase();
@@ -378,8 +365,6 @@ const Kyc = () => {
         setBvn(''); setBvnOtp(''); setBvnSent(false); setBvnTrackingId(''); setBvnOtpDestination('');
         setNin(''); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); setNinSent(false);
         setUpBvn(''); setUpNin(''); setUpFace(null);
-        setAddressDocument('');
-        setAddress(EMPTY_ADDRESS);
         setMethod('menu');
         await load();
       } else if (outcome === 'success' || outcome === 'unverified') {
@@ -403,8 +388,6 @@ const Kyc = () => {
         setBvn(''); setBvnOtp(''); setBvnSent(false); setBvnTrackingId(''); setBvnOtpDestination('');
         setNin(''); setNinOtp(''); setNinTrackingId(''); setNinOtpDestination(''); setNinSent(false);
         setUpBvn(''); setUpNin(''); setUpFace(null);
-        setAddressDocument('');
-        setAddress(EMPTY_ADDRESS);
         setMethod('menu');
         await load();
       } else notify('Error', res.message || 'Verification failed');
@@ -704,26 +687,6 @@ const Kyc = () => {
     askIdentity ? ['bvn_verified', 'nin_verified', 'face_verified'] : ['face_verified'],
   );
 
-  const pickAddressProof = async () => {
-    if (captureInFlight.current || actionInFlight.current) return;
-    captureInFlight.current = true;
-    const isCurrent = bindFlow();
-    try {
-      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!isCurrent()) return;
-      if (!perm.granted) { notify('Photos needed', 'Allow photo access to upload your proof of address.'); return; }
-      beginExternalActivity();
-      let res;
-      try {
-        res = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.4, allowsEditing: true,
-        });
-      } finally { endExternalActivity(); }
-      if (!isCurrent()) return;
-      if (!res.canceled && res.assets?.[0]?.base64) setAddressDocument(res.assets[0].base64);
-    } catch { if (isCurrent()) notify('Could not open photos', 'Check photo permissions and try again.'); }
-    finally { captureInFlight.current = false; }
-  };
 
 
   // ---- pieces shared by every sub-flow ----
@@ -773,19 +736,13 @@ const Kyc = () => {
     <View style={{ marginTop: 12 }}><Btn label="Contact support" variant="ghost" onPress={() => router.push('/support')} /></View>
   </View>;
 
+  // Tier 3 is the address, sent to the bank as its own request (review, Nov
+  // 2026). Zitch never raises it from the bank's answer, so a sent address
+  // reads Processing here, as on Account limits.
   const AddressPending = () => <View style={{ marginTop: 16, padding: 16, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
-    <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 16 }}>{tier3Unavailable ? 'Address verification needs review' : 'Address verification in progress'}</Text>
-    <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 8 }}>{tier3Unavailable
-      ? (status?.tier3_address_unavailable_reason || 'Your saved address verification needs a support review. You do not need to submit your address again.')
-      : 'Your address has been submitted. You do not need to submit it again. Tier 3 becomes available after confirmation.'}</Text>
-    {tier3Unavailable && <View style={{ marginTop: 12 }}><Btn label="Contact support" variant="ghost" onPress={() => router.push('/support')} /></View>}
-    <View style={{ marginTop: 12 }}><Btn label="Check address status" variant="ghost" onPress={() => void load()} /></View>
-  </View>;
-
-  const Tier3Unavailable = () => <View style={{ marginTop: 16, padding: 16, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
-    <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 16 }}>Address verification is temporarily unavailable</Text>
-    <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 8 }}>{status?.tier3_address_unavailable_reason || 'Your current verification is saved. Contact support for help with Tier 3.'}</Text>
-    <View style={{ marginTop: 12 }}><Btn label="Contact support" variant="ghost" onPress={() => router.push('/support')} /></View>
+    <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 16 }}>Tier 3 is processing</Text>
+    <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 8 }}>Your address is with the bank. Tier 3 opens once the bank’s check can be confirmed. You don’t need to send it again.</Text>
+    <View style={{ marginTop: 12 }}><Btn label="Check again" variant="ghost" onPress={() => void load()} /></View>
   </View>;
 
   if (loadingStatus || statusError || !status) {
@@ -866,11 +823,16 @@ const Kyc = () => {
             ? <MethodCard id="upgrade" icon="user" color={C_SELFIE} title="Tier 2 · Face verification"
                 sub={tier2Pending ? 'Your bank is checking your face' : 'Your BVN and NIN, then a live face check'} />
             // No bank account to upgrade yet: the Tier 2 page says what comes first.
-            : <MethodCard id="upgrade" icon="user" color={C_SELFIE} title="Face verification" sub="Tier 2" done={!!status.face_verified}
-                onPress={() => router.push('/tier2')} />)}
-          {addressVerificationAvailable && status?.tier !== undefined && status.tier >= 2 && (addressPending
-            ? <AddressPending /> : tier3Unavailable && !status.address_verified
-              ? <Tier3Unavailable /> : <MethodCard id="address" icon="home" color={C_BVN} title="Address verification" sub="Tier 3" done={!!status?.address_verified} />)}
+            // Done only when the account is on Tier 2: a check the bank confirmed
+            // at sign-up still waits for the customer to move up (the Tier 2 page).
+            : <MethodCard id="upgrade" icon="user" color={C_SELFIE} title="Face verification"
+                sub={status.tier2_state === 'ready' ? 'Confirmed by your bank · move up to Tier 2'
+                  : status.tier2_state === 'processing' ? 'Tier 2 · Processing' : 'Tier 2'}
+                done={(status.tier ?? 0) >= 2} onPress={() => router.push('/tier2')} />)}
+          {addressVerificationAvailable && status?.tier !== undefined && status.tier >= 2 && (status.tier3_state === 'processing' || (addressPending && status.tier3_state !== 'done')
+            ? <AddressPending />
+            : <MethodCard id="address" icon="home" color={C_BVN} title="Home address" sub="Tier 3" done={status.tier3_state === 'done' || status.tier >= 3}
+                onPress={() => router.push('/tier3')} />)}
           <Footer />
         </View>
       )}
@@ -1112,37 +1074,6 @@ const Kyc = () => {
         </View>
       )}
 
-      {method === 'address' && addressPending && <AddressPending />}
-      {method === 'address' && !addressPending && !status.address_verified && tier3Unavailable && <Tier3Unavailable />}
-      {method === 'address' && !addressPending && status.address_verified && <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>Your address is verified. Your current tier is shown on the verification menu.</Text>}
-      {method === 'address' && addressVerificationAvailable && !addressPending && !tier3Unavailable && !status.address_verified && (
-        <View>
-          <Hero icon="home" color={C_BVN} title="Address verification" sub="Tier 3" />
-          <View style={{ gap: 14, marginTop: 22, marginBottom: 20 }}>
-          <Field editable={!busy} label="Building number" value={address.buildingNumber} onChangeText={(value) => setAddressField('buildingNumber', value)} />
-          <Field editable={!busy} label="Apartment / flat (optional)" value={address.apartment} onChangeText={(value) => setAddressField('apartment', value)} />
-          <Field editable={!busy} label="Street" value={address.street} onChangeText={(value) => setAddressField('street', value)} />
-          <Field editable={!busy} label="City" value={address.city} onChangeText={(value) => setAddressField('city', value)} />
-          <Field editable={!busy} label="Town (optional)" value={address.town} onChangeText={(value) => setAddressField('town', value)} />
-          <Field editable={!busy} label="State" value={address.state} onChangeText={(value) => setAddressField('state', value)} />
-          <Field editable={!busy} label="LGA" value={address.lga} onChangeText={(value) => setAddressField('lga', value)} />
-          <Field editable={!busy} label="LCDA (optional)" value={address.lcda} onChangeText={(value) => setAddressField('lcda', value)} />
-          <Field editable={!busy} label="Landmark (optional)" value={address.landmark} onChangeText={(value) => setAddressField('landmark', value)} />
-          <Field editable={!busy} label="Additional information (optional)" value={address.additionalInformation} onChangeText={(value) => setAddressField('additionalInformation', value)} />
-          <Field editable={!busy} label="Postal code (optional)" keyboardType="number-pad" value={address.postalCode} onChangeText={(value) => setAddressField('postalCode', value)} />
-          </View>
-          <Pressable accessibilityRole="button" accessibilityLabel={addressDocument ? 'Change proof of address' : 'Add proof of address'} accessibilityState={{ disabled: busy }} onPress={() => void pickAddressProof()} disabled={busy} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: addressDocument ? C_BVN : c.line, backgroundColor: addressDocument ? 'rgba(15,162,149,.08)' : c.surface2, marginBottom: 12 }}>
-            <ZIcon name={addressDocument ? 'check' : 'file'} size={20} color={addressDocument ? C_BVN : c.ink3} />
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{addressDocument ? 'Proof of address selected' : 'Add proof of address'}</Text>
-              <Text style={{ fontSize: 12, color: c.ink3, marginTop: 1, fontFamily: font.regular }}>{status?.address_rail === 'wema' ? 'Optional for bank verification' : 'Utility bill or bank statement'}</Text>
-            </View>
-            <ZIcon name="right" size={17} color={c.ink3} />
-          </Pressable>
-          <Btn label={busy ? 'Verifying...' : 'Verify address'} disabled={busy || !address.buildingNumber.trim() || !address.street.trim() || !address.city.trim() || !address.state.trim() || !address.lga.trim()}
-            onPress={() => submit(() => kycService.verifyAddress(address, addressDocument), 'Address verified', ['address_verified'])} />
-        </View>
-      )}
 
     </Screen>
     <FaceVerifyModal

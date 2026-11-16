@@ -1521,7 +1521,10 @@ def _kyc_state(user) -> dict:
         "tier2_face_flow": "wema_selfie",
         "tier2_requires_nin": False,
         "tier2_requires_identity": True,
-        "tier2_face_pending": not user.face_verified and tier2_face_pending(user),
+        # Only while the check is still worth waiting for: a sign-up check past
+        # its two days is "not confirmed", and the Tier 2 page then asks again.
+        "tier2_face_pending": (not user.face_verified and tier2_face_pending(user)
+                               and tier2_claim_state(user) == "processing"),
         "tier2_face_available": tier2_face_available(),
         "tier2_unavailable_reason": "" if tier2_face_available() else TIER2_FACE_UNAVAILABLE,
         "address_rail": "wema",
@@ -1637,6 +1640,24 @@ def transaction_limits(request):
 TIER2_REVIEW_PATIENCE = timedelta(hours=48)
 
 
+def apply_confirmed_tier(user, tier: int) -> int:
+    """The customer asked for a tier the bank already confirmed (Verify on
+    Account limits, or Upgrade in the chat): lift the sign-up hold and recompute.
+    Returns the tier the account is on now, which can still be lower when Tier 1
+    is unfinished (a verified email and phone come first)."""
+    with db_transaction.atomic():
+        locked = User.objects.select_for_update().get(pk=user.pk)
+        locked.tier_cap = max(locked.tier_cap, tier)
+        locked.recompute_tier()
+        locked.save(update_fields=["tier_cap", "tier"])
+    user.refresh_from_db()
+    log.info("kyc_tier_claimed user=%s wanted=%s tier=%s", user.pk, tier, user.tier)
+    return user.tier
+
+
+NEEDS_TIER1 = "Finish Tier 1 first: verify your phone number and email address."
+
+
 def tier2_claim_state(user) -> str:
     """Where Tier 2 stands for Verify Tier 2: done, ready, processing or not_confirmed."""
     from wallet.views import tier2_face_pending
@@ -1675,7 +1696,7 @@ def tier3_claim_state(user) -> str:
 @require_user
 def kyc_claim_tier(request):
     """POST /api/kyc/claim/ {access_token, tier: 2|3}
-    -> {success, state: upgraded|processing|not_confirmed|unavailable, ...kyc state}
+    -> {success, state: upgraded|processing|not_confirmed|needs_tier1|needs_tier2, ...kyc state}
 
     Verify Tier 2/3 on Account limits. Sign-up already sent the details to the
     bank; this applies a tier the bank confirmed, reports one it is still
@@ -1697,12 +1718,7 @@ def kyc_claim_tier(request):
         if state3 == "ready" and user.tier >= 2:
             # An address verified some other way (never from the bank's
             # uncorrelated answer): lift the sign-up cap so the tier shows it.
-            with db_transaction.atomic():
-                locked = User.objects.select_for_update().get(pk=user.pk)
-                locked.tier_cap = 3
-                locked.recompute_tier()
-                locked.save(update_fields=["tier_cap", "tier"])
-            user.refresh_from_db()
+            apply_confirmed_tier(user, 3)
             state3 = tier3_claim_state(user)
         if state3 == "done":
             return ok(success=True, state="upgraded", **_kyc_state(user))
@@ -1727,13 +1743,10 @@ def kyc_claim_tier(request):
         user.refresh_from_db()
         state = tier2_claim_state(user)
     if state == "ready":
-        with db_transaction.atomic():
-            locked = User.objects.select_for_update().get(pk=user.pk)
-            locked.tier_cap = max(locked.tier_cap, 2)
-            locked.recompute_tier()
-            locked.save(update_fields=["tier_cap", "tier"])
-        user.refresh_from_db()
-        log.info("kyc_tier_claimed user=%s tier=%s", user.pk, user.tier)
+        if apply_confirmed_tier(user, 2) < 2:
+            # Confirmed by the bank, but Tier 1 is unfinished: never report an
+            # upgrade the account did not get.
+            return ok(success=True, state="needs_tier1", message=NEEDS_TIER1, **_kyc_state(user))
         return ok(success=True, state="upgraded", **_kyc_state(user))
     return ok(success=True, state=state, **_kyc_state(user))
 
@@ -2644,21 +2657,49 @@ def kyc_tier3_send(request):
         return fail("Choose your state from the list.")
     if not lga:
         return fail("Enter your local government area.")
+    sent, state3, address = send_tier3_address(request.user_obj, house, street, match, lga)
+    return ok(success=True, sent=sent, tier3_state=state3, address=address)
+
+
+def saved_address_parts(saved: str):
+    """``(house, street, lga, state)`` from an address saved as "12 Allen Avenue,
+    Ikeja, Lagos" (how sign-up keeps it, app or chat), or None when it is not in
+    that shape. The house number is the opening word with a digit in it ("12",
+    or "Plot 4B")."""
+    parts = [p.strip() for p in str(saved or "").split(",") if p.strip()]
+    if len(parts) < 3:
+        return None
+    state = next((s for s in _NIGERIAN_STATES if s.lower() == parts[-1].lower()), "")
+    lga = parts[-2]
+    words = ", ".join(parts[:-2]).split()
+    n = 1 if words and re.search(r"[0-9]", words[0]) else (
+        2 if len(words) > 2 and re.search(r"[0-9]", words[1]) else 0)
+    house, street = " ".join(words[:n]), " ".join(words[n:])
+    if not (state and lga and house and street):
+        return None
+    return house, street, lga, state
+
+
+def send_tier3_address(user, house, street, state, lga):
+    """Save the address and send it to the bank as its own Tier 3 request.
+    Returns ``(sent, tier3_state, address)``. Used by the app (sign-up and the
+    Tier 3 page) and the WhatsApp chat. Never raises Tier 3: the bank's answer
+    cannot be tied to this address, so a sent address shows Processing."""
     with db_transaction.atomic():
-        user = User.objects.select_for_update().get(pk=request.user_obj.pk)
+        user = User.objects.select_for_update().get(pk=user.pk)
         if user.address_verified or user.address_verification_pending:
-            return ok(success=True, sent=False, tier3_state=tier3_claim_state(user), address=user.address)
-        user.set_address(f"{house} {street}, {lga}, {match}")
+            return False, tier3_claim_state(user), user.address
+        user.set_address(f"{house} {street}, {lga}, {state}")
         user.save(update_fields=["address"])
     wallet = Wallet.objects.filter(user=user).first()
     if not wallet or not wallet.account_number:
-        return ok(success=True, sent=False, tier3_state="not_sent", address=user.address)
+        return False, "not_sent", user.address
     res = wema.upgrade_tier3(wallet.account_number, {
-        "buildingNumber": house, "street": street, "lga": lga, "state": match,
+        "buildingNumber": house, "street": street, "lga": lga, "state": state,
         "city": lga, "fullAddress": user.address, "country": "Nigeria"})
     if res.get("mock") and not res.get("success"):
         # The bank's upgrade service is not set up here: nothing was sent.
-        return ok(success=True, sent=False, tier3_state="not_sent", address=user.address)
+        return False, "not_sent", user.address
     now = timezone.now()
     if res.get("success") or res.get("pending") or res.get("mock"):
         User.objects.filter(pk=user.pk).update(
@@ -2666,12 +2707,10 @@ def kyc_tier3_send(request):
             address_verification_account_number=wallet.account_number,
             tier3_review="pending", tier3_review_at=now)
         log.info("kyc_tier3_sent user=%s account=%s", user.pk, wallet.account_number)
-        state3 = "processing"
-    else:
-        User.objects.filter(pk=user.pk).update(tier3_review="rejected", tier3_review_at=now)
-        log.info("kyc_tier3_refused user=%s message=%s", user.pk, mask_pii(str(res.get("message") or ""))[:120])
-        state3 = "not_confirmed"
-    return ok(success=True, sent=True, tier3_state=state3, address=user.address)
+        return True, "processing", user.address
+    User.objects.filter(pk=user.pk).update(tier3_review="rejected", tier3_review_at=now)
+    log.info("kyc_tier3_refused user=%s message=%s", user.pk, mask_pii(str(res.get("message") or ""))[:120])
+    return True, "not_confirmed", user.address
 
 
 @api

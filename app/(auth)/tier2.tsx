@@ -9,8 +9,6 @@ import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Card } from '@/components/design/ui';
 import { FaceCheckRow, StepTitle } from '@/components/kyc/Onboarding';
 import { TierBadge, TierDetails, TierPill } from '@/components/design/TierRow';
-import { apiJson } from '@/lib/api';
-import { EP } from '@/lib/endpoints';
 import { getSessionGeneration } from '@/lib/secureStore';
 import { kycService, type KycStatus } from '@/lib/services/kyc';
 import { tierLadder, type LadderTier } from '@/lib/tierLadder';
@@ -89,8 +87,7 @@ const Tier2 = () => {
   };
 
   const finished = () => {
-    // Best effort: Tier 3 is the sign-up address; its check needs no input.
-    void apiJson(EP.kyc.address).catch(() => undefined);
+    // Tier 3 is its own request (the address); nothing is started from here.
     notify('You’re now Tier 2', 'Your new limits apply right away.', 'success');
     if (params.from === 'limits' && router.canGoBack()) router.back();
     else router.replace('/accountlimits');

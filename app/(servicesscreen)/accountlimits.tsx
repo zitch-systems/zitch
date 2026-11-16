@@ -128,6 +128,8 @@ const AccountLimits = () => {
         setTier2({ kind: 'progress' });
       } else if (r?.success && r.state === 'not_confirmed') {
         router.push('/tier2?from=limits&recheck=1');
+      } else if (r?.success && r.state === 'needs_tier1') {
+        notify('Finish Tier 1 first', r?.message || 'Verify your phone number and email address.');
       } else {
         notify('Could not check', r?.message || 'Please try again.');
       }
@@ -362,7 +364,7 @@ const AccountLimits = () => {
           <Text style={{ fontSize: 14, fontFamily: font.regular, color: c.ink3, marginTop: 8, lineHeight: 21, textAlign: 'center', paddingHorizontal: 4 }}>
             {tier2?.kind === 'done'
               ? 'Your NIN and face check from sign-up were already confirmed, so your new limits apply right away.'
-              : 'We\u2019re still checking the NIN and face check from your sign-up. We\u2019ll let you know as soon as it\u2019s done. There\u2019s nothing else to do.'}
+              : 'Your bank is still checking the NIN and face check from your sign-up. Tap Processing on Account limits to check again. There\u2019s nothing else to do.'}
           </Text>
           {tier2?.kind === 'done' && tier2Limits ? (
             <View style={{ alignSelf: 'stretch', flexDirection: 'row', marginTop: 18, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16, backgroundColor: tint }}>
@@ -405,7 +407,7 @@ const AccountLimits = () => {
           <Text style={{ fontSize: 14, fontFamily: font.regular, color: c.ink3, marginTop: 8, lineHeight: 21, textAlign: 'center', paddingHorizontal: 4 }}>
             {tier3?.kind === 'done'
               ? 'Your address check had already come through, so your new limits apply right away.'
-              : 'Your address is with the bank. Tier 3 opens once the check can be confirmed, and we\u2019ll let you know. There\u2019s nothing else to do.'}
+              : 'Your address is with the bank. Tier 3 opens once the bank\u2019s check can be confirmed. You don\u2019t need to send it again.'}
           </Text>
           {tier3?.kind === 'done' && tier3Limits ? (
             <View style={{ alignSelf: 'stretch', flexDirection: 'row', marginTop: 18, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16, backgroundColor: tint }}>

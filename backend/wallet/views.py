@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import secrets
+import time
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -844,8 +845,9 @@ def wema_tier2_face_check(request):
         return fail(TIER2_FACE_UNAVAILABLE, status=503, code="tier2_unavailable")
     if user.face_verified and user.tier >= 2:
         return fail("Tier 2 is already complete.", status=409, code="tier2_complete")
-    if not Wallet.objects.filter(user=user).exclude(account_number="").exists():
-        return fail("Set up your partner-bank account first", status=400)
+    # No account number is needed to measure a face: sign-up takes the face check
+    # while the BVN (which opens the account) is still being verified. Nothing
+    # goes to the bank here; the upgrade itself still needs the account.
     frames = face_check.frame_list(request.data.get("frames"), face_check.MAX_FRONTAL_FRAMES)
     turns = face_check.frame_list(request.data.get("turns"), face_check.MAX_TURN_FRAMES)
     if frames is None or turns is None:
@@ -962,7 +964,10 @@ def upgrade_wema_identity(user, data, *, checked=None):
     if res.get("pending"):
         _set_tier2_review(user, "pending")
         response = _tier2_pending(user, bvn, nin)
-        return _signup_tier2_sent(user, "pending") if at_signup else response
+        if at_signup:
+            _keep_signup_marker(user)
+            return _signup_tier2_sent(user, "pending")
+        return response
     if not res.get("success"):
         _set_tier2_review(user, "rejected")
         if at_signup:
@@ -974,7 +979,13 @@ def upgrade_wema_identity(user, data, *, checked=None):
                                   account_number=wallet.account_number)
     if at_signup and response.status_code in (200, 202):
         user.refresh_from_db()
-        return _signup_tier2_sent(user, "confirmed" if user.face_verified else "pending")
+        if user.face_verified:
+            return _signup_tier2_sent(user, "confirmed")
+        # The bank took it but has not finished: the usual case. Verify Tier 2
+        # shows Processing and reads the bank back, for up to two days.
+        _set_tier2_review(user, "pending")
+        _keep_signup_marker(user)
+        return _signup_tier2_sent(user, "pending")
     return response
 
 
@@ -984,6 +995,25 @@ def _set_tier2_review(user, state):
     at = timezone.now() if state else None
     User.objects.filter(pk=user.pk).update(tier2_review=state, tier2_review_at=at)
     user.tier2_review, user.tier2_review_at = state, at
+
+
+#: How long a sign-up Tier 2 check the bank is still processing is read back
+#: (accounts.views.TIER2_REVIEW_PATIENCE): the marker keeps the NIN hash that
+#: is recorded when the bank confirms, so it must live as long.
+_TIER2_SIGNUP_PENDING_SECONDS = 48 * 60 * 60
+#: A sign-up check is read back in the background (the status call), at most
+#: this often per customer, so the app's status polls don't each call the bank.
+_TIER2_READBACK_SECONDS = 120
+
+
+def _keep_signup_marker(user):
+    from django.core.cache import cache
+
+    key = _TIER2_PENDING_KEY.format(user.pk)
+    marker = cache.get(key)
+    if isinstance(marker, dict):
+        until = time.time() + _TIER2_SIGNUP_PENDING_SECONDS
+        cache.set(key, {**marker, "signup": True, "until": until}, _TIER2_SIGNUP_PENDING_SECONDS)
 
 
 def _signup_tier2_sent(user, state):
@@ -998,11 +1028,21 @@ def _tier2_pending(user, bvn="", nin="", hashed=None):
     finish it. Only keyed hashes + last 4 digits are kept, never raw IDs."""
     from django.core.cache import cache
 
+    key = _TIER2_PENDING_KEY.format(user.pk)
     marker = dict(hashed or {})
     for kind, raw in (("bvn", bvn), ("nin", nin)):
         if raw:
             marker[kind] = [hash_identifier(raw), raw[-4:]]
-    cache.set(_TIER2_PENDING_KEY.format(user.pk), marker or {"face": True}, _TIER2_PENDING_SECONDS)
+    ttl = _TIER2_PENDING_SECONDS
+    # A read-back of a sign-up check keeps it a sign-up check, for the rest of
+    # its two days (not a fresh two hours each time it is read).
+    previous = cache.get(key)
+    if isinstance(previous, dict) and previous.get("signup"):
+        left = int(previous.get("until", 0) - time.time())
+        if left > 0:
+            marker = {**previous, **marker}
+            ttl = left
+    cache.set(key, marker or {"face": True}, ttl)
     return JsonResponse({"success": False, "pending": True,
                          "message": "Your bank is still checking your face. We'll update your tier shortly."},
                         status=202)
@@ -1022,6 +1062,9 @@ def refresh_tier2_face(user) -> bool:
     if user.face_verified or not tier2_face_pending(user):
         return bool(user.face_verified)
     marker = cache.get(_TIER2_PENDING_KEY.format(user.pk))
+    if (isinstance(marker, dict) and marker.get("signup")
+            and not cache.add(f"wema_tier2_readback:{user.pk}", 1, _TIER2_READBACK_SECONDS)):
+        return False
     hashed = {k: v for k, v in marker.items() if k in ("bvn", "nin")} if isinstance(marker, dict) else {}
     response = confirm_wema_tier2(user, hashed=hashed)
     user.refresh_from_db()
