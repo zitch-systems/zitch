@@ -53,6 +53,11 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return _offer_bank(pa, user, msisdn, _bank_resolution(text, acct))
         pa.payload["account"] = acct
         _touch(pa, state="bank", payload=pa.payload)
+        if re.search(r"[a-z]{2}", text or "", re.I):
+            # "it's 5476951723 opay": the bank came with the number.
+            res = _bank_resolution(text, acct)
+            if res.bank is not None or res.named:
+                return _offer_bank(pa, user, msisdn, res)
         return reply(msisdn, "Which bank? Type the bank name (e.g. GTBank, Access, Opay).")
 
     if state == "bank":

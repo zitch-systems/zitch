@@ -1352,6 +1352,10 @@ def parse_amount(text: str) -> Decimal | None:
     """
     t = text.strip().lower().replace(",", "").replace("₦", "").replace("ngn", "").strip()
     t = t.strip(".:;!?*_-\u2019'\"")
+    # "N4,000" and "#4000" are how naira is typed on a phone keyboard with no ₦,
+    # and "4000naira" with no space; all three read as nothing before.
+    t = re.sub(r"^[n#](?=\d)", "", t)
+    t = re.sub(r"\s*naira$", "", t)
     m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([km])?", t)
     if not m:
         return None
