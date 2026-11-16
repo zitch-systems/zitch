@@ -766,6 +766,16 @@ def _success_screen(message: str, status: str = "") -> dict:
 # --------------------------------------------------------------------------- #
 # request handler (decrypted payload -> response dict)
 # --------------------------------------------------------------------------- #
+def _screen_label(name) -> str:
+    """The screen name for a log line, taken from the shipped Flow's own list of
+    screen ids rather than echoed from the response, so a log line can only ever
+    carry a name we declared."""
+    for known in _screen_contract():
+        if known == name:
+            return known
+    return "-"
+
+
 def _screen_contract() -> dict:
     """screen id -> {data property: declared type} for the PUBLISHED Flow.
 
@@ -867,7 +877,8 @@ def _check_contract(response: dict) -> dict:
         # Names come from our own declared contract only; an unexpected key is
         # counted, never echoed, so nothing a screen carried reaches the log.
         log.error("wa_flow_contract_mismatch screen=%s missing=%s unexpected_count=%d",
-                  screen, sorted(k for k in declared if k not in sent), len(sent - expected))
+                  _screen_label(screen), sorted(k for k in declared if k not in sent),
+                  len(sent - expected))
     response["data"] = {k: _conform(data.get(k), t) for k, t in declared.items()}
     return response
 
@@ -914,7 +925,7 @@ def handle_flow_request(payload: dict) -> dict:
     # which matters because the one slow exchange is the one that executes the
     # payment. Without a duration, a timeout and a bad payload are the same log line.
     log.info("wa_flow_response screen=%s keys=%d ms=%d",
-             response.get("screen") or "-", len(response.get("data") or {}),
+             _screen_label(response.get("screen")), len(response.get("data") or {}),
              int((time.monotonic() - started) * 1000))
     return response
 
