@@ -120,8 +120,11 @@ def vtu_plan_screen(pa, error: str = "") -> dict:
             f"No {net_name} data plans are available right now. Please try again shortly.",
             status="failed")
     return {"screen": F.VTU_PLAN,
-            "data": {"plans": [{"id": plan.plan_code, "title": plan.name[:30],
-                                "description": f"{_money(plan.price)} · {plan.validity}"}
+            # As designed: "1.5GB · 30 days" with the price underneath.
+            "data": {"plans": [{"id": plan.plan_code,
+                                "title": (f"{plan.name} · {plan.validity}" if plan.validity
+                                          else plan.name)[:30],
+                                "description": _money(plan.price)}
                                for plan in plans],
                      "summary": f"{net_name} data plans",
                      "error": _warn(error)}}

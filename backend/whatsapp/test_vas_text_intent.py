@@ -56,6 +56,13 @@ class ParsesWhatCustomersActuallyTypeTests(SimpleTestCase):
         self.assertEqual(intent["input"]["phone"], "08012345678")
         self.assertEqual(Decimal(intent["input"]["amount"]), Decimal("500"))
 
+    def test_data_for_a_number_needs_no_amount(self):
+        """The design's own example: the plan, not the message, carries the price."""
+        self.assertEqual(vas_text_intent("data for 08166938327"),
+                         {"name": "buy_data", "input": {"phone": "08166938327"}})
+        self.assertIsNone(vas_text_intent("data"))
+        self.assertIsNone(vas_text_intent("airtime for 08166938327"))
+
     def test_data_is_routed_as_data(self):
         name, amount = self._amount("2k data")
         self.assertEqual(name, "buy_data")

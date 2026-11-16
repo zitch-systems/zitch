@@ -319,7 +319,7 @@ class VtuFormTests(_VtuBase):
         plans = self.submit(pa, kind="data", phone=OWN, network="1", amount="")
         self.assertEqual(plans["screen"], flows.VTU_PLAN)
         self.assertEqual(plans["data"]["plans"],
-                         [{"id": "mtn-1gb", "title": "1GB", "description": "₦500.00 · 30 days"}])
+                         [{"id": "mtn-1gb", "title": "1GB · 30 days", "description": "₦500.00"}])
         self.assertEqual(plans["data"]["summary"], "MTN data plans")
         pa.refresh_from_db()
         self.assertEqual(pa.action_type, "data")

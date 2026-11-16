@@ -2273,6 +2273,11 @@ def vas_text_intent(text: str):
             amount = value
             break
     if amount is None:
+        # "data for 08166938327" (the design's own example) names no amount, and
+        # data needs none: the price is the plan's, chosen next from the list.
+        # A number is still required, so a bare "data?" stays the menu's.
+        if is_data and phone_match:
+            return {"name": "buy_data", "input": {"phone": phone_match.group(0)}}
         return None
 
     return {"name": "buy_data" if is_data else "buy_airtime",
@@ -2515,7 +2520,9 @@ CONVERT_CCYS = ["NGN", "USD", "GBP", "CAD"]  # settle-able; CNY is quote-only (b
 
 def _start_convert(user, msisdn: str) -> None:
     if not product_available("fx"):
-        return reply(msisdn, PRODUCT_MESSAGES["fx"])
+        from .savings_loans import COMING_SOON
+
+        return reply(msisdn, COMING_SOON["fx"])
     if _blocked_from_spending(user, msisdn):
         return None
     _new_flow(user, msisdn, "convert", "from")
