@@ -1,10 +1,14 @@
 // Money formatting — matches the prototype's money()/moneyk() helpers.
-export const money = (n: number | null | undefined): string =>
-  '₦' +
-  Number(n || 0).toLocaleString('en-NG', {
-    minimumFractionDigits: 0,
+// Whole naira show no kobo ("₦15,000"); any kobo shows as two digits
+// ("₦120.50", never "₦120.5").
+export const money = (n: number | null | undefined): string => {
+  const v = Number(n || 0);
+  const kobo = Math.round(Math.abs(v) * 100) % 100 !== 0;
+  return '₦' + v.toLocaleString('en-NG', {
+    minimumFractionDigits: kobo ? 2 : 0,
     maximumFractionDigits: 2,
   });
+};
 
 export const moneyk = (n: number | null | undefined): string =>
   '₦' + Number(n || 0).toLocaleString('en-NG');
@@ -76,6 +80,33 @@ export const whenLabel = (ts: number, now: number = Date.now()): string => {
   const days = Math.round((startOf(now) - startOf(ts)) / 86400000);
   const day = days === 0 ? 'Today' : days === 1 ? 'Yesterday' : `${d.getDate()} ${MONTHS[d.getMonth()]}`;
   return `${day} · ${time}`;
+};
+
+/**
+ * "012 345 6789": a 10-digit account number grouped 3-3-4 for reading. One
+ * grouping everywhere the number is shown (Home, Wallet, Add money, Bank
+ * transfer, Account limits), so the same number never looks like two. Display
+ * only: copy and share always use the raw digits. Anything that is not exactly
+ * 10 digits is returned as given.
+ */
+export const groupAccountNumber = (value: string): string => {
+  const d = String(value ?? '').replace(/\D/g, '');
+  return d.length === 10 ? `${d.slice(0, 3)} ${d.slice(3, 6)} ${d.slice(6)}` : String(value ?? '');
+};
+
+/**
+ * Two letters for a provider's tile: the start of its short code when the name
+ * carries one ("Ikeja (IKEDC)" -> "IK", "P/H (PHED)" -> "PH"), else the first
+ * letters of its first two words, else the start of its one word ("Kaduna" ->
+ * "KA"). Never the same letter twice just because the name repeats it.
+ */
+export const providerInitials = (name: string): string => {
+  const value = String(name ?? '');
+  const code = /\(([A-Za-z]{2,})\)/.exec(value)?.[1];
+  if (code) return code.slice(0, 2).toUpperCase();
+  const words = value.replace(/\(.*?\)/g, ' ').replace(/[^A-Za-z ]/g, '').split(/\s+/).filter(Boolean);
+  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+  return (words[0] || '').slice(0, 2).toUpperCase();
 };
 
 /** "15 Jul, 2026" — the date shown in a statement's start/end fields. */

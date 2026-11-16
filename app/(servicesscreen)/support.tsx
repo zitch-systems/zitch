@@ -24,7 +24,7 @@ const Support = () => {
 
   const channels: { icon?: string; leading?: React.ReactNode; title: string; sub: string; go: () => void }[] = [
     { leading: <WhatsAppGlyph size={22} />, title: 'Chat on WhatsApp', sub: 'Send our support team a message', go: () => open(`https://wa.me/${SUPPORT_WHATSAPP}`) },
-    { icon: 'phone', title: 'Call us', sub: SUPPORT_PHONE, go: () => open(`tel:${SUPPORT_PHONE}`) },
+    { icon: 'phone', title: 'Call us', sub: SUPPORT_PHONE.replace(/^\+234(\d{3})(\d{3})(\d{4})$/, '+234 $1 $2 $3'), go: () => open(`tel:${SUPPORT_PHONE}`) },
     { icon: 'mail', title: 'Email support', sub: SUPPORT_EMAIL, go: () => open(`mailto:${SUPPORT_EMAIL}`) },
     { icon: 'help', title: 'Help center / FAQ', sub: 'Answers to common questions', go: () => open(FAQ_URL) },
   ];

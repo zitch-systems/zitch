@@ -8,6 +8,7 @@ import { Loading } from '@/components/design/Loading';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
+import { groupAccountNumber } from '@/lib/format';
 import { apiJson } from '@/lib/api';
 import { tierLadder, type LadderTier } from '@/lib/tierLadder';
 import { TierBadge, TierDetails, TierPill } from '@/components/design/TierRow';
@@ -40,10 +41,7 @@ const amountLabel = (value: unknown) => (typeof value === 'string' || typeof val
   ? money(Number(value)) : 'Not confirmed';
 
 /** 816 693 8327 — grouped for reading aloud. Copy still uses the raw digits. */
-const grouped = (n: string) => {
-  const d = (n || '').replace(/\D/g, '');
-  return d.length === 10 ? `${d.slice(0, 3)} ${d.slice(3, 6)} ${d.slice(6)}` : d;
-};
+const grouped = (n: string) => groupAccountNumber((n || '').replace(/\D/g, ''));
 
 const AccountLimits = () => {
   const { c, theme } = useTheme();

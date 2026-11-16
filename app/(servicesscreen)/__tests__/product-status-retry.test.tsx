@@ -292,7 +292,11 @@ describe('product status failures and retry', () => {
     await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Retry' }).props.onPress(); });
     const overLimit = tree.root.findAllByProps({ accessibilityLabel: '₦100000', accessibilityRole: 'radio' })[0];
     expect(overLimit.props.disabled).toBe(true);
-    expect(overLimit.props.accessibilityState).toEqual({ selected: true, disabled: true });
+    // The page opens within the credit: the over-limit amount is offered but not chosen.
+    expect(overLimit.props.accessibilityState).toEqual({ selected: false, disabled: true });
+    const withinLimit = tree.root.findAllByProps({ accessibilityLabel: '₦50000', accessibilityRole: 'radio' })[0];
+    expect(withinLimit.props.accessibilityState).toEqual({ selected: true, disabled: false });
+    expect(textContent(tree)).not.toContain('Amount exceeds your available credit');
     const tenure = tree.root.findAllByProps({ accessibilityLabel: '30 days', accessibilityRole: 'radio' })[0];
     expect(tenure.props.accessibilityState).toEqual({ selected: true });
   });

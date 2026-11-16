@@ -9,6 +9,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { Naira } from '@/components/design/Naira';
 import { money } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
+import { providerInitials } from '@/lib/format';
 
 export const NETWORK_LOGOS: Record<string, any> = {
   '1': require('@/assets/images/providers/mtn.png'),
@@ -381,7 +382,7 @@ export const DiscoRow = ({ items, value, onPick }: {
       >
         {items.map((it) => {
           const on = it.id === value;
-          const initials = it.name.replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase();
+          const initials = providerInitials(it.name);
           return (
             <Pressable
               key={it.id}

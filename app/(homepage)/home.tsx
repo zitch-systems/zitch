@@ -9,7 +9,7 @@ import { ServiceTile } from '@/components/design/widgets';
 import SmartPaste from '@/components/design/SmartPaste';
 import { ZCoil } from '@/components/design/Loading';
 import { useTabInk } from '@/components/design/BottomNav';
-import { whenLabel } from '@/lib/format';
+import { groupAccountNumber, whenLabel } from '@/lib/format';
 import { useTheme, fontA, palette, ICON_COLORS, iconTint } from '@/lib/theme';
 import { transactionParams, useWallet } from '@/lib/wallet';
 import { transactionStatusPresentation } from '@/lib/transactionStatus';
@@ -79,7 +79,8 @@ export const useHomeProducts = () => {
     setState({
       savings: savings?.product_available === true,
       loans: loans?.product_available === true,
-      bestRate: rates.length ? String(Math.max(...rates)).replace(/\.0+$/, '') : '',
+      // The server sends a decimal annual rate ("0.22"); show it as a percent, as Savings does.
+      bestRate: rates.length ? String(Number((Math.max(...rates) * 100).toFixed(2))) : '',
     });
   }, []);
   return { ...state, load };
@@ -209,8 +210,8 @@ const Home = () => {
     } catch { notify('Could not copy', 'Please try again.'); }
   };
 
-  // NUBAN account numbers display grouped 4-3-3 ("0123 456 789").
-  const groupedAccount = accountNumber.replace(/^(\d{4})(\d{3})(\d{3}).*$/, '$1 $2 $3');
+  // One grouping everywhere the number shows: "012 345 6789".
+  const groupedAccount = groupAccountNumber(accountNumber);
   const name = displayName(fullName || firstName || '');
   // Kobo always shows, smaller, as in the design: ₦360,000.00
   const [whole, kobo] = ('₦' + Number(balance || 0).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })).split('.');

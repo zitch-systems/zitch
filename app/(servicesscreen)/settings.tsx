@@ -142,7 +142,7 @@ const Settings = () => {
   const security = [
     { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 6-digit PIN', go: () => router.push('/resetpin') },
     { icon: 'insurance', title: 'Security Center', sub: 'Protect your funds', go: () => router.push('/securitysetup') },
-    { icon: 'chart', title: 'Account Limits', sub: 'Account details & available services', go: () => router.push('/accountlimits') },
+    { icon: 'chart', title: 'Account Limits', sub: 'Your tier and transaction limits', go: () => router.push('/accountlimits') },
   ];
   const about = [
     { icon: 'ticket', title: 'Terms of Service', go: () => openUrl(TERMS_URL) },

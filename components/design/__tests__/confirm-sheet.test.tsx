@@ -40,7 +40,7 @@ it('shows one titled close control, complete review values and both payment choi
   }
   act(() => tree.root.findByProps({ accessibilityLabel: 'Use payment PIN' }).props.onPress());
   expect(pay).toHaveBeenLastCalledWith(true);
-  act(() => tree.root.findByProps({ accessibilityLabel: 'Pay ₦1,234.5' }).props.onPress());
+  act(() => tree.root.findByProps({ accessibilityLabel: 'Pay ₦1,234.50' }).props.onPress());
   expect(pay).toHaveBeenLastCalledWith(false);
   act(() => tree.unmount());
 });

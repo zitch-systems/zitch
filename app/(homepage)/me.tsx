@@ -136,9 +136,9 @@ const Me = () => {
   const chev = <ZIcon name="right" size={18} color={c.ink3} />;
   const grp1: any[] = [
     { icon: 'user', title: 'Account Details', sub: 'Name, email, phone & photo', go: () => router.push('/accountdetails') },
-    { icon: 'insurance', title: 'Identity Verification', sub: 'BVN, NIN or selfie · raise limits', badge: 'Verify', go: () => router.push('/kyc') },
+    { icon: 'insurance', title: 'Identity Verification', sub: 'BVN, NIN and face check · raise limits', badge: 'Verify', go: () => router.push('/kyc') },
     { icon: 'history', title: 'Transaction History', go: () => router.push('/history') },
-    { icon: 'chart', title: 'Account Limits', sub: 'KYC tiers & transaction limits', go: () => router.push('/accountlimits') },
+    { icon: 'chart', title: 'Account Limits', sub: 'Your tier and transaction limits', go: () => router.push('/accountlimits') },
     { icon: 'bank', title: 'Linked bank accounts', sub: 'View and connect bank accounts', go: () => router.push('/wallet') },
     { icon: 'loan', title: 'Buy Now, Pay Later', sub: 'Check availability', go: () => router.push('/bnpl') },
   ];

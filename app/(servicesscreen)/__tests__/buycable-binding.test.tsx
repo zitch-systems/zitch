@@ -121,7 +121,7 @@ describe('BuyCable response binding', () => {
 
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<BuyCable />); });
-    await act(async () => { control(tree, 'DSTV').props.onPress(); });
+    await act(async () => { control(tree, 'DStv').props.onPress(); });
     await act(async () => { await Promise.resolve(); });
 
     expect(control(tree, 'DStv One')).toBeTruthy();
@@ -192,7 +192,7 @@ describe('BuyCable response binding', () => {
       await act(async () => { tree = renderer.create(<BuyCable />); });
       expect(control(tree, 'Smartcard / IUC number').props.value).toBe('7012345678');
       expect(mockApiPost.mock.calls.map((call) => call[1])).toEqual([{ iuc: '7012345678', cablenetwork: '2' }]);
-      await act(async () => { control(tree, 'GoTV').props.onPress(); });
+      await act(async () => { control(tree, 'GOtv').props.onPress(); });
       expect(control(tree, 'Smartcard / IUC number').props.value).toBe('1023456789');
       act(() => tree.unmount());
     } finally {

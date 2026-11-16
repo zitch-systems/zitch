@@ -13,6 +13,7 @@ import { useBillRecents, refreshBillRecents } from '@/lib/recents';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
+import { providerInitials } from '@/lib/format';
 import { useWallet } from '@/lib/wallet';
 import { normalizeAmountInput, MIN_ELECTRICITY } from '@/lib/amounts';
 
@@ -28,8 +29,7 @@ const DISCOS = [
   { id: '8', name: 'Enugu (EEDC)', color: '#1A8E5F' },
   { id: '9', name: 'Ibadan (IBEDC)', color: '#6C2FB3' },
 ];
-const discoInitials = (name: string) =>
-  name.replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase();
+const discoInitials = providerInitials;
 const ELEC_AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 
 type Step = null | 'confirm' | 'pin';

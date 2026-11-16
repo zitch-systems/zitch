@@ -13,6 +13,7 @@ import { Screen, Header, Btn, Field } from '@/components/design/ui';
 import { Label } from '@/components/design/flowkit';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
+import { groupAccountNumber } from '@/lib/format';
 
 type DediAccount = { account_number: string; account_name: string; bank_name: string };
 
@@ -139,8 +140,8 @@ const AddMoney = () => {
     }
   };
 
-  // Display the NUBAN grouped 4-3-3 ("9012 345 678"); copy stays the raw digits.
-  const grouped = (n: string) => n.replace(/^(\d{4})(\d{3})(\d{3}).*$/, '$1 $2 $3');
+  // Display the NUBAN grouped like everywhere else ("012 345 6789"); copy stays the raw digits.
+  const grouped = groupAccountNumber;
 
   const createAccount = async () => {
     if ((!reconnectVerifiedAccount && bvn.length !== 11) || !beginAction()) return;

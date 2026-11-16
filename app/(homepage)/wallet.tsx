@@ -9,6 +9,7 @@ import { SectionLabel } from '@/components/design/widgets';
 import { ZCoil } from '@/components/design/Loading';
 import { ConnectedAccounts } from '@/components/design/ConnectedAccounts';
 import { useTheme, font } from '@/lib/theme';
+import { groupAccountNumber, whenLabel } from '@/lib/format';
 import { transactionParams, useWallet } from '@/lib/wallet';
 import { notify } from '@/components/design/Notify';
 import { walletCapabilityMessage } from '@/lib/services/wallet';
@@ -41,8 +42,8 @@ const Wallet = () => {
     } catch { notify('Could not copy', 'Please try again.'); }
   };
 
-  // NUBAN account numbers display grouped 4-3-3 ("9012 345 678").
-  const groupedAccount = accountNumber.replace(/^(\d{4})(\d{3})(\d{3}).*$/, '$1 $2 $3');
+  // One grouping everywhere the number shows: "012 345 6789".
+  const groupedAccount = groupAccountNumber(accountNumber);
 
   return (
     <Screen pad={false} tab refreshing={loading && hydrated} onRefresh={() => { void reload(); void reloadLinked(); }}>
@@ -154,6 +155,7 @@ const Wallet = () => {
             <TxnRow
               key={x.id}
               txn={x}
+              when={x.ts != null ? whenLabel(x.ts) : undefined}
               last={i === Math.min(9, txns.length - 1)}
               onPress={() => router.push({ pathname: '/txndetail', params: transactionParams(x) })}
             />
