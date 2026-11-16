@@ -2203,8 +2203,9 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
             return reply(msisdn, "Sign-in cancelled. Reply *2* whenever you want to sign in.")
         if (ob.payload or {}).get("one_screen") and text.strip().lower() in (
                 "reset pin", "forgot pin", "forgot my pin", "change pin", "new pin"):
-            # The one-page sign-in form says "Forgot your PIN? Reply *reset pin*
-            # in the chat." A PIN reset needs the account's own verified channel,
+            # The one-page sign-in form points a forgotten PIN to customer
+            # support. A customer may still type "reset pin": a reset needs the
+            # account's own verified channel,
             # which this number is not yet connected to - so the honest answer is
             # the recovery route, and the sign-in stays open.
             from .login_flow import _support_suffix

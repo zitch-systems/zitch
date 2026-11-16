@@ -1212,7 +1212,7 @@
               {
                 "type": "TextCaption",
                 "markdown": true,
-                "text": "Forgot your PIN? Reply *reset pin* in the chat."
+                "text": "Forgot your PIN? Chat with our customer support 24/7 to reset it."
               },
               {
                 "type": "Footer",
@@ -1311,7 +1311,7 @@
               {
                 "type": "TextCaption",
                 "markdown": true,
-                "text": "Forgot your PIN? Reply *reset pin* in the chat."
+                "text": "Forgot your PIN? Chat with our customer support 24/7 to reset it."
               },
               {
                 "type": "Footer",

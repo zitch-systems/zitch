@@ -446,7 +446,7 @@ class OneScreenLoginTests(FlowContractMixin, TestCase):
 
         captions = [c for c in BY_ID_LOGIN["layout"]["children"][-1]["children"]
                     if c.get("type") == "TextCaption"]
-        self.assertEqual(captions[0]["text"], "Forgot your PIN? Reply *reset pin* in the chat.")
+        self.assertEqual(captions[0]["text"], "Forgot your PIN? Chat with our customer support 24/7 to reset it.")
         self.start()
         with patch("whatsapp.router.reply") as reply:
             handle_inbound(NEW_MSISDN, "reset pin")
