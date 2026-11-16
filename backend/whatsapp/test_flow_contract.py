@@ -227,8 +227,10 @@ class FlowFileContractTests(SimpleTestCase):
                 self.assertEqual(inp.get("min-chars"), 2, (sid, inp["name"]))
 
     def test_the_logo_is_the_same_bytes_on_every_screen(self):
-        # Two images per screen by design: the Zitch logo, and the small
-        # Wema / CBN / NDIC trust strip. Each must be identical everywhere.
+        # The Zitch logo is on every screen. The Wema / CBN / NDIC logo strip
+        # is only on the privacy notice (the forms carry the partnership
+        # caption and link instead), which also keeps the Flow JSON under the
+        # upload limit. Each image must be identical wherever it appears.
         def srcs(node, alt):
             if isinstance(node, dict):
                 if node.get("type") == "Image" and node.get("alt-text") == alt:
@@ -239,11 +241,13 @@ class FlowFileContractTests(SimpleTestCase):
                 for v in node:
                     yield from srcs(v, alt)
 
-        for alt in ("Zitch", "Wema Bank, CBN and NDIC"):
-            with self.subTest(image=alt):
-                found = [s for screen in FLOW["screens"] for s in srcs(screen["layout"], alt)]
-                self.assertEqual(len(found), len(FLOW["screens"]))
-                self.assertEqual(len(set(found)), 1)
+        found = [s for screen in FLOW["screens"] for s in srcs(screen["layout"], "Zitch")]
+        self.assertEqual(len(found), len(FLOW["screens"]))
+        self.assertEqual(len(set(found)), 1)
+        strip = {screen["id"]: list(srcs(screen["layout"], "Wema Bank, CBN and NDIC"))
+                 for screen in FLOW["screens"]}
+        self.assertEqual([sid for sid, s in strip.items() if s], ["PRIVACY_NOTICE"])
+        self.assertEqual(len(strip["PRIVACY_NOTICE"]), 1)
 
     def test_every_screen_carries_the_partnership_notice(self):
         for screen in FLOW["screens"]:
