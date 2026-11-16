@@ -864,8 +864,10 @@ def _check_contract(response: dict) -> dict:
     declared = contract[screen]
     sent, expected = set(data.keys()), set(declared)
     if sent != expected:
-        log.error("wa_flow_contract_mismatch screen=%s missing=%s unexpected=%s",
-                  screen, sorted(expected - sent), sorted(sent - expected))
+        # Names come from our own declared contract only; an unexpected key is
+        # counted, never echoed, so nothing a screen carried reaches the log.
+        log.error("wa_flow_contract_mismatch screen=%s missing=%s unexpected_count=%d",
+                  screen, sorted(k for k in declared if k not in sent), len(sent - expected))
     response["data"] = {k: _conform(data.get(k), t) for k, t in declared.items()}
     return response
 
@@ -911,8 +913,8 @@ def handle_flow_request(payload: dict) -> dict:
     # customer sees the same "Couldn't load content" as a malformed response -
     # which matters because the one slow exchange is the one that executes the
     # payment. Without a duration, a timeout and a bad payload are the same log line.
-    log.info("wa_flow_response screen=%s keys=%s ms=%d",
-             response.get("screen") or "-", sorted((response.get("data") or {}).keys()),
+    log.info("wa_flow_response screen=%s keys=%d ms=%d",
+             response.get("screen") or "-", len(response.get("data") or {}),
              int((time.monotonic() - started) * 1000))
     return response
 
