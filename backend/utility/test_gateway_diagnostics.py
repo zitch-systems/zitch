@@ -168,6 +168,22 @@ class PurchaseOutcomeIsRecordedTests(SimpleTestCase):
                       "error_type=ReadTimeout", line)
 
     @override_settings(WEMA=WEMA_LIVE)
+    def test_an_ambiguous_status_logs_what_the_bank_said_and_stays_pending(self):
+        # 16 Nov 2026: a PayBill came back 409 and the log held only the status.
+        conflict = self._json(409, {"hasError": True, "message": "Duplicate request",
+                                    "customerAccount": "0123456789"})
+        exc = requests.HTTPError("bank gateway returned HTTP 409", response=conflict)
+        with mock.patch.object(wema, "_post", side_effect=exc), \
+             self.assertLogs("zitch", level="WARNING") as logs:
+            bill = wema.pay_bill(1000, "ZTCH-BILL-409", package_id="7", identifier="1234567",
+                                 source_account="0100000001")
+        self.assertEqual((bill["success"], bill["pending"]), (False, True))
+        line = "\n".join(logs.output)
+        self.assertIn("http_status=409", line)
+        self.assertIn("Duplicate request", line)
+        self.assertNotIn("0123456789", line)
+
+    @override_settings(WEMA=WEMA_LIVE)
     def test_a_settled_purchase_adds_no_warning(self):
         done = {"hasError": False, "result": {"status": "SUCCESS",
                                               "transactionReference": "ZTCH-AIR-3"}}

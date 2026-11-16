@@ -2672,9 +2672,28 @@ def _vas_unanswered(product: str, reference: str, exc: Exception) -> dict:
     because until now it was held in silence."""
     response = getattr(exc, "response", None)
     log.warning("wema_vas_purchase_unanswered ref=%s product=%s error_type=%s http_status=%s "
-                "(held PENDING)", _log_safe(reference), product, type(exc).__name__,
-                getattr(response, "status_code", None))
+                "meta=%s raw=%s (held PENDING)", _log_safe(reference), product,
+                type(exc).__name__, getattr(response, "status_code", None),
+                *_unanswered_evidence(response))
     return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+
+
+def _unanswered_evidence(response) -> tuple:
+    """What an ambiguous reply (408/409/425/429/5xx) said, redacted, for the log.
+
+    On 16 November 2026 an Ikeja prepaid PayBill came back HTTP 409 and the log
+    held only the status, so nobody could tell a duplicate reference from a
+    business refusal. The body still decides nothing here: the purchase stays
+    PENDING and is settled by the bank's callbacks, or returned once the bank can
+    no longer ask to authorise it (providers.vas_never_authorised).
+    """
+    if response is None:
+        return None, None
+    try:
+        data = response.json()
+    except ValueError:
+        return {"http_status": response.status_code}, _trim(getattr(response, "text", "") or "", 300)
+    return _response_meta(response, data), _trim(data, 300)
 
 
 @_new_biller_instruction
