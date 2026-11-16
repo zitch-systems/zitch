@@ -351,6 +351,46 @@ flags.
    Rollback is the variable set back to `false`; a session already open
    finishes on the screens it started on.
 
+## Release 5: the approved design, and the bill charge
+
+Release 5 is the first release that changes pages already published, so it has
+one flag, `WHATSAPP_FLOW_DESIGN_V5`, that is switched **together with**
+`WHATSAPP_FLOW_ID`:
+
+| What changes | Data contract |
+|---|---|
+| `PIN_SCREEN` / `PIN_CHAIN` / `PIN_RETRY` take their title and button from the payment ("Confirm payment" / "Pay", "Send", "Create your PIN" / "Confirm") | adds `title`, `cta` |
+| `BILL_AMOUNT` is the designed "How much?" page under the verified name and address | drops `details` and the narration box |
+| Sign-up asks for the PIN and its confirmation on one page after the address | new `SIGNUP_PIN`, `SIGNUP_PIN_RETRY`; `SIGNUP_ADDRESS` gains a route to `SIGNUP_PIN` |
+| New coil logo on every page; page titles, labels and helper text as designed | none |
+
+While the flag is off the endpoint answers those pages in the shape the live
+Flow was published with (`flows._PRE_V5_CONTRACT`), so deploying the code first
+is safe. The Wema Bank / CBN / NDIC notice stays on `PRIVACY_NOTICE`, `RESULT`
+and `SUCCESS`.
+
+**Bill charge.** The bank's PayBill refuses a bill sent without its catalogue
+charge and debits the charge with the bill. The charge is stored from
+GetAllBills (`WemaBiller.charge`, `CablePlan.wema_charge`), shown before the
+PIN as "Bank fee" with the total, and the wallet is debited the bill plus the
+charge in one row. Run the catalogue sync after deploying (build variable
+`SEED_WEMA_CATALOGUE=dry`, then `billers` and `cable`) so the charges are stored.
+
+### Release 5 go-live
+
+1. **Deploy this code** with `WHATSAPP_FLOW_DESIGN_V5` unset.
+2. **Sync the charges**: `SEED_WEMA_CATALOGUE=dry`, check the charges in the
+   build log, then `billers`, then `cable`; clear the variable afterwards.
+3. **Compute the reviewed SHA256** as in Release 2 step 2. For this release's
+   file it is
+   `361f97b01ecd3052e980f231572203b6aa267faaa9b380675e3b4fd5b5c7ed7f`
+   (510,412 bytes, 49 screens). Recompute if the file has changed since.
+4. **Create the draft** (`…_REQUEST=release5-<date>`), confirm Meta lists no
+   validation errors, then **publish it**.
+5. **Switch in one change**: `WHATSAPP_FLOW_ID=<new ID>` and
+   `WHATSAPP_FLOW_DESIGN_V5=true`, and clear every `WHATSAPP_FLOW_DEPLOY_*`.
+   Rollback is both back together.
+
 > **Re-publish after updating.** `IDENTITY_SCREEN` and `EMAIL_SCREEN` were added
 > after the first release, and `PIN_SCREEN` now carries the bank and account on
 > their own lines. Meta serves the version published in WhatsApp Manager, not

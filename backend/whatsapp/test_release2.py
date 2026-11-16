@@ -475,6 +475,8 @@ class _MoneyBase(FlowContractMixin, TestCase):
         with patch("whatsapp.router.reply", side_effect=lambda m, t, **k: sent.append(t)), \
              patch("whatsapp.router.reply_list",
                    side_effect=lambda m, b, rows, **k: sent.append(b)), \
+             patch("whatsapp.router.reply_buttons",
+                   side_effect=lambda m, b, *a, **k: sent.append(b)), \
              patch("whatsapp.router.flows_live", return_value=True), \
              patch("whatsapp.router.send_flow", return_value={"success": True}) as flow:
             handle_inbound(MSISDN, text)
@@ -488,7 +490,7 @@ class BillFormTests(_MoneyBase):
         sent, flow = self.say("4")                    # menu 4: Pay a bill
         kwargs = flow.call_args.kwargs
         self.assertEqual((kwargs["screen"], kwargs["cta"]), (flows.BILL_SCREEN, "Pay a bill"))
-        self.assertEqual(kwargs["screen_data"]["discos"][0], {"id": "1", "title": "Ikeja"})
+        self.assertEqual(kwargs["screen_data"]["discos"][0], {"id": "1", "title": "Ikeja Electric"})
         self.assertIn("which bill", sent[-1])          # the chat path offered beside it
         pa = PendingAction.objects.get(msisdn=MSISDN)
         self.assertEqual((pa.action_type, pa.state), ("electricity", flows.FLOW_BILL_STATE))
@@ -523,7 +525,7 @@ class BillFormTests(_MoneyBase):
         verify.assert_called_once_with("ikeja-electric", "01234567890", "prepaid")
         self.assertEqual(amount_page["screen"], flows.BILL_AMOUNT)
         self.assertTrue(amount_page["data"]["verified"].startswith("✓ Meter verified · "))
-        self.assertTrue(amount_page["data"]["address"].startswith("Address: "))
+        self.assertTrue(amount_page["data"]["address"])
         self.assertEqual(amount_page["data"]["balance"], "Available balance ₦20,000.00")
         self.assertIn("Meter: 01234567890 (prepaid)", amount_page["data"]["details"])
 
@@ -540,7 +542,7 @@ class BillFormTests(_MoneyBase):
         self.assertEqual(confirm["screen"], flows.PIN_CHAIN)
         self.assertEqual(confirm["data"]["amount"], "₦3,000.00")
         self.assertEqual(confirm["data"]["balance"], "Available balance ₦20,000.00")
-        self.assertEqual(confirm["data"]["recipient"], "Disco: Ikeja")
+        self.assertEqual(confirm["data"]["recipient"], "Biller: Ikeja Electric · Prepaid")
         self.assertEqual(confirm["data"]["narration"], "Note: Flat 2")
         pa.refresh_from_db()
         self.assertEqual(pa.state, flows.FLOW_PIN_STATE)
@@ -754,16 +756,18 @@ class ConfirmLayoutTests(TestCase):
         self.assertEqual(f["amount"], "₦5,000.00")
         self.assertEqual(f["recipient"], "To: JOHN DOE")
         self.assertEqual(f["details"].splitlines(),
-                         ["Bank: GTBank", "Account: 0123456789", "Bank fee: ₦10.75",
+                         ["Account: GTBank · 0123456789", "Bank fee: ₦10.75",
                           "Total: ₦5,010.75"])
+        self.assertEqual((f["cta"], f["title"]), ("Send", "Confirm payment"))
         self.assertEqual(f["narration"], "Note: Rent")
 
     def test_every_payment_kind_uses_label_value_lines(self):
         for action_type, payload, recipient in (
                 ("airtime", {"amount": "500", "net": "1", "phone": "08031234567"}, "Airtime: MTN"),
                 ("data", {"price": "500", "net": "1", "plan_name": "1GB", "phone": "0803"},
-                 "Data: 1GB · MTN"),
-                ("electricity", {"amount": "3000", "disco": "1", "meter": "0123"}, "Disco: Ikeja"),
+                 "Plan: 1GB"),
+                ("electricity", {"amount": "3000", "disco": "1", "meter": "0123"},
+                 "Biller: Ikeja Electric"),
                 ("cable", {"price": "9000", "prov": "2", "plan_name": "Compact", "iuc": "1"},
                  "Package: DSTV Compact"),
                 ("exam", {"amount": "3500", "exam_name": "WAEC", "description": "PIN",
@@ -772,7 +776,7 @@ class ConfirmLayoutTests(TestCase):
                 f = self.fields(action_type, **payload)
                 self.assertEqual(f["recipient"], recipient)
                 for line in f["details"].splitlines():
-                    self.assertRegex(line, r"^[A-Z][A-Za-z ]+: ")
+                    self.assertRegex(line, r"^[A-Z][A-Za-z ()]+: ")
 
 
 class ReceiptLineTests(SimpleTestCase):
@@ -859,15 +863,15 @@ class Release2FlowJsonTests(SimpleTestCase):
         self.assertIn("Step 1 of 5", texts)
         phone = next(c for c in details["layout"]["children"][-1]["children"]
                      if c.get("name") == "phone")
-        self.assertEqual(phone["helper-text"], "11 digits, e.g. 08012345678")
+        self.assertEqual(phone["helper-text"], "11 digits — we'll text you a code")
         verify = _BY_ID["VERIFY_PASSWORD"]
         self.assertIn("Step 2 of 5", [c.get("text") for c in verify["layout"]["children"]])
         labels = [c.get("label") or c.get("text") for c in verify["layout"]["children"][-1]["children"]]
-        self.assertEqual(labels[:4], ["Enter the code", "Didn't get it? Resend code",
+        self.assertEqual(labels[:4], ["Enter the code", "Resend code",
                                       "Create a password", "Confirm password"])
         meter = next(c for c in _BY_ID["BILL_SCREEN"]["layout"]["children"][-1]["children"]
                      if c.get("name") == "meter")
-        self.assertEqual(meter["helper-text"], "Enter meter number")
+        self.assertEqual(meter["helper-text"], "11–13 digits")
         amount = next(c for c in _BY_ID["BILL_AMOUNT"]["layout"]["children"][-1]["children"]
                       if c.get("name") == "amount")
         self.assertEqual(amount["helper-text"], "${data.balance}")

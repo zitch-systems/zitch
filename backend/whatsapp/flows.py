@@ -189,6 +189,11 @@ SIGNUP_BVN_RETRY = "SIGNUP_BVN_RETRY"
 SIGNUP_ADDRESS = "SIGNUP_ADDRESS"
 FLOW_BVN_STATE = "flow_bvn"             # WaOnboarding.step while SIGNUP_BVN is open
 FLOW_ADDRESS_STATE = "flow_address"     # WaOnboarding.step while SIGNUP_ADDRESS is open
+#: Sign-up's last page: the PIN and its confirmation on one page (design step
+#: 8), and the empty twin a refused entry lands on.
+SIGNUP_PIN = "SIGNUP_PIN"
+SIGNUP_PIN_RETRY = "SIGNUP_PIN_RETRY"
+FLOW_SIGNUP_PIN_STATE = "flow_signup_pin"   # WaOnboarding.step while SIGNUP_PIN is open
 FLOW_VERIFY_PW_STATE = "flow_verify_pw"   # WaOnboarding.step while VERIFY_PASSWORD is open
 FLOW_BILL_STATE = "flow_bill"             # PendingAction.state while the bill form is open
 FLOW_FORM_STATE = "flow_transfer_form"   # PendingAction.state while the transfer form is open
@@ -256,7 +261,7 @@ def resolve_onboarding_token(token: str):
             FLOW_PRIVACY_STATE,
             FLOW_SIGNUP_STATE, FLOW_PHONE_STATE,
             FLOW_PHONE_CODE_STATE, FLOW_PASSWORD_STATE, FLOW_PIN_STATE,
-            FLOW_VERIFY_PW_STATE, FLOW_BVN_STATE, FLOW_ADDRESS_STATE):
+            FLOW_VERIFY_PW_STATE, FLOW_BVN_STATE, FLOW_ADDRESS_STATE, FLOW_SIGNUP_PIN_STATE):
         return None
     if not hmac.compare_digest(sig, _sig(f"{_OB_PREFIX}{ob.id}:{ob.msisdn}")):
         return None
@@ -643,7 +648,7 @@ def resolve_flow_token(token: str):
 # --------------------------------------------------------------------------- #
 # screen builders
 # --------------------------------------------------------------------------- #
-def _pin_screen(summary, error: str = "", screen: str = PIN_SCREEN) -> dict:
+def _pin_screen(summary, error: str = "", screen: str = PIN_SCREEN, title: str = "") -> dict:
     """`summary` is either the structured {amount, recipient, details, balance,
     narration} the money flows persist, or a bare string (the signup PIN, which
     has no payment to describe). Every declared field is always supplied - the
@@ -659,12 +664,19 @@ def _pin_screen(summary, error: str = "", screen: str = PIN_SCREEN) -> dict:
     fields = summary if isinstance(summary, dict) else {}
     heading = fields.get("amount") or (summary if isinstance(summary, str) else "")
     return {"screen": screen,
-            "data": {"balance": fields.get("balance", ""),
+            "data": pin_contract({"balance": fields.get("balance", ""),
                      "amount": heading or "Confirm your payment",
                      "recipient": fields.get("recipient", ""),
                      "details": fields.get("details", ""),
                      "narration": fields.get("narration", ""),
-                     "error": error or ""}}
+                     "cta": fields.get("cta") or "Confirm",
+                     # The approved page is "Confirm payment" for a payment and
+                     # "Create your PIN" when there is no payment (sign-up, PIN reset).
+                     "title": (title or fields.get("title")
+                               or ("Confirm payment" if isinstance(summary, dict)
+                                   and str(fields.get("amount", "")).startswith("₦")
+                                   else "Create your PIN")),
+                     "error": error or ""})}
 
 
 def _flow_screen(container, default: str) -> str:
@@ -863,6 +875,28 @@ def _conform(value, declared_type: str):
 
 _CONTRACT: dict | None = None
 
+#: The data these pages declared in the Flow published before Release 5. Release
+#: 5 is the first release to change an EXISTING page's contract, and the guard
+#: below conforms every answer to the bundled pin_flow.json - so until the new
+#: Flow is published and WHATSAPP_FLOW['DESIGN_V5'] is flipped, the live pages
+#: must be answered in the shape they were published with.
+_PRE_V5_CONTRACT = {
+    **{sid: {k: "string" for k in ("amount", "balance", "details", "error", "narration", "recipient")}
+       for sid in ("PIN_SCREEN", "PIN_CHAIN", "PIN_RETRY")},
+    "BILL_AMOUNT": {k: "string" for k in ("address", "balance", "details", "error", "verified")},
+}
+
+
+def live_data_keys() -> dict:
+    """screen id -> the data keys the endpoint answers it with right now: the
+    bundled pin_flow.json, except the pages Release 5 changed, which keep their
+    published shape until WHATSAPP_FLOW['DESIGN_V5'] is on. Tests compare every
+    builder against this, so they hold the code to what the device will accept."""
+    keys = {sid: set(declared) for sid, declared in _screen_contract().items()}
+    if not design_v5_live():
+        keys.update({sid: set(declared) for sid, declared in _PRE_V5_CONTRACT.items()})
+    return keys
+
 
 def _check_contract(response: dict) -> dict:
     """Force a response's data to match its screen's declaration, and log when it
@@ -902,6 +936,8 @@ def _check_contract(response: dict) -> dict:
     if _TERMINATION_KEY in data:
         return response
     declared = contract[screen]
+    if screen in _PRE_V5_CONTRACT and not design_v5_live():
+        declared = _PRE_V5_CONTRACT[screen]
     sent, expected = set(data.keys()), set(declared)
     if sent != expected:
         # Names come from our own declared contract only; an unexpected key is
@@ -1047,6 +1083,9 @@ def _handle_flow_request(payload: dict) -> dict:
             if ob.step == FLOW_ADDRESS_STATE:
                 from .release4 import submit_signup_address
                 return submit_signup_address(ob, data)
+            if ob.step == FLOW_SIGNUP_PIN_STATE:
+                from .release4 import submit_signup_pin
+                return submit_signup_pin(ob, data)
             return _submit_onboarding_pin(ob, data)
         if ob.step == FLOW_PRIVACY_STATE:
             return _privacy_screen()
@@ -1067,6 +1106,9 @@ def _handle_flow_request(payload: dict) -> dict:
         if ob.step == FLOW_ADDRESS_STATE:
             from .release4 import signup_address_screen
             return signup_address_screen(ob)
+        if ob.step == FLOW_SIGNUP_PIN_STATE:
+            from .release4 import signup_pin_screen
+            return signup_pin_screen(ob)
         return (_confirm_pin_screen() if ob.payload.get("flow_pin_hash")
                 else _pin_screen(_ob_summary(ob), screen=_flow_screen(ob, PIN_SCREEN)))
 
@@ -1449,6 +1491,24 @@ def signup_bvn_live() -> bool:
     """Release 4. SIGNUP_BVN / SIGNUP_BVN_RETRY / SIGNUP_ADDRESS: the BVN with the
     bank's SMS code, and the home address, inside the sign-up form."""
     return _release2_flag("SIGNUP_BVN_FORM")
+
+
+def design_v5_live() -> bool:
+    """Release 5. The approved design on the published pages: the PIN page's own
+    title and button (`title`, `cta`), the "How much?" electricity page without
+    the old details block, and SIGNUP_PIN / SIGNUP_PIN_RETRY ("Create your PIN"
+    after the address). Each changes a screen's data contract, and the live Flow
+    rejects an undeclared property, so the old contract is kept until the new
+    Flow is published and this flag is flipped with WHATSAPP_FLOW_ID."""
+    return _release2_flag("DESIGN_V5")
+
+
+def pin_contract(data: dict) -> dict:
+    """Drop the Release 5 PIN properties while the published Flow predates them."""
+    if not design_v5_live():
+        data.pop("cta", None)
+        data.pop("title", None)
+    return data
 
 
 def _signup_password_screen(error: str = "") -> dict:

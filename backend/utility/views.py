@@ -21,6 +21,7 @@ from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceed
 
 from .models import CablePlan, DataPlan
 from .providers import (
+    bill_charge,
     remita_pay,
     remita_validate,
     vas_can_settle,
@@ -266,10 +267,13 @@ def buycable(request):
     verified = vtu_verify_customer(CABLE_NAMES[prov].lower(), iuc, plan_code)
     if not verified.get("success"):
         return fail(verified.get("message", "Could not verify IUC number"), status=400)
+    # The bank takes its charge from the same account on top of the package.
+    charge = bill_charge(CABLE_NAMES[prov].lower(), {"variation_code": plan.cable_plan_code})
     outcome = _run_purchase(
-        user, plan.price, f"Cable — {CABLE_NAMES.get(prov, prov)} {plan.name}",
+        user, plan.price + charge, f"Cable — {CABLE_NAMES.get(prov, prov)} {plan.name}",
         {"iuc": iuc, "provider": prov, "plan_code": plan.cable_plan_code,
-         "customer_name": str(verified.get("customer_name") or "")},
+         "customer_name": str(verified.get("customer_name") or ""),
+         "bill_amount": str(plan.price), "bank_fee": str(charge)},
         lambda ref: vtu_purchase(CABLE_NAMES[prov].lower(),
                                  {"billersCode": iuc, "variation_code": plan.cable_plan_code}, reference=ref),
         idempotency_key=key,
@@ -296,8 +300,10 @@ def validate_meter(request):
     res = vtu_verify_customer(f"{DISCO_NAMES[disco].lower()}-electric", meter, meter_type)
     if res.get("success"):
         address = res.get("customer_address", "")
+        fee = bill_charge(f"{DISCO_NAMES[disco].lower()}-electric",
+                          {"variation_code": meter_type, "amount": "1"})
         return ok(customer_name=res.get("customer_name", ""), name=res.get("customer_name", ""),
-                  customer_address=address, address=address)
+                  customer_address=address, address=address, bank_fee=str(fee))
     return fail(res.get("message", "Could not verify meter number"), status=400)
 
 
@@ -338,12 +344,15 @@ def buyelectricity(request):
         return fail(verified.get("message", "Could not verify meter number"), status=400)
     customer_name = str(verified.get("customer_name", "") or "").strip()
     customer_address = str(verified.get("customer_address", "") or "").strip()
+    # The bank takes its charge from the same account on top of the bill.
+    charge = bill_charge(f"{DISCO_NAMES[disco].lower()}-electric",
+                         {"variation_code": meter_type, "amount": str(amount)})
     outcome = _run_purchase(
-        user, amount, f"Electricity — {disco_name}",
+        user, amount + charge, f"Electricity — {disco_name}",
         {"meter": meter, "disco": disco, "meter_type": meter_type,
          "customer_name": customer_name, "customer": customer_name,
          "customer_address": customer_address, "address": customer_address,
-         "channel": "app"},
+         "channel": "app", "bill_amount": str(amount), "bank_fee": str(charge)},
         lambda ref: vtu_purchase(f"{DISCO_NAMES[disco].lower()}-electric",
                                  {"billersCode": meter, "variation_code": meter_type, "amount": str(amount)}, reference=ref),
         idempotency_key=idempotency_key,

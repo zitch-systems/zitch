@@ -589,7 +589,7 @@ def _pin_lock_message(u) -> str:
     elif minutes >= 60:
         when = "about an hour"
     else:
-        when = f"{minutes} minute(s)"
+        when = f"{minutes} minute{'' if minutes == 1 else 's'}"
     return (f"Transaction PIN locked after too many wrong attempts. Try again in {when}. "
             "You can reset your PIN instead — we'll confirm it's you first, and a new "
             "PIN unlocks payments straight away.")

@@ -399,7 +399,8 @@ def _transfer_outcome(pa: PendingAction, user, msisdn: str, txn, *, replay: bool
         rows.append(("Total debited", _money(amount + Decimal(str(charged)))))
     rows += [("Reference", txn.reference), ("Date", txn.created.strftime("%d %b %Y, %H:%M"))]
     reply_receipt(msisdn, "Transfer receipt", _with_narration(pa, rows),
-                  ref=txn.reference, user=user, balance_after=wallet.balance)
+                  ref=txn.reference, user=user, balance_after=wallet.balance,
+                  caption=f"*Transfer receipt*\n{_money(amount)} to {who}")
     if not replay:
         _offer_to_save(user, msisdn, getattr(txn, "beneficiary_id", None))
     if replay:
@@ -949,6 +950,10 @@ def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_que
 # --------------------------------------------------------------------------- #
 NETWORK_PROMPT = "Which network?\n" + "\n".join(f"{k}  {v}" for k, v in NETWORK_NAMES.items())
 DISCO_PROMPT = "Which disco?\n" + "\n".join(f"{k}  {v}" for k, v in DISCO_NAMES.items())
+#: The disco list as designed: "Ikeja Electric" with its abbreviation under it.
+_DISCO_SHORT = {"1": "IKEDC", "2": "EKEDC", "3": "AEDC", "4": "KEDCO", "5": "PHED",
+                "6": "JED", "7": "KAEDCO", "8": "EEDC", "9": "IBEDC"}
+_DISCO_ROWS = [(k, f"{v} Electric", _DISCO_SHORT.get(k, "")) for k, v in DISCO_NAMES.items()]
 CABLE_PROMPT = "Which provider?\n" + "\n".join(f"{k}  {v}" for k, v in CABLE_NAMES.items())
 
 # What customers actually call their disco. DISCO_NAMES holds the short label the
@@ -1132,8 +1137,10 @@ def _vtu_outcome(pa: PendingAction, user, msisdn: str, amount: Decimal, label: s
 
     if txn.transaction_status == Transaction.SUCCESS:
         title, rows = receipt(txn, result)
+        caption, paid = _vtu_paid_lines(pa, title, result)
         reply_receipt(msisdn, title, _with_narration(pa, rows), ref=txn.reference,
-                      user=user, balance_after=_fresh_wallet_balance(user))
+                      user=user, balance_after=_fresh_wallet_balance(user),
+                      caption=caption, after=paid)
         lead = f"{label} was already completed" if replay else f"{label} successful"
         return Outcome(f"{lead} - the receipt is in your chat.", OUTCOME_SUCCESS)
 
@@ -1161,6 +1168,38 @@ def _vtu_outcome(pa: PendingAction, user, msisdn: str, amount: Decimal, label: s
             f"again; contact support with ref {txn.reference}.")
     reply(msisdn, line)
     return Outcome(line, OUTCOME_PENDING)
+
+
+def _vtu_paid_lines(pa: PendingAction, title: str, result: dict) -> tuple[str, str]:
+    """(receipt caption, success message) as the approved chat shows them:
+    "*Data receipt*\n1.5GB · 30 days (MTN)" then "✅ *Data sent* ..."."""
+    p, at = pa.payload or {}, pa.action_type
+    net = NETWORK_NAMES.get(p.get("net", ""), "")
+    try:
+        if at == "airtime":
+            what = f"{_money(Decimal(p['amount']))} {net} airtime"
+            return (f"*{title}*\n{what}", f"✅ *Airtime sent*\n\n{what} to {p.get('phone', '')}")
+        if at == "data":
+            what = f"{p.get('plan_name', 'Data')} ({net})"
+            return (f"*{title}*\n{what}",
+                    f"✅ *Data sent*\n\n{what} to {p.get('phone', '')} · {_money(Decimal(p['price']))}")
+        if at == "electricity":
+            disco = f"{DISCO_NAMES.get(p.get('disco', ''), '')} Electric"
+            amount = _money(Decimal(p["amount"]))
+            token = str((result or {}).get("token") or "").strip()
+            units = str((result or {}).get("units") or "").strip()
+            paid = f"✅ *Electricity paid*\n\n{amount} · {disco} · Meter {p.get('meter', '')}"
+            if token:
+                paid += f"\n\n🔑 *Token:* {token}" + (f"\n{units} kWh" if units else "")
+            return (f"*{title}*\n{amount} · {disco}", paid)
+        if at == "cable":
+            prov = CABLE_NAMES.get(p.get("prov", ""), "")
+            what = f"{_money(Decimal(p['price']))} · {prov} {p.get('plan_name', '')}".strip()
+            return (f"*{title}*\n{what}",
+                    f"✅ *Subscription paid*\n\n{what} · Smartcard {p.get('iuc', '')}")
+    except (KeyError, InvalidOperation):
+        pass
+    return "", ""
 
 
 def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
@@ -1459,8 +1498,13 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
         pa.payload["net"] = net
         pa.payload["plan_choices"] = [p.plan_code for p in plans]
         _touch(pa, state="plan", payload=pa.payload)
-        lines = "\n".join(f"{i+1}  {p.name} • {p.validity} • {_money(p.price)}" for i, p in enumerate(plans))
-        return reply(msisdn, "Choose a plan:\n" + lines)
+        # A tap-to-pick list ("☰ Choose a plan"), as designed; the row ids are the
+        # numbers the typed path accepts, and "the 3GB one" still works.
+        rows = [(str(i + 1), f"{p.name} · {p.validity}"[:24], _money(p.price))
+                for i, p in enumerate(plans)]
+        phone = pa.payload.get("phone") or ""
+        head = f"{NETWORK_NAMES.get(net, '')}{' · ' + phone if phone else ''}\nWhich plan?"
+        return reply_list(msisdn, head, rows, button_label="Choose a plan")
     if st == "plan":
         plan = _pick(text, pa.payload.get("plan_choices", []), lambda c: DataPlan.objects.filter(plan_code=c).first())
         if plan is None:
@@ -1573,10 +1617,15 @@ def _electricity_next(pa: PendingAction, user, msisdn: str) -> None:
     p = pa.payload
     if not p.get("disco"):
         _touch(pa, state="disco", payload=p)
-        return reply(msisdn, DISCO_PROMPT)
+        # A tap-to-pick list, as designed ("☰ Choose disco"); the row ids are the
+        # numbers the typed path already accepts.
+        return reply_list(msisdn, "Which disco?", _DISCO_ROWS, button_label="Choose disco")
     if not p.get("meter_type"):
         _touch(pa, state="meter_type", payload=p)
-        return reply(msisdn, "Prepaid or postpaid? Reply 1 Prepaid or 2 Postpaid.")
+        return reply_buttons(
+            msisdn, f"{DISCO_NAMES.get(p['disco'], '')} Electric: Prepaid or postpaid?",
+            [("1", "Prepaid"), ("2", "Postpaid")],
+            fallback="Prepaid or postpaid? Reply 1 Prepaid or 2 Postpaid.")
     if not p.get("meter"):
         _touch(pa, state="meter", payload=p)
         return reply(msisdn, "Enter the meter number.")
@@ -1590,8 +1639,11 @@ def _electricity_next(pa: PendingAction, user, msisdn: str) -> None:
             # there is nothing here that could be a new instruction.
             return reply(msisdn, "Couldn't validate that meter. Check the number and try "
                                  "again, or \"cancel\".")
-        cust = p.get("customer", "")
-        note = f"Meter verified{f' ({cust})' if cust else ''}. "
+        # The owner's name and address, each on its own line, before any money
+        # moves - how a mistyped meter number is caught.
+        lines = ["Meter verified", p.get("customer", ""),
+                 p.get("customer_address") or "Address not provided by the disco"]
+        note = "\n".join(x for x in lines if x) + "\n\n"
 
     if not p.get("amount"):
         _touch(pa, state="amount", payload=p)
@@ -1627,15 +1679,21 @@ def electricity_check_amount(pa: PendingAction, user) -> tuple[str, bool]:
     if amount is None or amount < MIN_ELECTRICITY:
         p.pop("amount", None)
         return f"Enter a valid amount, at least ₦{MIN_ELECTRICITY:,.0f}.", False
-    if _insufficient(user, amount):
+    # The bank's charge rides on top of the bill and leaves the same account, so
+    # every check below is on the total the customer will actually be debited.
+    charge = bill_charge(f"{DISCO_NAMES[p['disco']].lower()}-electric",
+                         {"variation_code": p.get("meter_type"), "amount": str(amount)})
+    total = amount + charge
+    if _insufficient(user, total):
         # Asked-for amounts stay recoverable: drop it and let them name another
         # rather than end the flow they are halfway through.
         p.pop("amount", None)
         return f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).", False
-    limit_msg = send_limit_error(user, amount, biller=True) or daily_limit_error(user, amount, "bill")
+    limit_msg = send_limit_error(user, total, biller=True) or daily_limit_error(user, total, "bill")
     if limit_msg:
         return limit_msg, True
     p["amount"] = str(amount)
+    p["charge"] = str(charge)
     p["meta"] = {"meter": p["meter"], "disco": p["disco"], "meter_type": p["meter_type"],
                  "customer_name": p.get("customer", ""),
                  "customer": p.get("customer", ""),
@@ -1708,6 +1766,19 @@ def _bill_contact(user, msisdn: str) -> dict:
     return {"email": (getattr(user, "email", "") or "").strip(), "phone": msisdn, "name": name}
 
 
+def _bill_total(pa: PendingAction, amount: Decimal) -> Decimal:
+    """The bill plus the bank's charge recorded when it was confirmed."""
+    return amount + Decimal(str(pa.payload.get("charge") or 0))
+
+
+def _fee_rows(pa: PendingAction, amount: Decimal) -> list:
+    charge = Decimal(str(pa.payload.get("charge") or 0))
+    if charge <= 0:
+        return [("Amount", _money(amount))]
+    return [("Amount", _money(amount)), ("Bank fee", _money(charge)),
+            ("Total", _money(amount + charge))]
+
+
 def _exec_electricity(pa: PendingAction, user, msisdn: str) -> str:
     amount = Decimal(pa.payload["amount"])
     disco = DISCO_NAMES[pa.payload["disco"]].lower()
@@ -1720,14 +1791,14 @@ def _exec_electricity(pa: PendingAction, user, msisdn: str) -> str:
                 ("Customer", pa.payload.get("customer") or "Verified customer"),
                 ("Address", pa.payload.get("customer_address")
                             or "Not provided by electricity provider"),
-                ("Amount", _money(amount))]
+                *_fee_rows(pa, amount)]
         if token:
             rows.append(("Token", token))
         rows += [("Reference", txn.reference), ("Date", timezone.now().strftime("%d %b %Y, %H:%M"))]
         return ("Electricity receipt", rows)
 
     return _run_vtu(
-        pa, user, msisdn, amount, f"Electricity - {disco_name}",
+        pa, user, msisdn, _bill_total(pa, amount), f"Electricity - {disco_name}",
         lambda ref: vtu_purchase(f"{disco}-electric",
                                  {"billersCode": meter, "variation_code": mt, "amount": str(amount),
                                   **_bill_contact(user, msisdn)}, reference=ref),
@@ -1809,10 +1880,13 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return _reroute_or_reprompt(pa, msisdn, text,
                                        "Couldn't validate that smartcard. Check the number and try again, or \"cancel\".")
         price = Decimal(pa.payload["price"])
-        if _insufficient(user, price):
+        charge = bill_charge(prov, {"variation_code": pa.payload["plan_code"]})
+        pa.payload["charge"] = str(charge)
+        if _insufficient(user, price + charge):
             _clear_actions(msisdn)
             return reply(msisdn, f"Insufficient balance ({_money(_fresh_wallet_balance(user))}).")
-        limit_msg = send_limit_error(user, price, biller=True) or daily_limit_error(user, price, "bill")
+        limit_msg = (send_limit_error(user, price + charge, biller=True)
+                     or daily_limit_error(user, price + charge, "bill"))
         if limit_msg:
             _clear_actions(msisdn)
             return _limit_reply(msisdn, user, limit_msg)
@@ -1841,12 +1915,12 @@ def _exec_cable(pa: PendingAction, user, msisdn: str) -> str:
     prov_name = CABLE_NAMES[pa.payload["prov"]]
     iuc, plan_code, price = pa.payload["iuc"], pa.payload["plan_code"], Decimal(pa.payload["price"])
     return _run_vtu(
-        pa, user, msisdn, price, f"Cable - {prov_name} {pa.payload['plan_name']}",
+        pa, user, msisdn, _bill_total(pa, price), f"Cable - {prov_name} {pa.payload['plan_name']}",
         lambda ref: vtu_purchase(prov, {"billersCode": iuc, "variation_code": plan_code,
                                          **_bill_contact(user, msisdn)}, reference=ref),
         lambda txn, res: ("Cable receipt", [
             ("Provider", prov_name), ("Package", pa.payload["plan_name"]), ("Smartcard", iuc),
-            ("Amount", _money(price)), ("Reference", txn.reference),
+            *_fee_rows(pa, price), ("Reference", txn.reference),
             ("Date", timezone.now().strftime("%d %b %Y, %H:%M"))]),
     )
 
@@ -2622,7 +2696,7 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     # "Pending" because the endpoint replied the instant the job was queued, so
     # the customer's last word from the Flow was always about a payment that had
     # not been attempted yet.
-    settled = _await_settlement(pa.id, user, pa.action_type)
+    settled = _await_settlement(pa.id, user, pa.action_type, success=_success_sentence(pa))
     if settled is not None:
         from .flows import forget_pending, sign_flow_token
         if getattr(settled, "status", "") != OUTCOME_PENDING:
@@ -2653,7 +2727,34 @@ _SETTLED_VERB = {
 }
 
 
-def _await_settlement(action_id: int, user, action_type: str = ""):
+def _success_sentence(pa: PendingAction) -> str:
+    """What the approved "Request status" page says once a payment settles:
+    "₦3,000.00 sent to ADA OBI · OPay 8166938327", "₦5,000.00 paid to Ikeja
+    Electric for meter 45058723664". "" when the action is not itemised."""
+    p, at = pa.payload or {}, pa.action_type
+    try:
+        if at == "transfer":
+            return (f"{_money(Decimal(p['amount']))} sent to {p.get('name', 'the recipient').upper()}"
+                    f" · {p.get('bank_name', '')} {p.get('account', '')}".rstrip(" ·"))
+        if at == "airtime":
+            return (f"{_money(Decimal(p['amount']))} {NETWORK_NAMES.get(p.get('net', ''), '')} "
+                    f"airtime sent to {p.get('phone', '')}")
+        if at == "data":
+            return (f"{p.get('plan_name', 'Data')} ({NETWORK_NAMES.get(p.get('net', ''), '')}) "
+                    f"sent to {p.get('phone', '')} · {_money(Decimal(p['price']))}")
+        if at == "electricity":
+            disco = DISCO_NAMES.get(p.get("disco", ""), "")
+            return (f"{_money(Decimal(p['amount']))} paid to {disco} Electric "
+                    f"for meter {p.get('meter', '')}")
+        if at == "cable":
+            return (f"{_money(Decimal(p['price']))} paid to {CABLE_NAMES.get(p.get('prov', ''), '')} "
+                    f"{p.get('plan_name', '')} for smartcard {p.get('iuc', '')}")
+    except (KeyError, InvalidOperation):
+        pass
+    return ""
+
+
+def _await_settlement(action_id: int, user, action_type: str = "", success: str = ""):
     """Poll the ledger for this action's outcome, briefly. Returns a tagged
     Outcome once the row is terminal, or None if it is still processing.
 
@@ -2700,7 +2801,11 @@ def _await_settlement(action_id: int, user, action_type: str = ""):
                                "we will confirm its final outcome in the chat.", OUTCOME_PENDING)
             if txn.transaction_status == Transaction.SUCCESS:
                 verb = _SETTLED_VERB.get(action_type, "Done")
-                return Outcome(f"{verb} - the receipt is in your chat.", OUTCOME_SUCCESS)
+                line = success or verb
+                token = str((txn.meta or {}).get("token") or "").strip()
+                if token and action_type == "electricity":
+                    line += f".\n\nYour token: {token}"
+                return Outcome(f"{line} - the receipt is in your chat.", OUTCOME_SUCCESS)
             # A failure is worth waiting for too: it is the one outcome the
             # customer should see BEFORE the screen closes, not only in a chat
             # message they may scroll past.

@@ -101,7 +101,9 @@ class Release4FlowJsonTests(SimpleTestCase):
         self.assertEqual(routes["CABLE_PLAN"], ["PIN_CHAIN", "RESULT", "SUCCESS"])
         self.assertEqual(routes["SIGNUP_BVN"], ["SIGNUP_BVN_RETRY", "SIGNUP_ADDRESS", "RESULT", "SUCCESS"])
         self.assertEqual(routes["SIGNUP_BVN_RETRY"], ["SIGNUP_ADDRESS", "RESULT", "SUCCESS"])
-        self.assertEqual(routes["SIGNUP_ADDRESS"], ["PIN_CHAIN", "RESULT", "SUCCESS"])
+        # Release 5 adds the "Create your PIN" page after the address; PIN_CHAIN
+        # stays for the Flow-flag-off path.
+        self.assertEqual(routes["SIGNUP_ADDRESS"], ["SIGNUP_PIN", "PIN_CHAIN", "RESULT", "SUCCESS"])
         self.assertIn("BILL_TYPE_CHAIN", routes["MENU"])
         # Every signup page that could go to the PIN can now go to the BVN or
         # the address instead; nothing else gained a route into them.
@@ -182,7 +184,7 @@ class Release4FlowJsonTests(SimpleTestCase):
         self.assertEqual(len(logos), 1)
         self.assertLess(len(next(iter(logos))), 9_500)
         raw = _PATH.read_text()
-        self.assertEqual(len(_DOC["screens"]), 47)
+        self.assertEqual(len(_DOC["screens"]), 49)
         self.assertLess(len(raw.encode()), 750_000)
         self.assertEqual(raw, json.dumps(_DOC, indent=2, ensure_ascii=True) + "\n")
 
@@ -214,7 +216,7 @@ class BillTypeTests(_MoneyBase):
         kwargs = flow.call_args.kwargs
         self.assertEqual((kwargs["screen"], kwargs["cta"]), (flows.BILL_TYPE, "Pay a bill"))
         self.assertScreen({"screen": kwargs["screen"], "data": kwargs["screen_data"]})
-        self.assertIn("which bill", sent[-1])          # the chat path offered beside it
+        self.assertIn("*electricity*", kwargs["body"])  # the chat path offered beside it
         pa = PendingAction.objects.get(msisdn=MSISDN)
         self.assertEqual(pa.state, flows.FLOW_BILL_STATE)
         self.assertTrue(release4.is_bill_type(pa))
@@ -239,7 +241,7 @@ class BillTypeTests(_MoneyBase):
         pa = self.open()
         page = self.submit(pa, flows.BILL_TYPE, bill="electricity")
         self.assertEqual(page["screen"], flows.BILL_CHAIN)
-        self.assertEqual(page["data"]["discos"][0], {"id": "1", "title": "Ikeja"})
+        self.assertEqual(page["data"]["discos"][0], {"id": "1", "title": "Ikeja Electric"})
         amount = self.submit(pa, flows.BILL_CHAIN, disco="1", meter_type="prepaid", meter="01234567890")
         self.assertEqual(amount["screen"], flows.BILL_AMOUNT)
         pa.refresh_from_db()
@@ -526,7 +528,7 @@ class SignupBvnTests(FlowContractMixin, TestCase):
              patch("whatsapp.router._kyc_continue_after_account") as rollin:
             _exchange(self.token, {"pin": "246810"})
             done = _exchange(self.token, {"pin": "246810"})
-        self.assertIn("PIN set", done["data"].get("message", "") + done["data"].get("status", ""))
+        self.assertIn("account is ready", done["data"].get("message", "") + done["data"].get("status", ""))
         user.refresh_from_db()
         self.assertTrue(user.check_transaction_pin("246810") if hasattr(user, "check_transaction_pin")
                         else check_password("246810", user.transaction_pin))

@@ -388,7 +388,7 @@ class EscalatedLockOffersTheResetTests(TestCase):
     def test_the_flow_names_the_reset_on_every_lock(self):
         self._lock(1)
         first = self._flow_message()
-        self.assertIn("30 minute(s)", first)
+        self.assertIn("30 minutes", first)
         self.assertIn("reset pin", first)
         # The Flow is closing, so the instruction points at the chat that
         # outlives it — and asterisks are chat markdown, not Flow markup.
@@ -436,7 +436,7 @@ class EscalatedLockOffersTheResetTests(TestCase):
         with patch("whatsapp.router.reply") as sent:
             self.assertFalse(_flow_pin_ok(pa, self.user, MSISDN, "1234"))
         body = sent.call_args[0][1]
-        self.assertIn("30 minute(s)", body)
+        self.assertIn("30 minutes", body)
         self.assertIn("*reset pin*", body)
         # And the payment is torn down rather than left armed against a lock.
         self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())

@@ -104,7 +104,7 @@ class ConfirmScreenTests(TestCase):
     def test_every_action_type_supplies_every_declared_property(self):
         """No branch may ship a dict missing a property the screen declares —
         including the fallback that itemises nothing."""
-        needed = {"balance", "amount", "recipient", "details", "narration"}
+        needed = {"balance", "amount", "recipient", "details", "narration", "cta", "title"}
         for action_type, payload in (
             ("transfer", {"amount": "1000", "name": "a", "bank_name": "b", "account": "1"}),
             ("airtime", {"amount": "500", "net": "1", "phone": "08010000000"}),
@@ -124,6 +124,8 @@ class ConfirmScreenTests(TestCase):
     def test_the_pin_screen_response_declares_the_same_properties(self):
         """The endpoint's answer is the other half of the same contract."""
         screen = flows._pin_screen(router._flow_fields(_transfer(self.user)))
+        # The Flow published before Release 5 has no `title` / `cta`; they are
+        # sent once WHATSAPP_FLOW['DESIGN_V5'] is on (see test_release5).
         self.assertEqual(set(screen["data"]),
                          {"balance", "amount", "recipient", "details", "narration", "error"})
 

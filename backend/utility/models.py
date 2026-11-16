@@ -37,6 +37,11 @@ class CablePlan(models.Model):
     # routing it to a second rail — there is no second rail.
     wema_code = models.CharField(max_length=60, blank=True, default="")
     price = models.DecimalField(max_digits=10, decimal_places=2)
+    # The bank's charge for this provider's bills (GetAllBills biller ``charge``),
+    # synced with the code. PayBill refuses a bill without it, and the bank takes
+    # it from the customer's account on top of the price, so it is shown and
+    # debited with the bill.
+    wema_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     active = models.BooleanField(default=True)
 
     @classmethod
@@ -77,6 +82,10 @@ class WemaBiller(models.Model):
     # catalogue; not sent in any request.
     biller_id = models.CharField(max_length=60, blank=True, default="")
     name = models.CharField(max_length=120, blank=True, default="")
+    # The bank's charge for this biller (GetAllBills ``charge``). PayBill refuses
+    # a bill without it ("'Charge' must not be empty"); the bank takes it from the
+    # customer's account on top of the amount, so it is shown and debited too.
+    charge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     active = models.BooleanField(default=True)
     updated = models.DateTimeField(auto_now=True)
 

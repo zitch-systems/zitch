@@ -36,7 +36,7 @@ from transfers.views import _names_match, clean_nickname
 from transfers.services import PayoutError, execute_payout
 from exams.models import ExamProduct
 from utility.models import CablePlan, DataPlan
-from utility.providers import (email_live, payout_resolve_account, send_email, send_sms,
+from utility.providers import (bill_charge, email_live, payout_resolve_account, send_email, send_sms,
                                sms_live, verify_bvn, verify_nin, vtu_purchase,
                                vtu_verify_customer)
 from utility.views import CABLE_NAMES, DISCO_NAMES, NETWORK_NAMES
@@ -60,7 +60,7 @@ from wallet.services import (
 )
 
 from . import ai
-from .flows import (ACCOUNT_OTP, CODE_SCREEN, EMAIL_SCREEN,
+from .flows import (ACCOUNT_OTP, CODE_SCREEN, EMAIL_SCREEN, pin_contract,
                     FLOW_FORM_STATE, IDENTITY_CHAIN,
                     FLOW_ID_STATE, FLOW_PHONE_CODE_STATE, FLOW_PHONE_STATE, FLOW_PIN_STATE,
                     FLOW_PRIVACY_STATE,
@@ -260,7 +260,7 @@ MENU_BODY = MENU_HEADER + "\n".join(
 ) + "\n\n" + MENU_FOOTER
 
 
-def menu_text() -> str:
+def menu_text(header: bool = True) -> str:
     """The menu plus the links footer. Built per call, not frozen at import, so
     the links follow settings (which deployments and tests both override)."""
     from utility.providers import partnership_new_business_allowed
@@ -271,14 +271,18 @@ def menu_text() -> str:
         # The collection-account product has no outgoing transfer rail yet:
         # do not invite a payment the shared spending guard must refuse.
         footer = footer.replace('"send 5k to Ada", "2k airtime".', '"check balance", "2k airtime".')
-    body = MENU_HEADER + _menu_lines(transfers_live=transfers_live) + "\n\n" + footer
+    # The approved menu: no partnership small print (it lives on the privacy
+    # notice and zitch.ng/partnership), and no header when the ☰ Menu card above
+    # already asks "What would you like to do?".
+    body = (MENU_HEADER if header else "") + _menu_lines(transfers_live=transfers_live) + "\n\n" + footer
     block = _more_info_block()
-    return body + (f"\n\n{block}" if block else "") + "\n\n" + PARTNER_NOTICE
+    return body + (f"\n\n{block}" if block else "")
 
 
 #: Small print under the menu: who holds the money, and who regulates them.
 PARTNER_NOTICE = ("🛡️ _Banking services by Wema Bank Plc, licensed by the CBN. "
                   "Deposits insured by NDIC._\nhttps://zitch.ng/partnership")
+WELCOME = "👋 Welcome to *Zitch* - banking right here on WhatsApp."
 UNLINKED = (
     "👋 Welcome to *Zitch* - banking right here on WhatsApp.\n\n"
     "Reply *1* to create a new account, or *2* if you already have one."
@@ -480,7 +484,7 @@ def _sender_account(user) -> str:
 
 
 def reply_receipt(msisdn: str, title: str, rows: list, *, ref: str,
-                  user=None, balance_after=None) -> str:
+                  user=None, balance_after=None, caption: str = "", after: str = "") -> str:
     """Send the transaction receipt as a branded JPEG rendered server-side, with the
     readable text as the caption.
 
@@ -523,9 +527,11 @@ def reply_receipt(msisdn: str, title: str, rows: list, *, ref: str,
             if not media_id:
                 log.warning("wa_receipt_upload_failed ref=%s", ref)
             else:
-                if send_image_media(msisdn, media_id, caption=text).get("success"):
+                # The approved caption is two short lines ("*Electricity receipt*
+                # \n₦5,000.00 · Ikeja Electric"); the image carries every row.
+                if send_image_media(msisdn, media_id, caption=caption or text).get("success"):
                     delivered = "image"
-                elif send_document(msisdn, media_id, filename, caption=text).get("success"):
+                elif send_document(msisdn, media_id, filename, caption=caption or text).get("success"):
                     delivered = "document"
                     log.warning("wa_receipt_image_refused ref=%s fell_back=document", ref)
         except Exception:  # never let receipt rendering break a completed txn
@@ -536,6 +542,8 @@ def reply_receipt(msisdn: str, title: str, rows: list, *, ref: str,
             log.warning("wa_receipt_text_fallback ref=%s", ref)
         result = send_text(msisdn, text)
     _log_out(msisdn, text, result)
+    if after:
+        reply(msisdn, after)
     if balance_after is not None:
         # Separate message, sent after the receipt - never part of the artifact
         # the customer forwards.
@@ -581,11 +589,12 @@ def send_menu(msisdn: str) -> None:
     With WHATSAPP_FLOW['MENU_FORM'] on, a one-line "What would you like to do?"
     card with a "☰ Menu" Flow button goes first; the numbered list still follows,
     so typing a number works exactly as before."""
+    card = False
     if menu_form_live():
         from .release2 import send_menu_form
 
-        send_menu_form(msisdn)
-    reply(msisdn, menu_text())
+        card = send_menu_form(msisdn)
+    reply(msisdn, menu_text(header=not card))
 
 
 def _ask_network(msisdn: str) -> None:
@@ -600,6 +609,36 @@ def _receipt(title: str, lines: list) -> str:
     return f"🧾 *{title}*\n━━━━━━━━━━━━\n{body}\n━━━━━━━━━━━━\nStatus: ✅ Successful"
 
 
+def _biller_name(p: dict) -> str:
+    """"Ikeja Electric · Prepaid" - the disco and meter type as the design names them."""
+    disco = DISCO_NAMES.get(p.get("disco", ""), "")
+    kind = str(p.get("meter_type") or "").title()
+    return " · ".join(x for x in (f"{disco} Electric" if disco else "Electricity", kind) if x)
+
+
+def _phone_label(pa: PendingAction, phone: str) -> str:
+    """The number, marked "(you)" when it is the customer's own."""
+    own = _own_phone(pa.user) if getattr(pa, "user_id", None) else None
+    return f"{phone} (you)" if phone and own and phone == own else phone
+
+
+def _total_rows(p: dict, amount: Decimal) -> list:
+    """("Bank fee", ...), ("Total", ...) for a bill with a charge, else the
+    design's ("Total (no fee)", ...)."""
+    charge = Decimal(str(p.get("charge") or 0))
+    if charge <= 0:
+        return [("Total (no fee)", _money(amount))]
+    return [("Bank fee", _money(charge)), ("Total", _money(amount + charge))]
+
+
+def _fee_lines(p: dict, amount: Decimal) -> list:
+    """The bank's charge and the total, when the bill carries one."""
+    charge = Decimal(str(p.get("charge") or 0))
+    if charge <= 0:
+        return []
+    return [f"Bank fee {_money(charge)}", f"Total {_money(amount + charge)}"]
+
+
 def _flow_summary(pa: PendingAction) -> str:
     """One-line human summary of a pending money action - shown on the secure
     Flow's PIN screen and reused as the Flow message body."""
@@ -607,20 +646,33 @@ def _flow_summary(pa: PendingAction) -> str:
     at = pa.action_type
     try:
         if at == "transfer":
+            # The approved card: "Send ₦3,000.00 to / NAME / OPay 8166938327 /
+            # Bank fee ₦10.75", one fact per line.
             fee = Decimal(str(p.get("fee") or "0"))
-            cost = f" · bank fee {_money(fee)}" if fee > 0 else ""
-            return (f"Send {_money(Decimal(p['amount']))} to {p.get('name', 'recipient').upper()}"
-                    f" · {p.get('bank_name', '')} {p.get('account', '')}".rstrip() + cost)
+            lines = [f"Send {_money(Decimal(p['amount']))} to",
+                     p.get("name", "recipient").upper(),
+                     f"{p.get('bank_name', '')} {p.get('account', '')}".strip()]
+            if fee > 0:
+                lines.append(f"Bank fee {_money(fee)}")
+            return "\n".join(x for x in lines if x)
         if at == "airtime":
-            return f"{_money(Decimal(p['amount']))} {NETWORK_NAMES.get(p.get('net', ''), '')} airtime -> {p.get('phone', '')}"
+            return (f"{_money(Decimal(p['amount']))} {NETWORK_NAMES.get(p.get('net', ''), '')} airtime"
+                    f"\n{_phone_label(pa, p.get('phone', ''))}")
         if at == "data":
             return (f"{p.get('plan_name', 'Data')} ({NETWORK_NAMES.get(p.get('net', ''), '')})"
-                    f" -> {p.get('phone', '')} · {_money(Decimal(p['price']))}")
+                    f"\n{_phone_label(pa, p.get('phone', ''))}\n{_money(Decimal(p['price']))}")
         if at == "electricity":
-            return f"{_money(Decimal(p['amount']))} {DISCO_NAMES.get(p.get('disco', ''), '')} · meter {p.get('meter', '')}"
+            amount = Decimal(p["amount"])
+            lines = [f"{_money(amount)} to {_biller_name(p)}",
+                     f"Meter {p.get('meter', '')}",
+                     p.get("customer") or "",
+                     p.get("customer_address") or p.get("address") or ""]
+            return "\n".join(x for x in lines + _fee_lines(p, amount) if x)
         if at == "cable":
-            return (f"{CABLE_NAMES.get(p.get('prov', ''), '')} {p.get('plan_name', '')}"
-                    f" · card {p.get('iuc', '')} · {_money(Decimal(p['price']))}")
+            price = Decimal(p["price"])
+            lines = [f"{_money(price)} to {CABLE_NAMES.get(p.get('prov', ''), '')} · {p.get('plan_name', '')}",
+                     f"Smartcard {p.get('iuc', '')}", p.get("customer") or ""]
+            return "\n".join(x for x in lines + _fee_lines(p, price) if x)
         if at == "exam":
             # Without this the exam flow fell through to the bare "Confirm your
             # payment" fallback below, so the one card that says what is being
@@ -675,7 +727,8 @@ def _with_narration(pa: PendingAction, rows: list) -> list:
 
 
 def pin_screen_send_data(amount: str, recipient: str = "", details: str = "",
-                         balance: str = "", narration: str = "") -> dict:
+                         balance: str = "", narration: str = "", cta: str = "Confirm",
+                         title: str = "Create your PIN") -> dict:
     """The `flow_action_payload.data` for a message that OPENS on a PIN screen.
 
     One builder for every such send, because the send payload is a contract with
@@ -690,8 +743,9 @@ def pin_screen_send_data(amount: str, recipient: str = "", details: str = "",
     narration and get empty strings: they describe no transaction, but the screen
     still declares the properties, and declared-but-absent is the rejection.
     """
-    return {"balance": balance, "amount": amount, "recipient": recipient,
-            "details": details, "narration": narration, "error": ""}
+    return pin_contract({"balance": balance, "amount": amount, "recipient": recipient,
+                         "details": details, "narration": narration, "cta": cta,
+                         "title": title, "error": ""})
 
 
 def _flow_balance_line(pa: PendingAction) -> str:
@@ -750,7 +804,7 @@ def _flow_fields(pa: PendingAction) -> dict:
         # Reauthentication must not reveal a balance before the PIN is proved.
         return {"amount": "Confirm your identity", "recipient": "",
                 "details": "Enter your existing PIN to continue. No payment will be made.",
-                "balance": "", "narration": ""}
+                "balance": "", "narration": "", "cta": "Confirm", "title": "Confirm identity"}
 
     def _with_context(fields: dict) -> dict:
         # Through the same cleaner as every other consumer. It is already clean
@@ -758,7 +812,7 @@ def _flow_fields(pa: PendingAction) -> dict:
         # that renders it to a screen, and two spellings of "the narration" is
         # how the two drift.
         note = _narration(pa)
-        return {**fields,
+        return {"cta": "Pay", "title": "Confirm payment", **fields,
                 "balance": _flow_balance_line(pa),
                 # Prefixed so the line reads as the customer's own note rather
                 # than as another routing detail on a screen full of them.
@@ -769,47 +823,52 @@ def _flow_fields(pa: PendingAction) -> dict:
             return _with_context(savings_loans.confirmation_fields(pa))
         if at == "transfer":
             fee = Decimal(str(p.get("fee") or "0"))
-            # One labelled fact per line. Run together with "·" separators the
-            # bank, account, fee and total wrapped into an unreadable paragraph
-            # on the confirm screen - the one place every figure must be clear.
-            rows = [("Bank", p.get("bank_name", "")), ("Account", p.get("account", ""))]
+            # One labelled fact per line, as the approved confirm page lists
+            # them: To, Account, Bank fee, Total.
+            rows = [("Account", f"{p.get('bank_name', '')} · {p.get('account', '')}".strip(" ·"))]
             if fee > 0:
                 rows += [("Bank fee", _money(fee)),
                          ("Total", _money(Decimal(p["amount"]) + fee))]
-            # Every line under the amount is "Label: value" - one fact per line,
-            # the recipient included (Release 2 confirm layout).
             return _with_context({
                 "amount": _money(Decimal(p["amount"])),
                 "recipient": f"To: {p.get('name', 'recipient').upper()}",
-                "details": _detail_lines(rows)})
+                "details": _detail_lines(rows), "cta": "Send"})
         if at == "airtime":
+            amount = Decimal(p["amount"])
             return _with_context({
-                "amount": _money(Decimal(p["amount"])),
+                "amount": _money(amount),
                 "recipient": _detail_lines([
                     ("Airtime", NETWORK_NAMES.get(p.get("net", ""), "") or "Airtime")]),
-                "details": _detail_lines([("Phone", p.get("phone", ""))])})
+                "details": _detail_lines([("Phone", _phone_label(pa, p.get("phone", ""))),
+                                          ("Total (no fee)", _money(amount))])})
         if at == "data":
+            price = Decimal(p["price"])
             return _with_context({
-                "amount": _money(Decimal(p["price"])),
-                "recipient": _detail_lines([
-                    ("Data", f"{p.get('plan_name', 'Data')} · "
-                             f"{NETWORK_NAMES.get(p.get('net', ''), '')}".strip(" ·"))]),
-                "details": _detail_lines([("Phone", p.get("phone", ""))])})
+                "amount": _money(price),
+                "recipient": _detail_lines([("Plan", p.get("plan_name", "Data"))]),
+                "details": _detail_lines([("Network", NETWORK_NAMES.get(p.get("net", ""), "")),
+                                          ("Phone", _phone_label(pa, p.get("phone", ""))),
+                                          ("Total (no fee)", _money(price))])})
         if at == "electricity":
+            amount = Decimal(p["amount"])
+            meter = " · ".join(x for x in (p.get("meter", ""), p.get("customer", "")) if x)
             return _with_context({
-                "amount": _money(Decimal(p["amount"])),
-                "recipient": _detail_lines([
-                    ("Disco", DISCO_NAMES.get(p.get("disco", ""), "Electricity"))]),
+                "amount": _money(amount),
+                "recipient": _detail_lines([("Biller", _biller_name(p))]),
                 "details": _detail_lines([
-                    ("Meter", p.get("meter", "")), ("Name", p.get("customer", "")),
-                    ("Address", p.get("customer_address") or p.get("address") or "")])})
+                    ("Meter", meter),
+                    ("Address", p.get("customer_address") or p.get("address")
+                                or "Not provided by the disco"),
+                    *_total_rows(p, amount)])})
         if at == "cable":
+            price = Decimal(p["price"])
+            card = " · ".join(x for x in (p.get("iuc", ""), p.get("customer", "")) if x)
             return _with_context({
-                "amount": _money(Decimal(p["price"])),
+                "amount": _money(price),
                 "recipient": _detail_lines([
                     ("Package", f"{CABLE_NAMES.get(p.get('prov', ''), '')} "
                                 f"{p.get('plan_name', '')}".strip())]),
-                "details": _detail_lines([("Smartcard", p.get("iuc", ""))])})
+                "details": _detail_lines([("Smartcard", card), *_total_rows(p, price)])})
         if at == "exam":
             quantity = int(p.get("quantity", 1))
             return _with_context({
@@ -839,7 +898,9 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
     pa.payload["flow_summary"] = summary
     # Persisted so the Flow endpoint can re-render the same screen on a wrong
     # PIN or a BACK without recomputing it from a payload that may have moved on.
-    fields = _flow_fields(pa)
+    # Opened from the chat, the approved PIN page's button reads "Confirm" (the
+    # forms read "Pay" / "Send").
+    fields = {**_flow_fields(pa), "cta": "Confirm"}
     pa.payload["flow_fields"] = fields
     # Opens on the root, not the twin - the same reset every sibling sender does.
     # Without it this was the ONE sender that let a stale flow_screen survive: an
@@ -879,7 +940,7 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
         # fields comes from _flow_fields, which completes every branch with the
         # balance and the narration - so this spread stays complete by
         # construction rather than by remembering to update it.
-        screen=PIN_SCREEN, screen_data={**fields, "error": ""},
+        screen=PIN_SCREEN, screen_data=pin_contract({**fields, "error": ""}),
         cta=cta, footer=footer,
         # The one send that asks US which screen to open on. A Flow card cannot
         # be recalled or expired by the business that sent it, so with `navigate`
@@ -1578,7 +1639,11 @@ def handle_inbound(msisdn: str, text: str, *, list_reply: bool = False) -> None:
 
     # An in-progress flow consumes the message before any fresh command -
     # except an explicit menu/help reset.
-    if low in ("menu", "hi", "hello", "start", "help"):
+    if low == "help":
+        # The approved "help" answer is the help & information text, not the menu.
+        _clear_actions(msisdn)
+        return _do_support(msisdn)
+    if low in ("menu", "hi", "hello", "start"):
         _clear_actions(msisdn)
         return send_menu(msisdn)
 
@@ -2067,9 +2132,15 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
         return _start_onboarding(msisdn)
 
     # 4. Default welcome (with the create/link choices).
-    intro = UNLINKED if _chat_signup_allowed() else UNLINKED_SIGNUP_UNAVAILABLE
     block = _more_info_block()
-    return reply(msisdn, intro + (f"\n\n{block}" if block else ""))
+    if not _chat_signup_allowed():
+        return reply(msisdn, UNLINKED_SIGNUP_UNAVAILABLE + (f"\n\n{block}" if block else ""))
+    # The approved welcome: two buttons, no "reply 1 or 2". Both ids are words
+    # this branch already accepts; typing 1 or 2 still works.
+    return reply_buttons(msisdn, WELCOME + (f"\n\n{block}" if block else ""),
+                         [("create account", "Create account"),
+                          ("i have an account", "I have an account")],
+                         fallback=UNLINKED + (f"\n\n{block}" if block else ""))
 
 
 # --------------------------------------------------------------------------- #
@@ -2489,8 +2560,11 @@ def finish_onboarding_from_flow(ob: WaOnboarding, pin: str) -> str:
     confirmation, even though every enforced screen had passed.
     """
     msisdn = ob.msisdn
+    in_form = bool((ob.payload or {}).get("signup_user_id"))
     if not _finish_onboarding(ob, msisdn, pin):
         return "That account already exists. Reply 2 from its registered WhatsApp number to sign in securely."
+    if in_form:
+        return "✅ Your Zitch account is ready."
     return "✅ PIN set - your Zitch account is ready. Head back to the chat."
 
 

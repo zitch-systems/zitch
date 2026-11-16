@@ -1229,7 +1229,7 @@ class EscalatingPinLockoutTests(TestCase):
         # (see set_transaction_pin), so it is offered from the FIRST lock —
         # withholding it here only made an honest slip cost half an hour of
         # waiting before the customer learned they never had to.
-        self.assertIn("30 minute(s)", message)
+        self.assertIn("30 minutes", message)
         self.assertIn("reset your PIN", message)
 
     def test_a_second_round_after_the_first_lock_expires_costs_a_day(self):
@@ -1277,7 +1277,7 @@ class EscalatingPinLockoutTests(TestCase):
         self.assertEqual((ok, code), (False, "pin_locked"))
         # Re-hitting the lock quotes the time LEFT, not the tier's nominal
         # length, and says the same thing the lock itself said.
-        self.assertIn("30 minute(s)", message)
+        self.assertIn("30 minutes", message)
 
     def test_a_wrong_pin_while_locked_does_not_extend_the_lock(self):
         """Hammering a locked account must not push the release further out —

@@ -198,10 +198,16 @@ def cable_check_package(pa, user) -> tuple[str, bool]:
     res = vtu_verify_customer(CABLE_NAMES[p["prov"]].lower(), p["iuc"], p["plan_code"])
     if not res.get("success"):
         return "Couldn't validate that smartcard for this package. Pick another package or try again.", False
+    from .router import bill_charge
+
     price = Decimal(p["price"])
-    if _insufficient(user, price):
+    # The bank's charge is taken from the same account on top of the package.
+    charge = bill_charge(CABLE_NAMES[p["prov"]].lower(), {"variation_code": p["plan_code"]})
+    p["charge"] = str(charge)
+    total = price + charge
+    if _insufficient(user, total):
         return f"Insufficient balance ({_money(_fresh_wallet_balance(user))}). Pick a cheaper package or add money first.", False
-    limit_msg = send_limit_error(user, price, biller=True) or daily_limit_error(user, price, "bill")
+    limit_msg = send_limit_error(user, total, biller=True) or daily_limit_error(user, total, "bill")
     if limit_msg:
         return limit_msg, True
     p["customer"] = res.get("customer_name", "") or p.get("customer", "")
@@ -264,17 +270,18 @@ def start_bill_type_form(user, msisdn: str) -> bool:
         return True
     pa = _new_flow(user, msisdn, "electricity", F.FLOW_BILL_STATE, _bill_type_payload(F.BILL_TYPE))
     first = bill_type_screen(pa, screen=F.BILL_TYPE)
-    res = send_flow(msisdn, sign_flow_token(pa), header="Pay a bill",
-                    body="Pay electricity or cable TV privately - we check the meter or "
-                         "smartcard before anything moves, and your PIN never appears in this chat.",
-                    screen=F.BILL_TYPE, screen_data=first["data"], cta="Pay a bill")
+    res = send_flow(msisdn, sign_flow_token(pa), header="",
+                    body=BILL_CARD, screen=F.BILL_TYPE, screen_data=first["data"], cta="Pay a bill")
     if not res.get("success"):
         log.warning("wa_bill_type_form_send_failed pa=%s detail=%r", pa.id, res.get("error_detail", ""))
         _clear_actions(msisdn)
         return False
-    _, rows = SERVICE_MENUS["bill"]
-    reply_list(msisdn, "Or pay here in the chat - which bill?", rows, button_label="Choose")
     return True
+
+
+#: The approved "Pay a bill" card: one message, the chat path named in it.
+BILL_CARD = ("💡 *Pay a bill*\n\nTap *Pay a bill* to use the secure form, or type *electricity* "
+             "or *cable* to carry on here in the chat.")
 
 
 def open_bill_type_chain(user, msisdn: str, session: str) -> dict:
@@ -629,9 +636,49 @@ def submit_signup_address(ob, data: dict) -> dict:
     if not (user.address_verified or user.address_verification_pending):
         user.set_address(f"{house} {street}, {lga}, {match}")
         user.save(update_fields=["address"])
-    ob.payload["flow_screen"] = F.PIN_CHAIN
-    _onboard_to(ob, F.FLOW_PIN_STATE)
-    return F._pin_screen(F._ob_summary(ob), screen=F.PIN_CHAIN)
+    if not F.design_v5_live():
+        # The Flow published before Release 5 has no SIGNUP_PIN page.
+        ob.payload["flow_screen"] = F.PIN_CHAIN
+        _onboard_to(ob, F.FLOW_PIN_STATE)
+        return F._pin_screen(F._ob_summary(ob), screen=F.PIN_CHAIN)
+    ob.payload["flow_screen"] = F.SIGNUP_PIN
+    _onboard_to(ob, F.FLOW_SIGNUP_PIN_STATE)
+    return signup_pin_screen(ob)
+
+
+def signup_pin_screen(ob, error: str = "") -> dict:
+    """"Create your PIN": the PIN and its confirmation on one page (design step 8)."""
+    screen = F.SIGNUP_PIN_RETRY if ob.payload.get("flow_screen") == F.SIGNUP_PIN_RETRY else F.SIGNUP_PIN
+    return {"screen": screen, "data": {"error": _warn(error)}}
+
+
+def submit_signup_pin(ob, data: dict) -> dict:
+    """Both boxes are checked together with the same PIN policy as everywhere
+    else. A refusal lands on SIGNUP_PIN_RETRY, whose boxes start empty, so the
+    refused digits are never left in a masked box to be resubmitted."""
+    from accounts.models import transaction_pin_rejection
+
+    from .router import _onboard_to, finish_onboarding_from_flow
+
+    pin = "".join(ch for ch in str(data.get("pin", "") or "") if ch.isdigit())
+    again = "".join(ch for ch in str(data.get("confirm_pin", "") or "") if ch.isdigit())
+    problem = ""
+    if len(pin) != 6:
+        problem = "Your PIN is 6 digits."
+    elif pin != again:
+        problem = "Those PINs didn't match. Enter the same 6 digits in both boxes."
+    else:
+        rejected = transaction_pin_rejection(pin)
+        if rejected:
+            problem = rejected.rstrip(".") + "."
+    if problem:
+        ob.payload["flow_screen"] = F.SIGNUP_PIN_RETRY
+        _onboard_to(ob, ob.step)
+        return signup_pin_screen(ob, error=problem)
+    message = finish_onboarding_from_flow(ob, pin)
+    if message.startswith("✅"):
+        return F._success_screen(message.lstrip("✅ ").strip(), status="success")
+    return F._success_screen(message, status="failed")
 
 
 def send_signup_welcome(user, msisdn: str) -> None:

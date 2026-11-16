@@ -107,10 +107,17 @@ class FlowContractMixin:
         self.assertIn(screen, self.declared, f"unknown screen {screen!r}{where}")
 
         sent = set((response.get("data") or {}).keys())
+        # The pages whose contract Release 5 changed are answered in the shape
+        # the live Flow was published with until WHATSAPP_FLOW['DESIGN_V5'] is on.
+        from .flows import _PRE_V5_CONTRACT, design_v5_live
+
+        declared = self.declared[screen]
+        if screen in _PRE_V5_CONTRACT and not design_v5_live():
+            declared = set(_PRE_V5_CONTRACT[screen])
         self.assertEqual(
-            sent, self.declared[screen],
-            f"{screen} data mismatch{where}: missing={sorted(self.declared[screen] - sent)} "
-            f"undeclared={sorted(sent - self.declared[screen])}")
+            sent, declared,
+            f"{screen} data mismatch{where}: missing={sorted(declared - sent)} "
+            f"undeclared={sorted(sent - declared)}")
 
         if standing_on and standing_on != screen:
             self.assertIn(

@@ -39,6 +39,7 @@ OWN = "08031234567"   # an MTN prefix, so the network is detected
 #: Added after this release (see test_release4); kept out of this release's checks.
 RELEASE4 = ("BILL_TYPE", "BILL_TYPE_CHAIN", "CABLE_SCREEN", "CABLE_PLAN", "SIGNUP_BVN",
             "SIGNUP_BVN_RETRY", "SIGNUP_ADDRESS")
+RELEASE5 = ("SIGNUP_PIN", "SIGNUP_PIN_RETRY")
 
 
 class FlagDefaultsTests(SimpleTestCase):
@@ -101,7 +102,9 @@ class Release3FlowJsonTests(SimpleTestCase):
            "BILL_SCREEN", "BILL_CHAIN", "BILL_AMOUNT", "IDENTITY_SCREEN", "IDENTITY_RETRY",
            "IDENTITY_CHAIN", "CODE_SCREEN", "CODE_RETRY", "PIN_SCREEN", "PIN_CHAIN", "PIN_RETRY",
            "PIN_CONFIRM", "PIN_CONFIRM_RETRY", "RESULT", "SUCCESS"]
-    OLD_CONTRACT_SHA256 = "0772d5719b0d50f1fcf310e16b04d4a791e3d7f6bed624f72a067ede549c8932"
+    # Release 5 retitled these pages to the approved design and gave the three PIN
+    # pages their own `title` and `cta` (gated by WHATSAPP_FLOW['DESIGN_V5']).
+    OLD_CONTRACT_SHA256 = "c5756ff5c4511ecf2717e75c88c21e8c043072b4de175c6f004345f025fa82d7"
 
     def test_the_existing_screens_contract_is_unchanged(self):
         contract = {}
@@ -117,7 +120,7 @@ class Release3FlowJsonTests(SimpleTestCase):
                                            separators=(",", ":")).encode()).hexdigest()
         self.assertEqual(digest, self.OLD_CONTRACT_SHA256)
         self.assertEqual([s["id"] for s in _DOC["screens"]
-                          if s["id"] not in NEW + RELEASE4], self.OLD)
+                          if s["id"] not in NEW + RELEASE4 + RELEASE5], self.OLD)
 
     def test_existing_routes_are_kept_and_only_the_menu_gains_new_ones(self):
         expected_menu = ["TRANSFER_CHAIN", "VTU_CHAIN", "BILL_CHAIN", "SEND_MONEY_CHAIN",
@@ -134,7 +137,7 @@ class Release3FlowJsonTests(SimpleTestCase):
         path = Path(whatsapp.__file__).parent / "flow_assets" / "pin_flow.json"
         raw = path.read_text()
         self.assertEqual(_DOC["version"], "6.0")
-        self.assertEqual(len(_DOC["screens"]), 47)   # 40 + Release 4's 7
+        self.assertEqual(len(_DOC["screens"]), 49)   # 40 + Release 4's 7 + Release 5's 2
         self.assertLess(len(raw.encode()), 750_000)
         self.assertEqual(raw, json.dumps(_DOC, indent=2, ensure_ascii=True) + "\n")
 
@@ -186,7 +189,7 @@ class Release3FlowJsonTests(SimpleTestCase):
                          {"kind": "${data.kind}", "phone": "${data.phone}",
                           "network": "${data.network}"})
         plan = _BY_ID["VTU_PLAN"]
-        self.assertIn("Choose a plan", [c.get("text") for c in plan["layout"]["children"]])
+        self.assertEqual(plan["title"], "Choose a plan")
         self.assertEqual(_field("VTU_PLAN", "plan")["type"], "RadioButtonsGroup")
 
     def test_send_money_design_copy_and_field_order(self):
@@ -204,8 +207,10 @@ class Release3FlowJsonTests(SimpleTestCase):
         self.assertFalse(note["required"])
 
     def test_the_narration_labels_lost_their_doubled_optional(self):
-        for sid in ("VTU_AIRTIME", "VTU_DATA", "BILL_AMOUNT"):
+        for sid in ("VTU_AIRTIME", "VTU_DATA"):
             self.assertEqual(_field(sid, "narration")["label"], "Narration")
+        # The approved electricity amount page asks only "How much?".
+        self.assertNotIn("narration", [c.get("name") for c in _form("BILL_AMOUNT")["children"]])
 
 
 # --------------------------------------------------------------------------- #
@@ -223,10 +228,10 @@ class _VtuBase(_MoneyBase):
     def open(self, text="3"):
         sent, flow = self.say(text)
         kwargs = flow.call_args.kwargs
-        self.assertEqual((kwargs["screen"], kwargs["cta"]), (flows.VTU_FORM, "Buy"))
-        self.assertEqual(kwargs["header"], "Airtime / Data")
+        self.assertEqual((kwargs["screen"], kwargs["cta"]), (flows.VTU_FORM, "Buy airtime or data"))
+        self.assertEqual(kwargs["header"], "")
         self.assertScreen({"screen": kwargs["screen"], "data": kwargs["screen_data"]})
-        self.assertIn("Tap *Buy*", sent[-1])
+        self.assertIn("Tap *Buy airtime or data*", kwargs["body"])
         return PendingAction.objects.get(msisdn=MSISDN), kwargs["screen_data"]
 
     def submit(self, pa, standing_on=flows.VTU_FORM, **data):
@@ -314,7 +319,7 @@ class VtuFormTests(_VtuBase):
         self.assertEqual(plans["screen"], flows.VTU_PLAN)
         self.assertEqual(plans["data"]["plans"],
                          [{"id": "mtn-1gb", "title": "1GB", "description": "₦500.00 · 30 days"}])
-        self.assertEqual(plans["data"]["summary"], f"MTN data for {OWN}")
+        self.assertEqual(plans["data"]["summary"], "MTN data plans")
         pa.refresh_from_db()
         self.assertEqual(pa.action_type, "data")
         bad = self.submit(pa, standing_on=flows.VTU_PLAN, plan="glo-1gb")
@@ -322,7 +327,7 @@ class VtuFormTests(_VtuBase):
         self.assertIn("Pick a plan", bad["data"]["error"])
         confirm = self.submit(pa, standing_on=flows.VTU_PLAN, plan="mtn-1gb")
         self.assertEqual(confirm["screen"], flows.PIN_CHAIN)
-        self.assertEqual(confirm["data"]["recipient"], "Data: 1GB · MTN")
+        self.assertEqual(confirm["data"]["recipient"], "Plan: 1GB")
         pa.refresh_from_db()
         self.assertEqual(pa.payload["plan_code"], "mtn-1gb")
         self.assertEqual(pa.state, flows.FLOW_PIN_STATE)
@@ -422,7 +427,7 @@ class _SendBase(_MoneyBase):
         kwargs = flow.call_args.kwargs
         self.assertEqual((kwargs["screen"], kwargs["cta"]), (flows.SEND_MONEY, "Send money"))
         self.assertScreen({"screen": kwargs["screen"], "data": kwargs["screen_data"]})
-        self.assertIn("Tap *Send money*", sent[-1])
+        self.assertIn("Tap *Send money*", kwargs["body"])
         return PendingAction.objects.get(msisdn=MSISDN), kwargs["screen_data"]
 
     def submit(self, pa, standing_on=flows.SEND_MONEY, **data):
@@ -461,7 +466,7 @@ class SendMoneyFormTests(_SendBase):
         enquiry.assert_called_once_with("0123456789", "058")
         self.assertEqual(confirm["screen"], flows.PIN_CHAIN)
         self.assertEqual(confirm["data"]["recipient"], "To: JOHN DOE")
-        self.assertIn("Bank: GTBank", confirm["data"]["details"])
+        self.assertIn("Account: GTBank · ", confirm["data"]["details"])
         self.assertEqual(confirm["data"]["narration"], "Note: Rent")
         pa.refresh_from_db()
         self.assertEqual(pa.state, flows.FLOW_PIN_STATE)
@@ -472,7 +477,7 @@ class SendMoneyFormTests(_SendBase):
              patch("utility.providers.payout_resolve_account", return_value=RESOLVED):
             confirm = self.submit(pa, account_number="0123456789", amount="5000")
         self.assertEqual(confirm["screen"], flows.PIN_CHAIN)
-        self.assertIn("Bank: GTBank", confirm["data"]["details"])
+        self.assertIn("Account: GTBank · ", confirm["data"]["details"])
 
     def test_a_legacy_bank_search_key_is_ignored(self):
         """SEND_MONEY has no bank list; the old picker's search branch must not

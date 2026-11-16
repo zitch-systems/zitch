@@ -869,6 +869,13 @@ WHATSAPP_FLOW = {
                        in ("1", "true", "yes", "on"),
     "SIGNUP_BVN_FORM": os.environ.get("WHATSAPP_FLOW_SIGNUP_BVN_FORM", "").strip().lower()
                        in ("1", "true", "yes", "on"),
+    # Release 5 (the approved design on existing pages). Changes the data of
+    # PIN_SCREEN / PIN_CHAIN / PIN_RETRY (title, cta) and BILL_AMOUNT, and sends
+    # sign-up to SIGNUP_PIN after the address. Flip it in the same change as
+    # WHATSAPP_FLOW_ID once the Release 5 Flow is published: the live Flow
+    # rejects the new properties, and the new Flow requires them.
+    "DESIGN_V5": os.environ.get("WHATSAPP_FLOW_DESIGN_V5", "").strip().lower()
+                 in ("1", "true", "yes", "on"),
 }
 
 # LLM intent layer for WhatsApp. Blank API_KEY => AI off (deterministic router
