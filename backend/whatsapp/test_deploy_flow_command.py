@@ -240,6 +240,70 @@ class DeployFlowCommandTests(SimpleTestCase):
             self.run_hook("deprecate")
         self.post.assert_not_called()
 
+    def test_replaced_pipeline_releases_are_deprecated_together(self):
+        """Old releases this pipeline published carry no setup screens; their
+        name is what makes them retirable, and one build can retire several."""
+        self.arm_deprecate()
+        os.environ[PREFIX + "FLOW_ID"] = "555,556"
+        self.owned.return_value = [{"id": "777", "name": NAME, "status": "PUBLISHED"},
+                                  {"id": "555", "name": "Zitch Partnership release4-x", "status": "PUBLISHED"},
+                                  {"id": "556", "name": "Zitch Partnership release3-x", "status": "PUBLISHED"}]
+        self.get.side_effect = [_Resp({"id": "555", "status": "PUBLISHED"}),
+                               _Resp({"id": "555", "status": "DEPRECATED"}),
+                               _Resp({"id": "556", "status": "PUBLISHED"}),
+                               _Resp({"id": "556", "status": "DEPRECATED"})]
+        self.run_hook("deprecate")
+        self.verify.assert_called_once()
+        self.old_asset.assert_not_called()
+        self.assertEqual([c.args[0] for c in self.post.call_args_list],
+                         [f"{BASE}/555/deprecate", f"{BASE}/556/deprecate"])
+        self.assertIn("Flow 556 deprecated", self.out.getvalue())
+
+    def test_the_selected_replacement_is_never_in_the_retirement_list(self):
+        self.arm_deprecate()
+        os.environ[PREFIX + "FLOW_ID"] = "555,777"
+        with self.assertRaises(CommandError):
+            self.run_hook("deprecate")
+        for bad in ("555,555", "555,abc", ""):
+            os.environ[PREFIX + "FLOW_ID"] = bad
+            with self.subTest(bad=bad), self.assertRaises(CommandError):
+                self.run_hook("deprecate")
+        self.post.assert_not_called()
+
+    def test_a_pipeline_draft_is_deleted_and_the_deletion_read_back(self):
+        self.arm_deprecate()
+        os.environ[PREFIX + "FLOW_ID"] = "444"
+        draft = {"id": "444", "name": "Zitch Partnership release4-y", "status": "DRAFT"}
+        self.owned.side_effect = [[{"id": "777", "name": NAME, "status": "PUBLISHED"}, draft],
+                                  [{"id": "777", "name": NAME, "status": "PUBLISHED"}]]
+        self.get.side_effect = [_Resp({"id": "444", "status": "DRAFT"})]
+        with patch(TARGET + ".requests.delete", return_value=_Resp({"success": True})) as delete:
+            self.run_hook("delete-draft")
+        delete.assert_called_once_with(f"{BASE}/444", timeout=60, allow_redirects=False,
+                                       headers={"Authorization": "Bearer test-token-never-print"})
+        self.post.assert_not_called()
+        self.assertIn("Draft Flow 444 deleted", self.out.getvalue())
+
+    def test_only_a_pipeline_draft_can_be_deleted_and_never_without_a_readback(self):
+        self.arm_deprecate()
+        os.environ[PREFIX + "FLOW_ID"] = "444"
+        replacement = {"id": "777", "name": NAME, "status": "PUBLISHED"}
+        for row in ({"id": "444", "name": "Someone else's draft", "status": "DRAFT"},
+                    {"id": "444", "name": "Zitch Partnership release4-y", "status": "PUBLISHED"}):
+            self.owned.side_effect = None
+            self.owned.return_value = [replacement, row]
+            with self.subTest(row=row), patch(TARGET + ".requests.delete") as delete, \
+                    self.assertRaises(CommandError):
+                self.run_hook("delete-draft")
+            delete.assert_not_called()
+        draft = {"id": "444", "name": "Zitch Partnership release4-y", "status": "DRAFT"}
+        self.owned.side_effect = [[replacement, draft], [replacement, draft]]
+        self.get.side_effect = [_Resp({"id": "444", "status": "DRAFT"})]
+        with patch(TARGET + ".requests.delete", return_value=_Resp({"success": True})), \
+                self.assertRaisesMessage(CommandError, "could not be verified"):
+            self.run_hook("delete-draft")
+        self.assertNotIn("deleted", self.out.getvalue())
+
     def test_already_deprecated_retry_only_verifies_replacement_and_status(self):
         self.arm_deprecate()
         self.get.side_effect = [_Resp({"id": "555", "status": "DEPRECATED"})]
