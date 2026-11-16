@@ -150,9 +150,10 @@ export const walletService = {
   // One request, or nothing: the bank scores BVN, NIN and the live image
   // together for an account it has already opened. `live_image` is base64 with
   // no data: prefix; `liveness_token` is the live face check's proof for it.
-  upgradeTier2: (bvn: string, nin: string, liveImage: string, livenessToken?: string) =>
-    apiJson<FundingAccount>(EP.wallet.wemaUpgradeTier2,
-                            { bvn, nin, live_image: liveImage, ...(livenessToken ? { liveness_token: livenessToken } : {}) }),
+  upgradeTier2: (bvn: string, nin: string, liveImage: string, livenessToken?: string, atSignup = false) =>
+    apiJson<FundingAccount & { sent?: boolean; tier2_state?: string }>(EP.wallet.wemaUpgradeTier2,
+                            { bvn, nin, live_image: liveImage, ...(livenessToken ? { liveness_token: livenessToken } : {}),
+                              ...(atSignup ? { at_signup: true } : {}) }),
   // The live face check before Tier 2: picks the clearest straight photo and
   // checks the head turn. A minute's upload on a slow line is allowed for.
   checkTier2Face: (frames: string[], turns: string[]) =>

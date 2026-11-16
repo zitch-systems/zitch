@@ -15,7 +15,7 @@ import { extractCode } from '@/lib/code';
 import AuthGuard from '@/components/AuthGuard';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Tap } from '@/components/design/ui';
-import { AddressWaits, LaterLink, OnboardingAddress, OnboardingHeading, StepTitle, ViaOption } from '@/components/kyc/Onboarding';
+import { EMPTY_ADDRESS as EMPTY_SIGNUP_ADDRESS, IdentityWaits, LaterLink, OnboardingHeading, OnboardingIdentity, StepTitle, ViaOption, type AddressValue, type SignupFace } from '@/components/kyc/Onboarding';
 import { useTheme, font } from '@/lib/theme';
 
 type Status = {
@@ -151,6 +151,17 @@ const Kyc = () => {
   const [upBvn, setUpBvn] = useState('');
   const [upNin, setUpNin] = useState('');
   const [upFace, setUpFace] = useState<FaceCapture | null>(null);
+  // Sign-up's NIN and face check: sent to the bank (as the Tier 2 request) when
+  // the customer taps Continue, alongside the address (the Tier 3 request).
+  const [signupNin, setSignupNin] = useState('');
+  const [signupFace, setSignupFace] = useState<SignupFace | null>(null);
+  const [signupAddress, setSignupAddress] = useState<AddressValue>(EMPTY_SIGNUP_ADDRESS);
+  // The BVN form is cleared once the BVN is verified, but the bank needs the
+  // BVN again with the NIN (Zitch keeps only its hash). Sign-up holds the one
+  // just typed in memory for that request, so it is not asked for twice.
+  const [signupBvn, setSignupBvn] = useState('');
+  useEffect(() => { if (onboarding && bvn.length === 11) setSignupBvn(bvn); }, [onboarding, bvn]);
+  const faceFor = useRef<'upgrade' | 'signup'>('upgrade');
   const [busy, setBusy] = useState(false);
   const [bvnVia, setBvnVia] = useState<'sms' | 'face'>('sms');
   const [faceSheet, setFaceSheet] = useState<FaceSheet | null>(null);
@@ -671,6 +682,13 @@ const Kyc = () => {
   // alone would spend the attempt on a call that cannot complete the upgrade.
   const captureUpgradeSelfie = () => {
     if (busy) return;
+    faceFor.current = 'upgrade';
+    upgradeCaptureOwner.current = bindFlow();
+    setUpgradeCameraOpen(true);
+  };
+  const captureSignupFace = () => {
+    if (busy) return;
+    faceFor.current = 'signup';
     upgradeCaptureOwner.current = bindFlow();
     setUpgradeCameraOpen(true);
   };
@@ -803,7 +821,10 @@ const Kyc = () => {
       <Header title={title} onBack={onBack} />
 
       {method === 'menu' && onboarding && status.bvn_verified && (
-        <OnboardingAddress savedAddress={status.address || ''} onDone={toSetup} />
+        <OnboardingIdentity savedAddress={status.address || ''} onDone={toSetup} bvn={bvn.length === 11 ? bvn : signupBvn}
+          nin={signupNin} onNin={setSignupNin} face={signupFace} onStartFace={captureSignupFace}
+          onFaceRefused={() => setSignupFace(null)} faceBusy={busy}
+          address={signupAddress} onAddress={setSignupAddress} />
       )}
 
       {method === 'menu' && !onboarding && (
@@ -904,7 +925,7 @@ const Kyc = () => {
           the SMS-or-face choice and, once a code is sent, the boxes for it. */}
       {method === 'bvn' && onboarding && (
         <View>
-          <OnboardingHeading sub="Verify your BVN, then add the address where you live." />
+          <OnboardingHeading sub="Verify your BVN and NIN, take a quick face check, then add the address where you live." />
           <StepTitle n={1} title="Your BVN" />
           <View style={{ marginTop: 14 }}>
             <Field editable={!busy} label="Bank Verification Number (BVN)" placeholder="11 digits" keyboardType="number-pad" value={bvn}
@@ -967,7 +988,9 @@ const Kyc = () => {
               </>
             )}
           </View>
-          <AddressWaits />
+          <IdentityWaits nin={signupNin} onNin={setSignupNin} editable={!busy}
+            face={signupFace} onStartFace={captureSignupFace} faceBusy={busy}
+            address={signupAddress} onAddress={setSignupAddress} />
           <LaterLink onPress={toSetup} />
         </View>
       )}
@@ -1132,10 +1155,16 @@ const Kyc = () => {
     />
     <FaceLivenessModal
       visible={upgradeCameraOpen}
-      onClose={() => { upgradeCaptureOwner.current = null; setUpgradeCameraOpen(false); }}
+      onClose={() => { upgradeCaptureOwner.current = null; faceFor.current = 'upgrade'; setUpgradeCameraOpen(false); }}
       onCapture={(capture) => {
         if (!upgradeCaptureOwner.current?.()) return;
         upgradeCaptureOwner.current = null;
+        if (faceFor.current === 'signup') {
+          // Held for Continue, which sends it with the NIN as the Tier 2 request.
+          faceFor.current = 'upgrade';
+          setUpgradeCameraOpen(false); setSignupFace(capture);
+          return;
+        }
         setUpgradeCameraOpen(false); setUpFace(capture);
         // The face check passed: send it with the BVN and NIN already typed,
         // as the WhatsApp page does. Otherwise it is held for "Finish

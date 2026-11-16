@@ -23,6 +23,7 @@ urlpatterns = [
     path("email/verify/start/", views.email_verify_start),
     path("email/verify/confirm/", views.email_verify_confirm),
     path("kyc/status/", views.kyc_status),
+    path("kyc/claim/", views.kyc_claim_tier),
     path("limits/", views.transaction_limits),
     path("limits/transaction/", views.set_transaction_limit),
     path("kyc/bvn/", views.kyc_bvn),
@@ -37,6 +38,7 @@ urlpatterns = [
     path("kyc/liveness/status/", views.kyc_liveness_status),
     path("kyc/address/", views.kyc_address),
     path("kyc/address/save/", views.kyc_address_save),
+    path("kyc/tier3/send/", views.kyc_tier3_send),
     path("kyc/id/", views.kyc_id_document),
     # TEST-ONLY: mark a user KYC-verified (WEMA_SIMULATION + SIMULATE_DEPOSIT_TOKEN only).
     path("dev/simulate-kyc/", views.simulate_kyc),

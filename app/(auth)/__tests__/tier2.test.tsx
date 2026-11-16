@@ -7,7 +7,7 @@ import { EP } from '@/lib/endpoints';
 const mockApiJson = jest.fn();
 const mockNotify = jest.fn();
 const mockRouter = { back: jest.fn(), push: jest.fn(), replace: jest.fn(), canGoBack: jest.fn(() => true) };
-const mockParams: { from?: string } = {};
+const mockParams: { from?: string; recheck?: string } = {};
 jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args) }));
 jest.mock('@/lib/secureStore', () => ({ getSessionGeneration: () => 0, getToken: async () => 'token' }));
 jest.mock('@/components/AuthGuard', () => ({ children }: { children: ReactNode }) => children);
@@ -73,6 +73,7 @@ beforeEach(() => {
   mockNotify.mockReset();
   Object.values(mockRouter).forEach((fn) => fn.mockClear());
   delete mockParams.from;
+  delete mockParams.recheck;
 });
 
 it('asks for the BVN, NIN and the live face check, and keeps submit off until all three are done', async () => {
@@ -80,17 +81,17 @@ it('asks for the BVN, NIN and the live face check, and keeps submit off until al
   const tree = await render();
   const out = text(tree);
   for (const copy of ['Upgrade to Tier 2 Your BVN, NIN and a live face check', 'Tier 1 now', 'Your BVN and NIN',
-    'Live face check', 'Turn your head left, then right, then smile.',
-    'Your sign-up address is sent with this, so the Tier 3 check starts straight away.',
-    'Enter your BVN and NIN to submit.']) expect(out).toContain(copy);
+    'Live face check', 'A quick face check', 'Enter your BVN and NIN to submit.']) expect(out).toContain(copy);
   expect(out).not.toMatch(/Prembly|Wema/);
+  // Tier 2 sends no address: Tier 3 is its own request (review, Nov 2026)
+  expect(out).not.toContain('address');
   expect(tree.root.findAllByType(TextInput)).toHaveLength(2);
   expect(submitBtn(tree).props.disabled).toBe(true);
   fill(tree, '2222 2222 222', '');
   expect(submitBtn(tree).props.disabled).toBe(true);
   // A face check passed before both numbers are in is held, not sent.
   await passFaceCheck(tree);
-  expect(text(tree)).toContain('Face check passed');
+  expect(text(tree)).toContain('Face check done');
   expect(submitBtn(tree).props.disabled).toBe(true);
   fill(tree);
   expect(submitBtn(tree).props.disabled).toBe(false);
@@ -142,10 +143,10 @@ it('asks for a new face check when the bank or our check refuses it, but keeps i
   fill(tree);
   await passFaceCheck(tree);
   expect(mockNotify).toHaveBeenLastCalledWith('Not upgraded yet', 'That NIN does not match the NIN already verified on this account.');
-  expect(text(tree)).toContain('Face check passed');
+  expect(text(tree)).toContain('Face check done');
   await act(async () => { await submitBtn(tree).props.onPress(); });
   expect(mockNotify).toHaveBeenLastCalledWith('Not upgraded yet', 'Your bank could not confirm your face.');
-  expect(text(tree)).not.toContain('Face check passed');
+  expect(text(tree)).not.toContain('Face check done');
   expect(submitBtn(tree).props.disabled).toBe(true);
   act(() => tree.unmount());
 });
@@ -179,4 +180,38 @@ it('says what comes first when Tier 2 cannot start', async () => {
     expect(tree.root.findAllByProps({ accessibilityLabel: 'Submit for Tier 2' })).toHaveLength(0);
     act(() => tree.unmount());
   }
+});
+
+it('moves up at once when the bank already confirmed what sign-up sent', async () => {
+  let claimed = false;
+  mockApiJson.mockImplementation(async (path: string, body?: { tier?: number }) => {
+    if (path === EP.kyc.status) return claimed ? { ...tier1, face_verified: true, nin_verified: true, tier: 2, tier2_state: 'done' } : { ...tier1, tier2_state: 'ready' };
+    if (path === EP.kyc.claim) { expect(body).toEqual({ tier: 2 }); claimed = true; return { success: true, state: 'upgraded', tier: 2 }; }
+    throw new Error(`Unexpected API call: ${path}`);
+  });
+  const tree = await render();
+  expect(text(tree)).toContain('Your bank confirmed your details');
+  expect(tree.root.findAllByType(TextInput)).toHaveLength(0);   // nothing to enter again
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Move to Tier 2' }).props.onPress(); });
+  expect(mockNotify).toHaveBeenCalledWith('You’re now Tier 2', expect.any(String), 'success');
+  expect(mockRouter.replace).toHaveBeenCalledWith('/accountlimits');
+  act(() => tree.unmount());
+});
+
+it('says the sign-up check was not confirmed when Verify Tier 2 sends the customer back to it', async () => {
+  mockParams.recheck = '1';
+  mockApiJson.mockImplementation(async (path: string) => path === EP.kyc.status
+    ? { ...tier1, tier2_state: 'not_confirmed', tier2_review: 'rejected' } : { success: false });
+  const tree = await render();
+  const out = text(tree);
+  expect(out).toContain('We couldn’t confirm the NIN or face check from your sign-up.');
+  expect(out).toContain('Enter your NIN and retake the face check');
+  expect(tree.root.findAllByType(TextInput)).toHaveLength(2);
+  act(() => tree.unmount());
+  // nothing was sent at sign-up: no red banner, just the form
+  mockApiJson.mockImplementation(async (path: string) => path === EP.kyc.status
+    ? { ...tier1, tier2_state: 'not_confirmed', tier2_review: '' } : { success: false });
+  const fresh = await render();
+  expect(text(fresh)).not.toContain('We couldn’t confirm');
+  act(() => fresh.unmount());
 });

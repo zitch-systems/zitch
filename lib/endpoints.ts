@@ -49,6 +49,10 @@ export const EP = {
     addressSave: '/api/kyc/address/save/',
     identityFaceStart: '/api/kyc/face/start/',
     identityFaceStatus: '/api/kyc/face/status/',
+    // Verify Tier 2/3 on Account limits: applies, reports or asks again (reads the bank only).
+    claim: '/api/kyc/claim/',
+    // The address as its own Tier 3 request to the bank (sign-up, or after the bank refused it).
+    tier3Send: '/api/kyc/tier3/send/',
   },
   transfers: {
     // Canonical (plural) paths.
