@@ -14,12 +14,15 @@ confirm as every other form, and the payment is executed by the same
 (`electricity_verify_meter`, `electricity_check_amount`). The PIN, the password
 and every code are only ever typed into the encrypted Flow.
 """
+import base64
 import hashlib
 import hmac
 import logging
 import re
 import secrets
 from datetime import timedelta
+from functools import lru_cache
+from pathlib import Path
 
 from django.conf import settings
 from django.utils import timezone
@@ -198,9 +201,38 @@ def _disco_options() -> list:
     # router_tail runs inside router's namespace; it is never imported on its own.
     from .router import _DISCO_SHORT, DISCO_NAMES
 
-    # As designed: "Ikeja Electric (IKEDC)".
-    return [{"id": k, "title": f"{v} Electric" + (f" ({_DISCO_SHORT[k]})" if _DISCO_SHORT.get(k) else "")}
-            for k, v in DISCO_NAMES.items()]
+    # As designed: "Ikeja Electric (IKEDC)", with the disco's logo beside it when
+    # one is supplied (whatsapp/assets/discos/<SHORT>.png, e.g. IKEDC.png).
+    options = []
+    for k, v in DISCO_NAMES.items():
+        short = _DISCO_SHORT.get(k, "")
+        option = {"id": k, "title": f"{v} Electric" + (f" ({short})" if short else "")}
+        logo = _disco_logo(short)
+        if logo:
+            option["image"] = logo
+            option["alt-text"] = f"{v} Electric"
+        options.append(option)
+    return options
+
+
+_DISCO_LOGO_DIR = Path(__file__).resolve().parent / "assets" / "discos"
+#: Meta caps an option image well below a Flow's 1 MB payload; logos are tiny.
+_DISCO_LOGO_MAX_BYTES = 60_000
+
+
+@lru_cache(maxsize=None)
+def _disco_logo(short: str) -> str:
+    """Base64 PNG for a disco's logo, or "" when none is supplied or it is too big."""
+    if not short:
+        return ""
+    path = _DISCO_LOGO_DIR / f"{short}.png"
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return ""
+    if not data.startswith(b"\x89PNG") or len(data) > _DISCO_LOGO_MAX_BYTES:
+        return ""
+    return base64.b64encode(data).decode("ascii")
 
 
 def bill_screen(error: str = "", screen: str = "") -> dict:

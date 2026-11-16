@@ -337,7 +337,7 @@ const BuyElectricity = () => {
         value={amt}
         onChangeText={(v) => { const normalized = normalizeAmountInput(v); if (normalized !== null) setAmt(normalized); }}
         keyboardType="decimal-pad"
-        placeholder="Enter amount (min 500)"
+        placeholder={`Enter amount (min ${MIN_ELECTRICITY.toLocaleString()})`}
         prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
       />
       <View style={{ height: 6 }} />

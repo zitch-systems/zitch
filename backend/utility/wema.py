@@ -2672,9 +2672,28 @@ def _vas_unanswered(product: str, reference: str, exc: Exception) -> dict:
     because until now it was held in silence."""
     response = getattr(exc, "response", None)
     log.warning("wema_vas_purchase_unanswered ref=%s product=%s error_type=%s http_status=%s "
-                "(held PENDING)", _log_safe(reference), product, type(exc).__name__,
-                getattr(response, "status_code", None))
+                "meta=%s raw=%s (held PENDING)", _log_safe(reference), product,
+                type(exc).__name__, getattr(response, "status_code", None),
+                *_unanswered_evidence(response))
     return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+
+
+def _unanswered_evidence(response) -> tuple:
+    """What an ambiguous reply (408/409/425/429/5xx) said, redacted, for the log.
+
+    On 16 November 2026 an Ikeja prepaid PayBill came back HTTP 409 and the log
+    held only the status, so nobody could tell a duplicate reference from a
+    business refusal. The body still decides nothing here: the purchase stays
+    PENDING and is settled by the bank's callbacks, or returned once the bank can
+    no longer ask to authorise it (providers.vas_never_authorised).
+    """
+    if response is None:
+        return None, None
+    try:
+        data = response.json()
+    except ValueError:
+        return {"http_status": response.status_code}, _trim(getattr(response, "text", "") or "", 300)
+    return _response_meta(response, data), _trim(data, 300)
 
 
 @_new_biller_instruction
@@ -2820,6 +2839,35 @@ def get_bills() -> dict:
         return _unreachable(exc)
 
 
+def _bill_customer_address(result: dict) -> str:
+    """The customer's address from a ValidateCustomer result, whatever ALAT calls it.
+
+    customerAddress (their card-issue spelling) and address are tried first; then any
+    field whose name contains "address", at the top level or one level down (some
+    billers put customer details in a nested object such as otherInfo).
+    """
+    def pick(obj):
+        if not isinstance(obj, dict):
+            return ""
+        for key in ("customerAddress", "address", "Address", "CustomerAddress"):
+            value = obj.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        for key, value in obj.items():
+            if "address" in str(key).lower() and isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    found = pick(result)
+    if found:
+        return found[:200]
+    for value in (result or {}).values():
+        found = pick(value)
+        if found:
+            return found[:200]
+    return ""
+
+
 def validate_bill_customer(identifier: str, package_id: str) -> dict:
     """Validate a bill customer identifier (meter/smartcard) -> customer name + address.
 
@@ -2856,11 +2904,15 @@ def validate_bill_customer(identifier: str, package_id: str) -> dict:
                                 if invalid_identifier else
                                 "The biller could not verify this customer number. Please try again."),
                     "raw": data}
+        address = _bill_customer_address(r)
+        if not address:
+            # Field NAMES only (never values), so the real spelling can be read
+            # from the logs: the confirm card showed "Not provided by the disco"
+            # for an Ikeja meter on 16 Nov 2026 with the two spellings tried before.
+            log.info("wema_bill_validate_no_address keys=%s", sorted(str(k) for k in r)[:30])
         return {"success": True,
                 "name": r.get("customerName") or r.get("name", ""),
-                # customerAddress is the spelling ALAT uses elsewhere in its contract
-                # (the card-issue body), so it is tried first.
-                "address": r.get("customerAddress") or r.get("address") or "",
+                "address": address,
                 "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
