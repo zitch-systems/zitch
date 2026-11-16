@@ -128,6 +128,27 @@ NICKNAMES = {
     "taj": "taj", "tajbank": "taj",
     "titan": "titan",
     "vbank": "vbank", "vfd": "vbank",
+    # Misspellings customers actually send, each two edits or a space away from
+    # the name (one edit is already caught by fuzzy_slug). Explicit rather than a
+    # looser fuzzy rule: a wider net would also catch other banks' names, and
+    # money follows whatever this table says.
+    "moneypoint": "moniepoint", "money point": "moniepoint", "moni point": "moniepoint",
+    "monipont": "moniepoint", "monie": "moniepoint", "moniepiont": "moniepoint",
+    "monipoint": "moniepoint", "moniepoit": "moniepoint",
+    "opey": "opay", "opai": "opay", "0pay": "opay", "oplay": "opay", "o pay": "opay",
+    "palmpey": "palmpay", "pampay": "palmpay", "plampay": "palmpay", "palmapay": "palmpay",
+    "palm pay": "palmpay",
+    "kudda": "kuda", "kudah": "kuda",
+    "gtbnak": "gtb", "gurantee trust": "gtb", "guarantee trust": "gtb", "gurranty": "gtb",
+    "frist bank": "firstbank", "frist": "firstbank", "firstbnk": "firstbank",
+    "acess": "access", "acces": "access", "axcess": "access",
+    "zenit": "zenith", "zenth": "zenith", "zeenith": "zenith",
+    "fidelty": "fidelity", "fidility": "fidelity", "fedelity": "fidelity",
+    "stanbick": "stanbic", "stanbik": "stanbic", "stambic": "stanbic",
+    "sterlin": "sterling", "starling": "sterling",
+    "ecobnk": "ecobank", "eco bank": "ecobank",
+    "wemma": "wema", "wemah": "wema",
+    "polarise": "polaris",
 }
 
 #: Short names that are also ordinary words, telco brands or first names. They

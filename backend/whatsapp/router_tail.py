@@ -35,7 +35,22 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if state == "account":
         acct = re.sub(r"\D", "", text)
         if len(acct) != 10:
-            return reply(msisdn, "That doesn't look like a 10-digit account number. Please try again.")
+            # A sentence, not a bare number: "Send 3100 to 5476951723 moniepoint".
+            # Joining all its digits gave a 14-digit "account" and the customer was
+            # told their real account number was not 10 digits. Read the one
+            # account number out of it, and the bank and amount it names too.
+            found = re.findall(r"(?<!\d)\d{10}(?!\d)", text or "")
+            if len(found) != 1:
+                return _reroute_or_reprompt(
+                    pa, msisdn, text,
+                    "That doesn't look like a 10-digit account number. Please try again.")
+            acct = found[0]
+            _, amount = _paste_parts(text)
+            if amount is not None and amount >= MIN_TRANSFER:
+                pa.payload["amount"] = str(amount)
+            pa.payload["account"] = acct
+            _touch(pa, state="bank", payload=pa.payload)
+            return _offer_bank(pa, user, msisdn, _bank_resolution(text, acct))
         pa.payload["account"] = acct
         _touch(pa, state="bank", payload=pa.payload)
         return reply(msisdn, "Which bank? Type the bank name (e.g. GTBank, Access, Opay).")
@@ -2212,6 +2227,10 @@ def lookup_hints(text: str) -> dict:
 #: A Nigerian line as customers write it. Matched and REMOVED before the amount is
 #: read, so "recharge 08012345678 with 500" cannot price the top-up at 8 billion.
 _VAS_PHONE_RE = re.compile(r"(?:\+?234|0)\d{10}\b")
+#: The same line typed with spaces or dashes, as people read it off a contact:
+#: "0803 721 7665", "0803-721-7665", "+234 803 721 7665". Squeezed into one number
+#: before anything else is read, or "0803" would be taken as the amount.
+_VAS_SPACED_PHONE_RE = re.compile(r"(?<![\d+])(?:\+?234|0)(?:[ \t-]?\d){10}(?!\d)")
 #: A data SIZE, not a price ("1gb", "500 mb") — removed before the amount too.
 _VAS_SIZE_RE = re.compile(r"\b\d[\d.,]*\s*(?:gb|mb)\b", re.I)
 #: "₦55", "N55", "55 naira", "55naira" (no space — as it was actually typed), "2k",
@@ -2221,7 +2240,10 @@ _VAS_AMOUNT_RE = re.compile(
     r"(?:₦|\bngn\b|\bn(?=\d))?\s*(\d[\d,]*(?:\.\d+)?)\s*(k|m)?(?:\s*(?:naira|ngn))?\b",
     re.I)
 _VAS_DATA_RE = re.compile(r"\b(?:data|bundle)\b|\d\s*(?:gb|mb)\b", re.I)
-_VAS_AIRTIME_RE = re.compile(r"\b(?:airtime|recharge|top\s?-?\s?up|topup)\b", re.I)
+#: Airtime as it is typed, misspellings included: "airtym", "airtme", "air time",
+#: "rechage", "recharg", "top up". Each still needs an amount beside it.
+_VAS_AIRTIME_RE = re.compile(
+    r"\b(?:air\s?-?\s?t[iy]?me?|airtyme|re?char?g\w*|rechage|top\s?-?\s?up|topup)\b", re.I)
 #: Asking ABOUT a top-up is not asking to buy one, and opening a money flow off a
 #: question is worse than the menu. "How much is 2k airtime?" stays a question.
 _VAS_QUESTION_RE = re.compile(
@@ -2255,6 +2277,7 @@ def vas_text_intent(text: str):
     # A long message is prose, not a command, and is the model's to read.
     if not raw or len(raw) > 160 or _VAS_QUESTION_RE.search(raw):
         return None
+    raw = _VAS_SPACED_PHONE_RE.sub(lambda m: re.sub(r"[ \t-]", "", m.group(0)), raw)
     is_data = bool(_VAS_DATA_RE.search(raw))
     if not is_data and not _VAS_AIRTIME_RE.search(raw):
         return None

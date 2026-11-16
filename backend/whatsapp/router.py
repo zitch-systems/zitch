@@ -1883,6 +1883,18 @@ def _route_free_text(user, msisdn: str, text: str, *, link, convo, earlier=None)
     # Try a one-line paste: "0123456789 GTBank John Doe 5000".
     if _start_transfer_from_paste(user, msisdn, whole):
         return
+    # "Recharge 08037217665 100naira": a product word, an amount and a number this
+    # parser reads exactly. It goes BEFORE the model, which on 16 Nov 2026 glued
+    # the number to the amount and asked "how much airtime for 08037217665100?".
+    # Only a reading that names the phone number jumps the queue: without one,
+    # "load Farida 200 airtime" means someone else's line, which the model reads
+    # and this parser cannot. Anything less is the model's (and the fallback
+    # below still reads it when the model is off).
+    vas_intent = vas_text_intent(whole)
+    if vas_intent and vas_intent["input"].get("phone") \
+            and dispatch_intent(user, msisdn, vas_intent, whole):
+        _record_intent(msisdn, vas_intent)
+        return
     # Free-form text: let the AI route it (when active) - but the deterministic
     # paths above always win, so core flows never depend on the AI being up.
     if ai_active(link, convo):
