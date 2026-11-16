@@ -207,17 +207,85 @@ it('suggests the LGAs of the chosen state, and still takes one typed that is not
   await act(async () => tree.unmount());
 });
 
-it('shows the NIN, a short face check and the address under the BVN before it is verified', async () => {
-  mockApiJson.mockResolvedValue(base);
+it('takes the NIN, face check and address while the BVN is verified, and sends them only once it is', async () => {
+  jest.useFakeTimers();
+  let verified = false;
+  mockApiJson.mockImplementation(async (path: string) => {
+    if (path === EP.kyc.status) return verified ? { ...base, bvn_verified: true, tier: 1 } : base;
+    if (path === EP.kyc.identityFaceStart) return { success: true, url: 'https://face.example.com/check', session: 'face-session' };
+    if (path === EP.kyc.identityFaceStatus) return verified
+      ? { ...base, success: true, bvn_verified: true, tier: 1, status: 'verified' } : { success: true, status: 'pending' };
+    if (path === EP.wallet.wemaUpgradeTier2) return { success: true, sent: true, tier2_state: 'pending' };
+    if (path === EP.kyc.tier3Send) return { success: true, sent: true, tier3_state: 'processing' };
+    return { success: false };
+  });
+  try {
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Kyc />); });
+    const text = () => JSON.stringify(tree.toJSON());
+    expect(text()).toContain('Dial *346# on the phone linked to your NIN to get it.');
+    expect(text()).toContain('A quick face check');
+    // all four steps are on the one page and can be filled in now
+    await act(async () => { byLabel(tree, 'Bank Verification Number (BVN)').props.onChangeText('12345678901'); });
+    await act(async () => { byLabel(tree, 'National Identification Number (NIN)').props.onChangeText('1234 5678 901'); });
+    expect(byLabel(tree, 'Start face check').props.disabled).toBeFalsy();
+    await act(async () => { byLabel(tree, 'Start face check').props.onPress(); });
+    const modal = mockLiveness.mock.calls[mockLiveness.mock.calls.length - 1][0] as { visible: boolean; onCapture: (c: { image: string; token: string }) => void };
+    expect(modal.visible).toBe(true);
+    await act(async () => { modal.onCapture({ image: 'face-b64', token: 'proof' }); });
+    expect(text()).toContain('Face check done');
+    await act(async () => { byLabel(tree, 'House number').props.onChangeText('12'); });
+    await act(async () => { byLabel(tree, 'Street address').props.onChangeText('Allen Avenue'); });
+    await act(async () => { byLabel(tree, 'State').props.onChangeText('Lagos'); });
+    await act(async () => { byLabel(tree, 'Local government area').props.onChangeText('Ikeja'); });
+    // nothing goes to the bank before the BVN opens the account
+    expect(mockApiJson.mock.calls.map(([p]) => p)).not.toEqual(expect.arrayContaining([EP.wallet.wemaUpgradeTier2]));
+    expect(mockApiJson.mock.calls.map(([p]) => p)).not.toEqual(expect.arrayContaining([EP.kyc.tier3Send]));
+
+    // the BVN by its own face check
+    await act(async () => { byLabel(tree, 'Face check, A quick selfie to match your BVN').props.onPress(); });
+    await act(async () => { await byLabel(tree, 'Start face check').props.onPress(); });
+    verified = true;
+    await act(async () => { jest.advanceTimersByTime(3000); });
+    await act(async () => {});
+    expect(text()).toContain('Your BVN is verified, and your NIN and face check are in. Now add your address.');
+    // what was given carries over: no BVN asked for again, the address kept
+    expect(byLabel(tree, 'House number').props.value).toBe('12');
+    expect(byLabel(tree, 'Continue').props.disabled).toBe(false);
+    await act(async () => { await byLabel(tree, 'Continue').props.onPress(); });
+    expect(mockApiJson).toHaveBeenCalledWith(EP.wallet.wemaUpgradeTier2,
+      { bvn: '12345678901', nin: '12345678901', live_image: 'face-b64', liveness_token: 'proof', at_signup: true });
+    expect(mockApiJson).toHaveBeenCalledWith(EP.kyc.tier3Send, { house_number: '12', street: 'Allen Avenue', state: 'Lagos', lga: 'Ikeja' });
+    expect(mockReplace).toHaveBeenCalledWith('/setup');
+    await act(async () => tree.unmount());
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it('does not send a request the bank already has again when the other one needs a retry', async () => {
+  let addressAnswer: Record<string, unknown> = { success: false, message: 'Choose your LGA from the list.' };
+  mockApiJson.mockImplementation(async (path: string) => path === EP.kyc.status ? { ...base, bvn_verified: true, tier: 1 }
+    : path === EP.wallet.wemaUpgradeTier2 ? { success: true, sent: true, tier2_state: 'pending' }
+    : path === EP.kyc.tier3Send ? addressAnswer : { success: false });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  const text = JSON.stringify(tree.toJSON());
-  expect(text).toContain('Your NIN');
-  expect(text).toContain('Dial *346# on the phone linked to your NIN to get it.');
-  expect(text).toContain('A quick face check');
-  expect(text).toContain('Opens once your BVN is verified.');
-  // the face check waits for the BVN
-  expect(byLabel(tree, 'Start face check').props.disabled).toBe(true);
+  await act(async () => { byLabel(tree, 'National Identification Number (NIN)').props.onChangeText('12345678901'); });
+  await act(async () => { byLabel(tree, 'Start face check').props.onPress(); });
+  await act(async () => { (mockLiveness.mock.calls[mockLiveness.mock.calls.length - 1][0] as { onCapture: (c: object) => void }).onCapture({ image: 'f', token: 't' }); });
+  await act(async () => { byLabel(tree, 'Bank Verification Number (BVN)').props.onChangeText('22222222222'); });
+  await act(async () => { byLabel(tree, 'House number').props.onChangeText('12'); });
+  await act(async () => { byLabel(tree, 'Street address').props.onChangeText('Allen Avenue'); });
+  await act(async () => { byLabel(tree, 'State').props.onChangeText('Lagos'); });
+  await act(async () => { byLabel(tree, 'Local government area').props.onChangeText('Ikeja'); });
+  await act(async () => { await byLabel(tree, 'Continue').props.onPress(); });
+  expect(mockReplace).not.toHaveBeenCalled();
+  addressAnswer = { success: true, sent: true, tier3_state: 'processing' };
+  await act(async () => { await byLabel(tree, 'Continue').props.onPress(); });
+  const calls = mockApiJson.mock.calls.map(([p]) => p);
+  expect(calls.filter((p) => p === EP.wallet.wemaUpgradeTier2)).toHaveLength(1);
+  expect(calls.filter((p) => p === EP.kyc.tier3Send)).toHaveLength(2);
+  expect(mockReplace).toHaveBeenCalledWith('/setup');
   await act(async () => tree.unmount());
 });
 

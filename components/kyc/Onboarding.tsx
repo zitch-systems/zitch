@@ -250,17 +250,20 @@ const faceRefusal = (res: { success?: boolean; pending?: boolean; code?: string;
  * Tier 2 request, the address as the Tier 3 request. The customer stays on
  * Tier 1 until they tap Verify on Account limits.
  */
-export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face, onStartFace, onFaceRefused, faceBusy }: {
+export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face, onStartFace, onFaceRefused, faceBusy, address, onAddress }: {
   savedAddress?: string; onDone: () => void; bvn: string;
   nin: string; onNin: (v: string) => void;
   face: SignupFace | null; onStartFace: () => void; onFaceRefused: () => void; faceBusy?: boolean;
+  address: AddressValue; onAddress: (v: AddressValue) => void;
 }) => {
   const { c } = useTheme();
-  const [address, setAddress] = useState<AddressValue>(EMPTY_ADDRESS);
   const [bvnAgain, setBvnAgain] = useState('');
-  const [editing, setEditing] = useState(!savedAddress);
+  // An address typed while the BVN was being verified is the one to send.
+  const [editing, setEditing] = useState(!savedAddress || !!addressPayload(address));
   const [sending, setSending] = useState(false);
   const inFlight = useRef(false);
+  // A request the bank already has is not sent again when the other one needs a retry.
+  const sent = useRef({ tier2: false, tier3: false });
 
   // The bank needs the BVN typed again with the NIN (Zitch keeps only a hash).
   const bvnForBank = bvn.length === 11 ? bvn : bvnAgain;
@@ -275,11 +278,13 @@ export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face
     setSending(true);
     try {
       // Separate requests, sent together: Tier 2 (NIN + face) and Tier 3 (address).
-      const tier2 = identityGiven && face ? kycService.sendTier2AtSignup(bvnForBank, nin, face.image, face.token) : null;
-      const tier3 = editing && payload ? kycService.sendTier3(payload) : null;
+      const tier2 = identityGiven && face && !sent.current.tier2 ? kycService.sendTier2AtSignup(bvnForBank, nin, face.image, face.token) : null;
+      const tier3 = editing && payload && !sent.current.tier3 ? kycService.sendTier3(payload) : null;
       const [r2, r3] = await Promise.allSettled([tier2, tier3]);
       const v2 = r2.status === 'fulfilled' ? r2.value : null;
       const v3 = r3.status === 'fulfilled' ? r3.value : null;
+      if (tier2 && (v2?.success || (v2 as { pending?: boolean } | null)?.pending)) sent.current.tier2 = true;
+      if (tier3 && v3?.success) sent.current.tier3 = true;
       if (tier3 && !v3?.success) {
         notify('Address', v3?.message || 'Could not save your address. Check your connection and try again.');
         return;
@@ -289,7 +294,7 @@ export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face
         else notify('NIN and face check', v2?.message || 'Could not send them. Check your connection and try again.');
         return;
       }
-      if (tier2 || tier3) notify('Sent for checking', 'You’re on Tier 1. Verify Tier 2 and Tier 3 in Account limits when you’re ready.', 'success');
+      if (sent.current.tier2 || sent.current.tier3) notify('Sent for checking', 'You’re on Tier 1. Verify Tier 2 and Tier 3 in Account limits when you’re ready.', 'success');
       onDone();
     } finally {
       inFlight.current = false;
@@ -299,7 +304,9 @@ export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face
 
   return (
     <View>
-      <OnboardingHeading sub="Your BVN is verified. Add your NIN, take a quick face check, then your address." />
+      <OnboardingHeading sub={identityGiven || (nin.length === 11 && !!face)
+        ? 'Your BVN is verified, and your NIN and face check are in. Now add your address.'
+        : 'Your BVN is verified. Add your NIN, take a quick face check, then your address.'} />
       <StepTitle n={1} title="Your BVN" done />
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10, marginLeft: 34 }}>
         <ZIcon name="check" size={14} color={GREEN} stroke={3} />
@@ -332,7 +339,7 @@ export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face
         </View>
       ) : (
         <View style={{ marginTop: 14 }}>
-          <AddressFields value={address} onChange={setAddress} editable={!sending} onSubmit={() => void send()} />
+          <AddressFields value={address} onChange={onAddress} editable={!sending} onSubmit={() => void send()} />
         </View>
       )}
 
@@ -349,20 +356,26 @@ export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face
   );
 };
 
-/** Steps 2 to 4 wait under the BVN form until the BVN is verified; the NIN can be typed already. */
-export const IdentityWaits = ({ nin, onNin, editable = true }: { nin: string; onNin: (v: string) => void; editable?: boolean }) => {
-  const { c } = useTheme();
-  return (
-    <View>
-      <Divider />
-      <StepTitle n={2} title="Your NIN" />
-      <View style={{ marginTop: 14 }}><NinField value={nin} onChange={onNin} editable={editable} /></View>
-      <Divider />
-      <StepTitle n={3} title="Face check" />
-      <View style={{ marginTop: 14 }}><FaceCheckRow waiting onStart={() => undefined} /></View>
-      <Divider />
-      <StepTitle n={4} title="Your address" muted />
-      <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular, marginTop: 6 }}>Opens once your BVN is verified.</Text>
-    </View>
-  );
-};
+/**
+ * Steps 2 to 4 under the BVN form: the NIN, the face check and the address can
+ * all be done while the BVN is verified (one page, review Nov 2026). Nothing is
+ * sent until Continue once the BVN is verified, because the account it all goes
+ * to opens with the BVN (Tier 1).
+ */
+export const IdentityWaits = ({ nin, onNin, editable = true, face, onStartFace, faceBusy, address, onAddress }: {
+  nin: string; onNin: (v: string) => void; editable?: boolean;
+  face: SignupFace | null; onStartFace: () => void; faceBusy?: boolean;
+  address: AddressValue; onAddress: (v: AddressValue) => void;
+}) => (
+  <View>
+    <Divider />
+    <StepTitle n={2} title="Your NIN" done={nin.length === 11} />
+    <View style={{ marginTop: 14 }}><NinField value={nin} onChange={onNin} editable={editable} /></View>
+    <Divider />
+    <StepTitle n={3} title="Face check" done={!!face} />
+    <View style={{ marginTop: 14 }}><FaceCheckRow done={!!face} busy={faceBusy} onStart={onStartFace} /></View>
+    <Divider />
+    <StepTitle n={4} title="Your address" done={!!addressPayload(address)} />
+    <View style={{ marginTop: 14 }}><AddressFields value={address} onChange={onAddress} editable={editable} /></View>
+  </View>
+);
