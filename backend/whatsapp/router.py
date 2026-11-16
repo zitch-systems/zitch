@@ -1894,6 +1894,13 @@ def _route_free_text(user, msisdn: str, text: str, *, link, convo, earlier=None)
     # "load Farida 200 airtime" means someone else's line, which the model reads
     # and this parser cannot. Anything less is the model's (and the fallback
     # below still reads it when the model is off).
+    # A named disco and a meter number are a bill, read here and never guessed by
+    # the model: it offered airtime "for 45058723664" on "Recharge 45058723664
+    # Ikeja electric 1050" (16 Nov 2026).
+    bill_intent = bill_text_intent(whole)
+    if bill_intent and dispatch_intent(user, msisdn, bill_intent, whole):
+        _record_intent(msisdn, bill_intent)
+        return
     vas_intent = vas_text_intent(whole)
     if vas_intent and vas_intent["input"].get("phone") \
             and dispatch_intent(user, msisdn, vas_intent, whole):

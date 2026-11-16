@@ -184,6 +184,17 @@ class PurchaseOutcomeIsRecordedTests(SimpleTestCase):
         self.assertNotIn("0123456789", line)
 
     @override_settings(WEMA=WEMA_LIVE)
+    def test_paybill_sends_the_phone_in_the_local_form_airtime_uses(self):
+        ok = self._json(200, {"result": {"status": "Pending", "transactionReference": "R"},
+                              "hasError": False})
+        for given, sent in (("2348031234567", "08031234567"), ("+2348031234567", "08031234567"),
+                            ("08031234567", "08031234567"), ("", "")):
+            with self.subTest(given=given), mock.patch.object(wema, "_post", return_value=ok) as post:
+                wema.pay_bill(1000, "ZTCH-BILL-PH", package_id="7", identifier="45700012345",
+                              source_account="0100000001", phone=given)
+                self.assertEqual(post.call_args.args[2]["customerPhoneNumber"], sent)
+
+    @override_settings(WEMA=WEMA_LIVE)
     def test_a_refused_paybill_logs_the_banks_whole_reason_and_what_we_sent(self):
         # 16 Nov 2026: the reply was cut at 300 characters, exactly where
         # errorMessages begins, so the bank's own reason was never seen.
