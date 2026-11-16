@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { PasteCode } from '@/components/design/PasteCode';
+import { extractCode } from '@/lib/code';
 import { View, Text } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { publicPost } from '@/lib/api';
@@ -101,14 +103,14 @@ const ResetPassword = ({ ident }: { ident: string }) => {
         <Field
           label="Reset code"
           value={otp}
-          onChangeText={(v) => setOtp(v.replace(/\D/g, '').slice(0, 6))}
+          onChangeText={(v) => setOtp(extractCode(v, 6))}
           keyboardType="number-pad"
           placeholder="6-digit code"
-          maxLength={6}
           editable={!busy}
           autoComplete="sms-otp"
           textContentType="oneTimeCode"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
+          suffix={<PasteCode onCode={setOtp} disabled={busy} />}
         />
         <Field
           label="New password"
