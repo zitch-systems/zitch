@@ -3,7 +3,7 @@
 // server (and the WhatsApp channel) accepts.
 export const MIN_TRANSFER = 50;
 export const MIN_AIRTIME = 50;
-export const MIN_ELECTRICITY = 500;
+export const MIN_ELECTRICITY = 1000; // the partner bank's minimum
 
 /** Keep the entered monetary value intact. Reject ambiguous input rather than
  * deleting signs, decimal points or exponent markers and changing its value.

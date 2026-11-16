@@ -2820,6 +2820,35 @@ def get_bills() -> dict:
         return _unreachable(exc)
 
 
+def _bill_customer_address(result: dict) -> str:
+    """The customer's address from a ValidateCustomer result, whatever ALAT calls it.
+
+    customerAddress (their card-issue spelling) and address are tried first; then any
+    field whose name contains "address", at the top level or one level down (some
+    billers put customer details in a nested object such as otherInfo).
+    """
+    def pick(obj):
+        if not isinstance(obj, dict):
+            return ""
+        for key in ("customerAddress", "address", "Address", "CustomerAddress"):
+            value = obj.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        for key, value in obj.items():
+            if "address" in str(key).lower() and isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    found = pick(result)
+    if found:
+        return found[:200]
+    for value in (result or {}).values():
+        found = pick(value)
+        if found:
+            return found[:200]
+    return ""
+
+
 def validate_bill_customer(identifier: str, package_id: str) -> dict:
     """Validate a bill customer identifier (meter/smartcard) -> customer name + address.
 
@@ -2856,11 +2885,15 @@ def validate_bill_customer(identifier: str, package_id: str) -> dict:
                                 if invalid_identifier else
                                 "The biller could not verify this customer number. Please try again."),
                     "raw": data}
+        address = _bill_customer_address(r)
+        if not address:
+            # Field NAMES only (never values), so the real spelling can be read
+            # from the logs: the confirm card showed "Not provided by the disco"
+            # for an Ikeja meter on 16 Nov 2026 with the two spellings tried before.
+            log.info("wema_bill_validate_no_address keys=%s", sorted(str(k) for k in r)[:30])
         return {"success": True,
                 "name": r.get("customerName") or r.get("name", ""),
-                # customerAddress is the spelling ALAT uses elsewhere in its contract
-                # (the card-issue body), so it is tried first.
-                "address": r.get("customerAddress") or r.get("address") or "",
+                "address": address,
                 "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)

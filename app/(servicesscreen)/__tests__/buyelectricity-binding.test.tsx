@@ -149,7 +149,7 @@ describe('electricity meter validation binding', () => {
     expect(control(tree, 'Continue').props.disabled).toBe(false);
 
     // ₦19,950 + ₦100 is more than the ₦20,000 balance.
-    await act(async () => { control(tree, 'Enter amount (min 500)').props.onChangeText('19950'); });
+    await act(async () => { control(tree, 'Enter amount (min 1,000)').props.onChangeText('19950'); });
     expect(control(tree, 'Continue').props.disabled).toBe(true);
     act(() => tree.unmount());
   });

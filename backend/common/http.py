@@ -177,7 +177,9 @@ def _daily_spent(user, prefixes) -> Decimal:
 # depending on where the customer stood.
 MIN_TRANSFER = Decimal("50")
 MIN_AIRTIME = Decimal("50")
-MIN_ELECTRICITY = Decimal("500")
+# Wema refuses electricity under ₦1,000 ("You cannot pay less than ₦1000.00 for this
+# bill - Ikeja Electricity", 16 Nov 2026). Taking ₦500 then failed after the PIN.
+MIN_ELECTRICITY = Decimal("1000")
 
 
 def daily_limit_error(user, amount, kind) -> "str | None":

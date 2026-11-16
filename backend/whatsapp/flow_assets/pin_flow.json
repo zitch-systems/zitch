@@ -3346,6 +3346,12 @@
               },
               "title": {
                 "type": "string"
+              },
+              "image": {
+                "type": "string"
+              },
+              "alt-text": {
+                "type": "string"
               }
             }
           },
@@ -3446,6 +3452,12 @@
                 "type": "string"
               },
               "title": {
+                "type": "string"
+              },
+              "image": {
+                "type": "string"
+              },
+              "alt-text": {
                 "type": "string"
               }
             }
