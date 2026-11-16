@@ -56,6 +56,10 @@ jest.mock('expo-linear-gradient', () => {
 });
 jest.mock('@/components/design/Notify', () => ({ notify: jest.fn() }));
 jest.mock('@/components/design/ZIcon', () => () => null);
+// The WhatsApp screen shows the animated coil while it loads. Rendering the real one
+// loads React Native's Animated stack inside the first test (2.5 s locally, past
+// the 5 s budget on CI runners); like the other screen tests, stub the loader.
+jest.mock('@/components/design/Loading', () => ({ Loading: () => null, LoadingMark: () => null, ZCoil: () => null }));
 jest.mock('@/components/design/WhatsAppGlyph', () => ({ WhatsAppGlyph: () => null }));
 jest.mock('@/components/design/widgets', () => ({ Hero: ({ children }: { children: ReactNode }) => children }));
 jest.mock('@/components/AuthGuard', () => ({ children }: { children: ReactNode }) => children);
