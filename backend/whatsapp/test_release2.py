@@ -490,7 +490,8 @@ class BillFormTests(_MoneyBase):
         sent, flow = self.say("4")                    # menu 4: Pay a bill
         kwargs = flow.call_args.kwargs
         self.assertEqual((kwargs["screen"], kwargs["cta"]), (flows.BILL_SCREEN, "Pay a bill"))
-        self.assertEqual(kwargs["screen_data"]["discos"][0], {"id": "1", "title": "Ikeja Electric (IKEDC)"})
+        first = kwargs["screen_data"]["discos"][0]
+        self.assertEqual({k: first[k] for k in ("id", "title")}, {"id": "1", "title": "Ikeja Electric (IKEDC)"})
         self.assertIn("which bill", sent[-1])          # the chat path offered beside it
         pa = PendingAction.objects.get(msisdn=MSISDN)
         self.assertEqual((pa.action_type, pa.state), ("electricity", flows.FLOW_BILL_STATE))
