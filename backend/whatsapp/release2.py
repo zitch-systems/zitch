@@ -195,8 +195,8 @@ BILL_AMOUNT_STEP = "amount"
 
 def _disco_options() -> list:
     """The same disco list the chat's "Which disco?" prompt shows."""
-    from .router import DISCO_NAMES
-    from .router_tail import _DISCO_SHORT
+    # router_tail runs inside router's namespace; it is never imported on its own.
+    from .router import _DISCO_SHORT, DISCO_NAMES
 
     # As designed: "Ikeja Electric (IKEDC)".
     return [{"id": k, "title": f"{v} Electric" + (f" ({_DISCO_SHORT[k]})" if _DISCO_SHORT.get(k) else "")}

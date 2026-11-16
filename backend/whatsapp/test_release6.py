@@ -168,7 +168,10 @@ class DesignReviewTests(TestCase):
     def test_switched_off_products_say_coming_soon_to_a_customer_with_nothing_open(self):
         from .savings_loans import show_loan, show_savings
 
+        from .models import WhatsAppLink
+
         user, _ = make_user()
+        WhatsAppLink.objects.create(user=user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
         router._mark_verified(MSISDN)  # noqa: SLF001
         with patch("whatsapp.savings_loans.product_available", return_value=False), \
              patch("whatsapp.router.reply") as reply:
