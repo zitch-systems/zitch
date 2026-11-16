@@ -683,7 +683,9 @@ TRANSFER_FEE_FREE_BANK_CODES = tuple(
 # it is effectively free and customers expect an alert on every movement. SMS
 # defaults OFF: at Nigerian per-message rates, one alert per transaction is a
 # real recurring cost, and that is a business decision rather than something to
-# switch on silently. Set TXN_ALERTS_SMS=true to enable it.
+# switch on silently. Set TXN_ALERTS_SMS=true to enable it; it only takes effect
+# once TERMII_API_KEY is set too (without a key SMS counts as off and one warning
+# is logged, instead of queuing alerts that can never send).
 TXN_ALERTS = {
     "EMAIL": os.environ.get("TXN_ALERTS_EMAIL", "true").strip().lower() != "false",
     "SMS": os.environ.get("TXN_ALERTS_SMS", "").strip().lower() == "true",

@@ -21,7 +21,8 @@ from common.http import (
     api, fail, idempotent_replay, ok, parse_amount, require_user, spend_key, verify_transaction_pin,
 )
 from common.products import product_available, product_state, unavailable_response
-from wallet.services import DuplicateTransaction, credit, existing_for_key, make_reference
+from wallet.services import (DuplicateTransaction, UnbackedCredit, assert_backed_credit, credit,
+                             existing_for_key, get_or_create_wallet, make_reference)
 
 from .models import ConversionRequest
 
@@ -163,6 +164,13 @@ def convert_airtime(request):
 
     rate = RATES.get(net, DEFAULT_RATE)
     payout = (airtime * rate).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+    try:
+        # Before the airtime is collected: never take airtime for cash that
+        # no bank account would hold.
+        assert_backed_credit(get_or_create_wallet(user))
+    except UnbackedCredit as e:
+        return fail(str(e), status=409, code="bank_account_required")
 
     reference = make_reference("ZCNV")
     collected = collect_airtime(net, phone, airtime, reference)

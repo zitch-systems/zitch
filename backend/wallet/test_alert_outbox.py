@@ -105,7 +105,8 @@ class TransactionAlertOutboxTests(TestCase):
     @override_settings(DEBUG=False, TESTING=False)
     def test_production_commit_queues_alerts_without_sending_then_worker_delivers(self):
         committed = []
-        with self.captureOnCommitCallbacks(execute=True):
+        with self.captureOnCommitCallbacks(execute=True), \
+                patch("utility.providers.sms_live", return_value=True):
             txn = self.movement()
             transaction.on_commit(lambda: committed.append(True))
         self.assertEqual(committed, [True])
@@ -322,25 +323,23 @@ class TransactionAlertOutboxTests(TestCase):
         self.email.assert_not_called()
 
     @override_settings(DEBUG=False, TESTING=False)
-    def test_an_alert_on_a_channel_never_set_up_is_dropped_after_six_hours(self):
-        # SMS alerts switched on with no SMS provider: they wait for the setup to
-        # be fixed, then are dropped rather than sent days late or kept forever.
-        txn = self.movement()
-        row = txn.alert_deliveries.get(channel="sms")
-        with patch("utility.providers.sms_live", return_value=False):
-            self.assertFalse(_dispatch_alert(row.pk))
-            row.refresh_from_db()
-            self.assertEqual((row.state, row.error_code), (Delivery.READY, "sms_unconfigured"))
-            Delivery.objects.filter(pk=row.pk).update(
-                created=timezone.now() - timedelta(hours=5), next_attempt_at=None)
-            self.assertFalse(_dispatch_alert(row.pk))
-            row.refresh_from_db()
-            self.assertEqual(row.state, Delivery.READY)
-            Delivery.objects.filter(pk=row.pk).update(
-                created=timezone.now() - timedelta(hours=7), next_attempt_at=None)
+    def test_sms_switched_on_without_a_provider_key_counts_as_off(self):
+        # TXN_ALERTS_SMS=true with no TERMII_API_KEY: nothing can ever be sent.
+        # Nothing is queued for it, alerts already queued are dropped at once,
+        # and the operator is not emailed about it every few hours.
+        with patch("utility.providers.sms_live", return_value=True):
+            queued = self.movement("OUTBOX-SMS-QUEUED")   # queued while a key was set
+        row = queued.alert_deliveries.get(channel="sms")
+        with patch("utility.providers.sms_live", return_value=False), \
+                patch("wallet.alerts._report_alert_route_unavailable") as route_alert:
+            fresh = self.movement("OUTBOX-SMS-NEW")
+            self.assertFalse(fresh.alert_deliveries.filter(channel="sms").exists())
+            self.assertTrue(fresh.alert_deliveries.filter(channel="email").exists())
             self.assertFalse(_dispatch_alert(row.pk))
         row.refresh_from_db()
-        self.assertEqual((row.state, row.error_code), (Delivery.SKIPPED, "sms_unconfigured"))
+        self.assertEqual((row.state, row.error_code), (Delivery.SKIPPED, "channel_disabled"))
+        route_alert.assert_not_called()
+        self.sms.assert_not_called()
 
     def test_alerts_waiting_on_a_channel_that_is_switched_off_are_dropped(self):
         txn = self.movement()

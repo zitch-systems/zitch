@@ -214,7 +214,7 @@ class Command(BaseCommand):
 
         owed = self._owed()
         movement = self._day_movement()
-        self._report_unbacked()
+        unbacked = self._report_unbacked()
         legacy_scope = reconciliation_scope()
 
         if not wema.wema_live():
@@ -303,10 +303,18 @@ class Command(BaseCommand):
             breached = True
 
         if position is not None and position < 0 and -position > max_shortfall:
+            # Say how much of the gap is the unbacked wallets reported above, so
+            # one cause does not read as two problems, and any gap BEYOND them
+            # (money missing from accounts that do exist) stands out.
+            cent = Decimal("0.01")
+            unexplained = max(Decimal("0"), -position - unbacked).quantize(cent)
+            explained = min(unbacked, -position).quantize(cent)
             alert("settlement_report: SHORTFALL — customer liability exceeds every asset rail "
                   "combined", level="error",
                   shortfall=str(-position), liability=str(owed["ledger_liability"]),
-                  held=str(held_total), incomplete=incomplete)
+                  held=str(held_total), incomplete=incomplete,
+                  from_wallets_without_wema_account=str(explained),
+                  unexplained=str(unexplained))
             breached = True
         elif position is not None and max_surplus is not None and position > max_surplus:
             alert("settlement_report: surplus above the configured ceiling — check for "
@@ -318,22 +326,30 @@ class Command(BaseCommand):
         if breached and options["fail_on_breach"]:
             raise SystemExit(1)
 
-    def _report_unbacked(self):
+    def _report_unbacked(self) -> Decimal:
         """A balance with no Wema account behind it is money no bank holds.
 
         Every such wallet is a settlement shortfall that no amount of
-        reconciliation can close: it needs a Partnership account and a
-        settlement transfer (prepare_settlement_funding). Name the count and
-        total every run, and page while any remain, so it is never silent.
+        reconciliation can close. New ones are refused at the source
+        (wallet.services.assert_backed_credit); the ones that exist are named
+        here with where their money came from and the reviewed command that
+        resolves each (wallet.unbacked), and page while any remain.
+        Returns the total, which the SHORTFALL line attributes.
         """
-        from django.db.models import Count, Sum
         from utility.alerts import alert
-        row = Wallet.objects.filter(balance__gt=0, account_number="").aggregate(
-            n=Count("pk"), total=Sum("balance"))
-        if row["n"]:
-            self.stdout.write(f"UNBACKED {row['n']} wallet(s) hold ₦{row['total']:,.2f} with no Wema account")
-            alert("settlement_report: customer balances with no Wema account behind them",
-                  level="error", wallets=row["n"], amount=str(row["total"]))
+        from wallet.unbacked import summary_line, unbacked_wallets
+
+        rows = unbacked_wallets()
+        if not rows:
+            return Decimal("0")
+        total = sum((r["balance"] for r in rows), Decimal("0"))
+        self.stdout.write(f"UNBACKED {len(rows)} wallet(s) hold ₦{total:,.2f} with no Wema account")
+        for r in rows:
+            self.stdout.write("        " + summary_line(r))
+        alert("settlement_report: customer balances with no Wema account behind them",
+              level="error", wallets=len(rows), amount=str(total),
+              wallet_detail=" | ".join(summary_line(r) for r in rows))
+        return total
 
     def _print_owed(self, owed, movement):
         self.stdout.write(f"OWED    ledger liability ₦{owed['ledger_liability']:,.2f} "

@@ -156,6 +156,12 @@ def _move(user, ccy: str, delta: Decimal) -> None:
         w = Wallet.objects.select_for_update().get(user=user)
         if w.balance + delta < 0:
             raise FxError("Insufficient NGN balance.")
+        if delta > 0:
+            from wallet.services import UnbackedCredit, assert_backed_credit
+            try:
+                assert_backed_credit(w)
+            except UnbackedCredit as exc:
+                raise FxError(str(exc)) from exc
         w.balance += delta
         w.save(update_fields=["balance", "updated"])
     else:

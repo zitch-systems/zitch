@@ -3,6 +3,7 @@
 Locking debits the wallet; maturity payout credits principal + interest. Both
 go through the wallet ledger atomically. Payout is idempotent per plan.
 """
+import logging
 from datetime import timedelta
 from decimal import Decimal
 
@@ -18,6 +19,8 @@ from wallet.services import (DuplicateTransaction, InsufficientFunds,
                              with_idempotency_fingerprint)
 
 from .models import FixedSave
+
+log = logging.getLogger(__name__)
 
 
 #: The ledger label for a lock. One constant because it is used twice: to pick the
@@ -111,9 +114,21 @@ def run_maturities() -> int:
     due = FixedSave.objects.filter(status=FixedSave.ACTIVE, paid_out=False, matures_at__lte=timezone.now())
     n = 0
     for plan in due:
-        if pay_out(plan):
+        if _pay_out_or_hold(plan):
             n += 1
     return n
+
+
+def _pay_out_or_hold(plan):
+    """Pay a matured plan, or leave it unpaid while the customer has no bank
+    account to hold the money (UnbackedCredit); it pays on a later sweep."""
+    from wallet.services import UnbackedCredit
+
+    try:
+        return pay_out(plan)
+    except UnbackedCredit:
+        log.warning("savings_maturity_held_no_bank_account plan=%s", plan.pk)
+        return None
 
 
 def settle_user_maturities(user) -> int:
@@ -125,4 +140,4 @@ def settle_user_maturities(user) -> int:
     open the app) when run on a paid plan.
     """
     due = user.savings.filter(status=FixedSave.ACTIVE, paid_out=False, matures_at__lte=timezone.now())
-    return sum(1 for plan in due if pay_out(plan))
+    return sum(1 for plan in due if _pay_out_or_hold(plan))

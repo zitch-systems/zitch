@@ -76,6 +76,37 @@ Runs 06:00 UTC / 07:00 Lagos, before the business day.
 4. Any `incomplete: true` run is not evidence of anything. Fix the unreadable rail
    and re-run before drawing a conclusion.
 
+### Balances with no Wema account behind them
+
+Every naira a live customer holds sits in their own Wema account. A wallet with
+a balance and no account is money no bank holds: all of it is shortfall, and no
+reconciliation run closes it. The report pages it as "customer balances with no
+Wema account behind them", and the SHORTFALL alert says how much of its gap those
+wallets explain (`from_wallets_without_wema_account`) and how much they do not
+(`unexplained`). Only an `unexplained` amount above zero means money is missing from
+accounts that exist.
+
+New ones cannot be created: on a live deploy every ledger credit to a wallet without
+a real Wema account is refused (`wallet.services.assert_backed_credit`). That covers
+operator manual credits, loans, savings maturities (held until the account exists),
+airtime-to-cash (checked before the airtime is taken) and conversions into NGN.
+
+Existing ones are listed with where each balance came from and what resolves it:
+
+    python manage.py unbacked_balances
+
+* `simulated` only: fake money from a simulation deploy.
+  `python manage.py purge_simulation_data --confirm` reverses it.
+* `retired` only: money paid to a retired provider. Use `archive_retired_balances`
+  (see `docs/retired-balance-archive.md`).
+* Anything else is real customer money. The customer opens their Wema account
+  (WhatsApp reply 6, or the app). The operator is then emailed at once with the
+  exact next step: `prepare_settlement_funding --user-id <id> --apply
+  --operator-reference '<who approved>'`, and Zitch makes the one transfer it names.
+  It is matched to the account, not credited twice.
+
+The alerts stop when `unbacked_balances` reports none.
+
 ## 4. Thresholds
 
 | Flag | Launch value | Why |

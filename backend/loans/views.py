@@ -10,7 +10,8 @@ from common.http import (
 from common.ratelimit import ratelimit
 from common.products import product_available, product_state, unavailable_response
 from utility.providers import bnpl_offers as provider_bnpl_offers
-from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, get_or_create_wallet
+from wallet.services import (DuplicateTransaction, InsufficientFunds, UnbackedCredit, existing_for_key,
+                             get_or_create_wallet)
 
 from .models import Loan
 from .services import LoanError, LoanRepaymentStale, credit_limit, disburse, repay
@@ -151,6 +152,8 @@ def loan_request(request):
     except LoanError as e:
         # Eligibility re-check inside the lock caught a race past the checks above.
         return fail(str(e), status=409)
+    except UnbackedCredit as e:
+        return fail(str(e), status=409, code="bank_account_required")
     except IntegrityError:
         # DB partial-unique backstop: a concurrent disbursement won the race.
         return fail("You already have an active loan", status=409)
