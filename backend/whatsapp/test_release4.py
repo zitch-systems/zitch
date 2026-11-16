@@ -171,7 +171,7 @@ class Release4FlowJsonTests(SimpleTestCase):
         self.assertEqual((code["label"], code["visible"], code["required"]),
                          ("SMS code", "${data.code_sent}", False))
         links = [c["text"] for c in _form("SIGNUP_BVN")["children"] if c["type"] == "EmbeddedLink"]
-        self.assertEqual(links, ["Didn't get it? Resend code", "${data.alt_text}"])
+        self.assertEqual(links, ["Resend code", "${data.alt_text}"])
         address = _BY_ID["SIGNUP_ADDRESS"]
         self.assertIn("Step 4 of 5", [c.get("text") for c in address["layout"]["children"]])
         self.assertEqual([c.get("label") for c in _form("SIGNUP_ADDRESS")["children"][:4]],
@@ -241,7 +241,7 @@ class BillTypeTests(_MoneyBase):
         pa = self.open()
         page = self.submit(pa, flows.BILL_TYPE, bill="electricity")
         self.assertEqual(page["screen"], flows.BILL_CHAIN)
-        self.assertEqual(page["data"]["discos"][0], {"id": "1", "title": "Ikeja Electric"})
+        self.assertEqual(page["data"]["discos"][0], {"id": "1", "title": "Ikeja Electric (IKEDC)"})
         amount = self.submit(pa, flows.BILL_CHAIN, disco="1", meter_type="prepaid", meter="01234567890")
         self.assertEqual(amount["screen"], flows.BILL_AMOUNT)
         pa.refresh_from_db()

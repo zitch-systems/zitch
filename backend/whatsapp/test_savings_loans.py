@@ -404,14 +404,16 @@ class SavingsLoanFlowTests(FlowContractMixin, TestCase):
 
     @override_settings(DEBUG=False, TESTING=False, WEMA={"SIMULATION": False})
     def test_live_deploy_refuses_new_local_products_before_collecting_details(self):
-        for command, product in (("new savings", "Fixed savings"),
-                                 ("repay loan", "Loans"),
-                                 ("convert", "Currency exchange")):
+        # A customer with nothing open in a switched-off product gets the
+        # approved design's "Coming soon"; the rest keep the support wording.
+        for command, product, refusal in (("new savings", "Fixed savings", "not available yet"),
+                                          ("repay loan", "Loans", "Coming soon."),
+                                          ("convert", "Convert currency", "Coming soon.")):
             with self.subTest(command=command):
                 router._clear_actions(MSISDN)
                 self.send_flow.reset_mock()
                 self.say(command)
-                self.assertIn("not available yet", self.message())
+                self.assertIn(refusal, self.message())
                 self.assertIn(product, self.message())
                 self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
                 self.send_flow.assert_not_called()

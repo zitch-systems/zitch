@@ -58,6 +58,12 @@ def _read_allowed(user, msisdn, resume):
     return True
 
 
+#: What a switched-off product says to a customer with nothing open in it.
+COMING_SOON = {"savings": "🏦 *Savings*\n\nComing soon.",
+               "loans": "💳 *Loans*\n\nComing soon.",
+               "fx": "💱 *Convert currency*\n\nComing soon."}
+
+
 def _unavailable(msisdn, product):
     """Name the unavailable product and give a usable support route when set."""
     r = _router()
@@ -103,6 +109,9 @@ def show_savings(user, msisdn, *, page=1, history=False):
     if page > max(1, (count + 4) // 5):
         return r.reply(msisdn, "That savings page is unavailable. Reply savings to see your active plans.")
     total = user.savings.filter(status=FixedSave.ACTIVE).aggregate(total=Sum("principal"))["total"] or Decimal("0")
+    if not available and not history and not count and not user.savings.exists():
+        # Never had a plan: the design's line, not "contact support about a plan".
+        return r.reply(msisdn, COMING_SOON["savings"])
     lines = ["🏦 *Your Zitch savings*", f"Locked: {r._money(total)}"]
     if not count:
         lines.append("You don't have any saved plans yet." if history else "You don't have any active Zitch savings right now.")
@@ -188,7 +197,8 @@ def show_loan(user, msisdn):
     loan = user.loans.filter(status=Loan.ACTIVE).first()
     if loan is None:
         if not product_available("loans"):
-            return _unavailable(msisdn, "loans")
+            # Nothing open, so nothing to contact support about: the design's line.
+            return r.reply(msisdn, COMING_SOON["loans"])
         return r.reply(msisdn, "You don't have an active Zitch loan right now. "
                        "New loan applications aren't available in this WhatsApp flow.")
     overdue = " — *overdue*" if loan.due_date < timezone.now() else ""

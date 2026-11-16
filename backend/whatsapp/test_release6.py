@@ -145,6 +145,46 @@ class MenuV5Tests(r2.MenuFormTests):
         self.assertIn("extension_message_response", resp["data"])
 
 
+class DesignReviewTests(TestCase):
+    """What the page-by-page review against the approved design changed."""
+
+    def test_sign_in_pages_read_as_designed(self):
+        for sid in ("LOGIN_SCREEN", "LOGIN_RETRY"):
+            kids = _BY_ID[sid]["layout"]["children"]
+            self.assertIn("Confirm it's you", [c.get("text") for c in kids])
+            form = next(c for c in kids if c.get("type") == "Form")["children"]
+            code = next(c for c in form if c.get("name") == "number")
+            self.assertEqual((code["label"], code["helper-text"]), ("Code", "6 digits, by SMS or email"))
+
+    def test_the_privacy_page_names_the_partnership_and_keeps_the_licence_notice(self):
+        texts = [c.get("text") for c in _BY_ID["PRIVACY_NOTICE"]["layout"]["children"]]
+        self.assertIn("Zitch is built in partnership with Wema Bank Plc.", texts)
+        self.assertIn("Banking services by Wema Bank Plc, licensed by the CBN. Deposits insured by NDIC.",
+                      texts)
+
+    def test_discos_carry_their_short_names(self):
+        self.assertEqual(release2._disco_options()[0], {"id": "1", "title": "Ikeja Electric (IKEDC)"})
+
+    def test_switched_off_products_say_coming_soon_to_a_customer_with_nothing_open(self):
+        from .savings_loans import show_loan, show_savings
+
+        from .models import WhatsAppLink
+
+        user, _ = make_user()
+        WhatsAppLink.objects.create(user=user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        router._mark_verified(MSISDN)  # noqa: SLF001
+        with patch("whatsapp.savings_loans.product_available", return_value=False), \
+             patch("whatsapp.router.reply") as reply:
+            show_savings(user, MSISDN)
+            show_loan(user, MSISDN)
+        self.assertEqual([c.args[1] for c in reply.call_args_list],
+                         ["🏦 *Savings*\n\nComing soon.", "💳 *Loans*\n\nComing soon."])
+        with patch("whatsapp.router.product_available", return_value=False), \
+             patch("whatsapp.router.reply") as reply:
+            router._start_convert(user, MSISDN)  # noqa: SLF001
+        self.assertEqual(reply.call_args.args[1], "💱 *Convert currency*\n\nComing soon.")
+
+
 @override_settings(WHATSAPP_FLOW=r3.VTU_ON)
 class QuickAmountTests(r3._VtuBase):
 

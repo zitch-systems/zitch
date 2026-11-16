@@ -490,7 +490,7 @@ class BillFormTests(_MoneyBase):
         sent, flow = self.say("4")                    # menu 4: Pay a bill
         kwargs = flow.call_args.kwargs
         self.assertEqual((kwargs["screen"], kwargs["cta"]), (flows.BILL_SCREEN, "Pay a bill"))
-        self.assertEqual(kwargs["screen_data"]["discos"][0], {"id": "1", "title": "Ikeja Electric"})
+        self.assertEqual(kwargs["screen_data"]["discos"][0], {"id": "1", "title": "Ikeja Electric (IKEDC)"})
         self.assertIn("which bill", sent[-1])          # the chat path offered beside it
         pa = PendingAction.objects.get(msisdn=MSISDN)
         self.assertEqual((pa.action_type, pa.state), ("electricity", flows.FLOW_BILL_STATE))
@@ -859,7 +859,7 @@ class Release2FlowJsonTests(SimpleTestCase):
         details = _BY_ID["SIGNUP_DETAILS"]
         self.assertEqual(details["title"], "Create your account")
         texts = [c.get("text") for c in details["layout"]["children"]]
-        self.assertIn("Create your Zitch account", texts)
+        self.assertIn("Create your account", texts)
         self.assertIn("Step 1 of 5", texts)
         phone = next(c for c in details["layout"]["children"][-1]["children"]
                      if c.get("name") == "phone")
