@@ -159,6 +159,18 @@ VTU_CHAIN = "VTU_CHAIN"
 BILL_SCREEN = "BILL_SCREEN"
 BILL_CHAIN = "BILL_CHAIN"
 BILL_AMOUNT = "BILL_AMOUNT"
+#: Release 3 screens (see whatsapp/release3.py), each unreachable until its
+#: WHATSAPP_FLOW flag is on, for the same reason as Release 2's.
+#:
+#: VTU_FORM is airtime-or-data, the phone, the network and the airtime amount on
+#: one page; VTU_PLAN is the data plan, which depends on the network chosen
+#: there. SEND_MONEY is the redesigned transfer form. Each *_CHAIN is the twin
+#: the menu form routes into - the roots stay roots so the chat can open them.
+VTU_FORM = "VTU_FORM"
+VTU_FORM_CHAIN = "VTU_FORM_CHAIN"
+VTU_PLAN = "VTU_PLAN"
+SEND_MONEY = "SEND_MONEY"
+SEND_MONEY_CHAIN = "SEND_MONEY_CHAIN"
 FLOW_VERIFY_PW_STATE = "flow_verify_pw"   # WaOnboarding.step while VERIFY_PASSWORD is open
 FLOW_BILL_STATE = "flow_bill"             # PendingAction.state while the bill form is open
 FLOW_FORM_STATE = "flow_transfer_form"   # PendingAction.state while the transfer form is open
@@ -1072,8 +1084,15 @@ def _handle_flow_request(payload: dict) -> dict:
                 return recorded
             return _success_screen(
                 "This request has ended. Check the chat for its outcome, or start again there.")
+        # A Release 3 form is marked on the payload it was opened with, so a
+        # session finishes on the screens it started on whatever the flag says now.
+        from . import release3
+        if pa.state == FLOW_FORM_STATE and release3.is_send_money(pa):
+            return release3.send_money_screen_for(pa)
         if pa.state == FLOW_FORM_STATE:
             return _transfer_form_screen()
+        if pa.state == FLOW_VTU_STATE and release3.is_vtu_form(pa):
+            return release3.vtu_form_screen_for(pa)
         if pa.state == FLOW_VTU_STATE:
             return _vtu_screen_for(pa)
         if pa.state == FLOW_BILL_STATE:
@@ -1094,6 +1113,11 @@ def _handle_flow_request(payload: dict) -> dict:
         # Read BEFORE the handler runs: _submit_vtu mutates this same payload.
         from .release2 import on_twin
         standing = _flow_screen(pa, "") if pa is not None else ""
+        from . import release3
+        if pa is not None and pa.state == FLOW_FORM_STATE and release3.is_send_money(pa):
+            return release3.submit_send_money(pa, token, data)
+        if pa is not None and pa.state == FLOW_VTU_STATE and release3.is_vtu_form(pa):
+            return release3.submit_vtu_form(pa, data)
         if pa is not None and pa.state == FLOW_FORM_STATE:
             return on_twin(standing, _submit_transfer_form(token, data))
         if pa is not None and pa.state == FLOW_VTU_STATE:
@@ -1367,6 +1391,16 @@ def bill_form_live() -> bool:
 def menu_form_live() -> bool:
     """MENU (+ TRANSFER_CHAIN / VTU_CHAIN): the menu as a form."""
     return _release2_flag("MENU_FORM")
+
+
+def vtu_one_screen_live() -> bool:
+    """Release 3. VTU_FORM / VTU_FORM_CHAIN / VTU_PLAN: airtime or data on one page."""
+    return _release2_flag("VTU_ONE_SCREEN")
+
+
+def transfer_form_v2_live() -> bool:
+    """Release 3. SEND_MONEY / SEND_MONEY_CHAIN: the redesigned send-money form."""
+    return _release2_flag("TRANSFER_FORM_V2")
 
 
 def _signup_password_screen(error: str = "") -> dict:
@@ -2300,13 +2334,7 @@ def _submit_vtu_details(pa, data: dict) -> dict:
     here - minimum, limits, balance - because two entry points must not
     disagree about what a valid purchase is.
     """
-    from decimal import Decimal, InvalidOperation
-
-    from common.http import daily_limit_error, send_limit_error
-    from utility.models import DataPlan
-
-    from .router import (MIN_AIRTIME, NETWORK_NAMES, _clear_actions, _flow_fields,
-                         _fresh_wallet_balance, _insufficient, _money, _own_phone, _phone_from, _touch)
+    from .router import NETWORK_NAMES, _own_phone
 
     user = pa.user
     kind = pa.payload.get("vtu_kind", "airtime")
@@ -2318,6 +2346,30 @@ def _submit_vtu_details(pa, data: dict) -> dict:
         return (_vtu_airtime_screen(net_name, error=f"⚠️ {message}", phone=phone_value)
                 if kind == "airtime" else
                 _vtu_data_screen(net, net_name, error=f"⚠️ {message}", phone=phone_value))
+
+    return arm_vtu(pa, data, refuse)
+
+
+def arm_vtu(pa, data: dict, refuse) -> dict:
+    """The checks and the arming behind every airtime/data form: the phone, the
+    amount or plan, limits, balance and the PIN - then PIN_CHAIN on the SAME
+    session. `pa.payload` already holds vtu_kind and net; `refuse(message)`
+    renders the page the customer is standing on with that message.
+
+    Shared by the four-page ladder and the Release 3 one-page form, so the two
+    entry points cannot disagree about what a valid purchase is.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    from common.http import daily_limit_error, send_limit_error
+    from utility.models import DataPlan
+
+    from .router import (MIN_AIRTIME, _clear_actions, _flow_fields,
+                         _fresh_wallet_balance, _insufficient, _money, _phone_from, _touch)
+
+    user = pa.user
+    kind = pa.payload.get("vtu_kind", "airtime")
+    net = pa.payload.get("net", "1")
 
     phone = _phone_from(str(data.get("phone") or pa.payload.get("phone") or ""), user)
     if not phone:
@@ -2401,7 +2453,7 @@ _DEFAULT_TRANSFER_HINT = (
 )
 
 
-def _submit_transfer_form(token: str, data: dict) -> dict:
+def _submit_transfer_form(token: str, data: dict, render=None) -> dict:
     """The transfer form: amount + account + (optional) bank in one private
     screen. The server verifies everything the chat interrogation verified -
     minimum, limits, balance, and the name enquiry - then chains into the PIN
@@ -2411,7 +2463,12 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
     the list, picks alone only when exactly ONE bank matches, and otherwise
     re-renders with the candidates leading the dropdown. The name enquiry is
     the real safety net either way.
+
+    `render(error=, candidates=, query=, hint=)` builds the form page for a
+    refusal; it defaults to TRANSFER_FORM. The Release 3 SEND_MONEY form passes
+    its own, so both forms run this one set of checks and arm the same confirm.
     """
+    render = render or _transfer_form_screen
     from common.http import MIN_TRANSFER, daily_limit_error, send_limit_error, parse_amount
     from transfers.models import Bank
     from utility.providers import payout_resolve_account
@@ -2451,23 +2508,23 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
         else:
             hint = (f'Showing {len(shown)} bank{"" if len(shown) == 1 else "s"} '
                     f'matching "{search}". Pick yours, then tap Continue.')
-        return _transfer_form_screen(query=search, hint=hint)
+        return render(query=search, hint=hint)
 
     amount = parse_amount(data.get("amount"))
     if amount is None:
-        return _transfer_form_screen(error="Enter the amount as a number, e.g. 5000.")
+        return render(error="Enter the amount as a number, e.g. 5000.")
     raw_account = data.get("account_number")
     account = raw_account.strip() if isinstance(raw_account, str) else ""
     if not re.fullmatch(r"[0-9]{10}", account):
-        return _transfer_form_screen(error="The account number should be exactly 10 digits.")
+        return render(error="The account number should be exactly 10 digits.")
     if amount < MIN_TRANSFER:
-        return _transfer_form_screen(error=f"Minimum transfer is NGN {MIN_TRANSFER:,.0f}.")
+        return render(error=f"Minimum transfer is NGN {MIN_TRANSFER:,.0f}.")
     limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
     if limit_msg:
-        return _transfer_form_screen(error=limit_msg)
+        return render(error=limit_msg)
     if _insufficient(user, amount):
         balance = _fresh_wallet_balance(user)
-        return _transfer_form_screen(error=f"Insufficient balance - you have NGN {balance:,.2f} available.")
+        return render(error=f"Insufficient balance - you have NGN {balance:,.2f} available.")
 
     # One bank field serves both search and selection. New Flow clients submit
     # a human bank name ("Wema", "Kuda", "GTBank"); an already-open legacy Flow
@@ -2487,11 +2544,11 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
         elif matches:
             shown = ", ".join(b.name for b in matches[:4])
             more = " and others" if len(matches) > 4 else ""
-            return _transfer_form_screen(
+            return render(
                 error=f'Several banks match "{bank_value}": {shown}{more}. '
                       "Type a more specific bank name.")
         else:
-            return _transfer_form_screen(
+            return render(
                 error=f'We could not find "{bank_value}". Type the bank name, '
                       "e.g. Kuda, GTBank or OPay.")
 
@@ -2514,15 +2571,15 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
                 more = " and others" if len(candidates) > 4 else ""
                 message = (f"This account number matches {len(candidates)} banks "
                            f"({names}{more}) - type your bank name.")
-            return _transfer_form_screen(error=message, candidates=candidates)
+            return render(error=message, candidates=candidates)
         else:
             message = ("Pick the bank from the list." if legacy_picker
                        else "Enter the bank name, e.g. Kuda, GTBank or OPay.")
-            return _transfer_form_screen(error=message)
+            return render(error=message)
 
     res = payout_resolve_account(account, bank.bank_code)
     if not res.get("success"):
-        return _transfer_form_screen(
+        return render(
             error=f"Couldn't verify that account at {bank.name} - check the number.")
     name = (res.get("name") or "").strip() or "Bank recipient"
 
@@ -2534,7 +2591,7 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
     fee = transfer_fee(amount, bank.bank_code, bank.name)
     if fee > 0 and _insufficient(user, amount + fee):
         balance = _fresh_wallet_balance(user)
-        return _transfer_form_screen(
+        return render(
             error=f"Insufficient balance - NGN {amount:,.2f} plus the NGN {fee:,.2f} bank fee "
                   f"is NGN {amount + fee:,.2f}, and you have NGN {balance:,.2f} available.")
 

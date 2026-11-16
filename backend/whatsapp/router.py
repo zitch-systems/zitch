@@ -70,7 +70,7 @@ from .flows import (ACCOUNT_OTP, CODE_SCREEN, EMAIL_SCREEN,
                     PIN_SCREEN,
                     FLOW_BILL_STATE, FLOW_VERIFY_PW_STATE, SIGNUP_DETAILS,
                     bill_form_live, details_screen_live, menu_form_live,
-                    privacy_screen_live,
+                    privacy_screen_live, transfer_form_v2_live, vtu_one_screen_live,
                     sign_approve_token, sign_flow_token, sign_identity_token,
                     sign_onboarding_token)
 from .models import AuditLog, ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
@@ -1658,6 +1658,13 @@ def handle_inbound(msisdn: str, text: str, *, list_reply: bool = False) -> None:
         return _do_add_money(user, msisdn)
     if low in ("transfer", "send", "send money"):
         return _start_transfer(user, msisdn)
+    if low in ("airtime", "data") and vtu_one_screen_live():
+        # Release 3: the one-page form, opened on what was asked for. A failed
+        # send carries on into the chat ladder below, exactly as before.
+        from .release3 import start_vtu_form
+
+        if start_vtu_form(user, msisdn, low):
+            return None
     if low == "airtime":
         return _start_airtime(user, msisdn)
     if low == "data":
@@ -5339,6 +5346,13 @@ def _start_transfer(user, msisdn: str) -> None:
                     "Type the bank name in the Bank field if the account number cannot identify it.")
     if not banks:
         log.warning("wa_transfer_form_skipped reason=no_active_banks")
+    if flows_live() and banks and transfer_form_v2_live():
+        # Release 3: the redesigned form. If it cannot be sent, the form below
+        # (still published) is tried exactly as before this release.
+        from .release3 import start_send_money
+
+        if start_send_money(user, msisdn):
+            return None
     if flows_live() and banks:
         pa = _new_flow(user, msisdn, "transfer", FLOW_FORM_STATE, {"pin_attempts": 0})
         res = send_flow(

@@ -1258,6 +1258,13 @@ def _start_vtu(user, msisdn: str) -> None:
     if _blocked_from_spending(user, msisdn, biller=True):
         return None
     _clear_actions(msisdn)
+    if vtu_one_screen_live():
+        # Release 3: airtime or data on one page. If it cannot be sent, the
+        # four-page ladder below (still published) is tried exactly as before.
+        from .release3 import start_vtu_form
+
+        if start_vtu_form(user, msisdn, "airtime"):
+            return None
     if flows_live():
         # action_type is provisional: the FIRST page decides airtime vs data and
         # rewrites it, because the executor is chosen by action_type later.

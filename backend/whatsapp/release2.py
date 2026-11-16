@@ -513,6 +513,11 @@ def _open_transfer(user, msisdn, token, session):
     if not _bank_items():
         # An empty bank Dropdown does not render; the chat ladder still works.
         return None
+    if F.transfer_form_v2_live():
+        # Release 3: the redesigned form, on its own chained twin.
+        from .release3 import open_send_money_chain
+
+        return open_send_money_chain(user, msisdn, session)
     pa = _new_flow(user, msisdn, "transfer", F.FLOW_FORM_STATE,
                    {"pin_attempts": 0, "menu_session": session, "flow_screen": F.TRANSFER_CHAIN})
     _bind(pa, session)
@@ -526,6 +531,11 @@ def _open_vtu(user, msisdn, token, session):
 
     if _blocked_from_spending(user, msisdn, biller=True):
         return F._close_flow(token)
+    if F.vtu_one_screen_live():
+        # Release 3: airtime or data on one page, on its own chained twin.
+        from .release3 import open_vtu_form_chain
+
+        return open_vtu_form_chain(user, msisdn, session)
     pa = _new_flow(user, msisdn, "airtime", F.FLOW_VTU_STATE,
                    {"vtu_step": "kind", "pin_attempts": 0, "menu_session": session,
                     "flow_screen": F.VTU_CHAIN})

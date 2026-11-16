@@ -848,6 +848,16 @@ WHATSAPP_FLOW = {
                  in ("1", "true", "yes", "on"),
     "MENU_FORM": os.environ.get("WHATSAPP_FLOW_MENU_FORM", "").strip().lower()
                  in ("1", "true", "yes", "on"),
+    # Release 3 screens (whatsapp/release3.py). Same gate, same reason: OFF
+    # until `publish_flow` lists the screens as live. See flow_assets/README.md,
+    # "Release 3 go-live".
+    #   VTU_ONE_SCREEN    VTU_FORM / VTU_FORM_CHAIN / VTU_PLAN (airtime or data
+    #                     on one page, the data plan on a second)
+    #   TRANSFER_FORM_V2  SEND_MONEY / SEND_MONEY_CHAIN (the redesigned send form)
+    "VTU_ONE_SCREEN": os.environ.get("WHATSAPP_FLOW_VTU_ONE_SCREEN", "").strip().lower()
+                      in ("1", "true", "yes", "on"),
+    "TRANSFER_FORM_V2": os.environ.get("WHATSAPP_FLOW_TRANSFER_FORM_V2", "").strip().lower()
+                        in ("1", "true", "yes", "on"),
 }
 
 # LLM intent layer for WhatsApp. Blank API_KEY => AI off (deterministic router
