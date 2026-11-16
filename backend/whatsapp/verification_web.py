@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import re
 import secrets
 import warnings
@@ -46,6 +47,8 @@ from utility.providers import partnership_new_business_allowed
 
 from .liveness import liveness_context, secure_camera_headers
 from .models import PendingAction, WhatsAppLink
+
+log = logging.getLogger("whatsapp")
 
 TTL_SECONDS = 15 * 60
 ACTION_TYPE = "verification_web"
@@ -614,7 +617,17 @@ def _face_get(request, token):
     return render(request, "whatsapp/face_camera.html", {
         **liveness_context(request.verification_nonce),
         "picker_only": request.GET.get("stay") == "1",
+        "return_to": _chat_link(),
     })
+
+
+def _chat_link() -> str:
+    """Where "Return to WhatsApp" goes: Zitch's own chat. A bare https://wa.me/
+    has no chat to open and WhatsApp shows "Couldn't open this chat link"; with
+    no business number configured, whatsapp:// still brings WhatsApp forward."""
+    raw = (getattr(settings, "WHATSAPP", {}) or {}).get("BUSINESS_NUMBER") or ""
+    digits = re.sub(r"\D", "", str(raw))
+    return f"https://wa.me/{digits}" if len(digits) >= 10 else "whatsapp://send"
 
 
 def _json(http_status, **body):
@@ -686,12 +699,14 @@ def _face_post(request, token):
         body = json.loads(response.content)
     except Exception:  # Never log the image, identities or provider payloads.
         PendingAction.objects.filter(pk=pa.pk, state=FACE_PROCESSING).update(state=FACE_PENDING)
+        _ack_face_pending(pa)
         return _json(202, status="pending", message=FACE_PENDING_TEXT)
     if response.status_code == 200 and body.get("success") is True:
         _finish_face(pa, "verified")
         return _json(200, status="verified", message="Tier 2 verification complete.")
     if response.status_code == 202:
         PendingAction.objects.filter(pk=pa.pk, state=FACE_PROCESSING).update(state=FACE_PENDING)
+        _ack_face_pending(pa)
         return _json(202, status="pending", message=FACE_PENDING_TEXT)
     # An explicit refusal: allow another try from the same link. Only our own
     # validation messages are shown; bank text may carry account details. A
@@ -701,6 +716,27 @@ def _face_post(request, token):
     message = (body.get("message") if own else "") or FACE_RETRY_TEXT
     field = "ids" if own and re.search(r"\b(BVN|NIN)\b", message) else "face"
     return _json(response.status_code if own else 422, status="retry", field=field, message=message)
+
+
+def _ack_face_pending(pa):
+    """Tell the chat, once, that the face check reached the bank and the result
+    will follow. Without it the customer returns to WhatsApp to silence until
+    the bank finishes. Never raises: the bank already has the photo."""
+    from .router import reply
+
+    try:
+        with transaction.atomic():
+            current = PendingAction.objects.select_for_update().filter(pk=pa.pk).first()
+            if (current is None or "face_ack" in (current.payload or {})
+                    or "face_notified" in (current.payload or {})):
+                return False
+            current.payload["face_ack"] = True
+            current.save(update_fields=["payload"])
+        reply(pa.msisdn, FACE_RECEIVED_TEXT)
+        return True
+    except Exception:  # noqa: BLE001 - the result message still follows
+        log.warning("wa_face_ack_failed")
+        return False
 
 
 def _finish_face(pa, outcome):
@@ -771,6 +807,9 @@ FACE_RETRY_TEXT = ("Your bank could not confirm your face. Take the photo again 
                    "light, facing the camera, with nothing covering your face.")
 FACE_REFRESH_TEXT = ("This page has been updated. Refresh it, then take the face check again. "
                      "Your link still works.")
+FACE_RECEIVED_TEXT = ("📸 *Face check received.*\n\n"
+                      "Your bank is now verifying your Tier 2 upgrade. We'll message you "
+                      "here with the result, usually within a few minutes.")
 FACE_DONE_TEXT = ("✅ *Tier 2 verification complete.*\n\n"
                   "Your face check passed and your account limits have been upgraded.")
 FACE_FAILED_TEXT = ("❌ *Your face check wasn't confirmed.*\n\n"

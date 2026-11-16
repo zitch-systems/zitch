@@ -186,7 +186,17 @@ class FaceLinkTests(TestCase):
         # The pending link cannot send a second photo.
         self.assertEqual(self.send().status_code, 202)
         self.upgrade.assert_called_once()
-        self.reply.assert_not_called()
+        # The chat hears once that the bank has it; the result follows later.
+        self.reply.assert_called_once()
+        self.assertIn("Face check received", self.reply.call_args.args[1])
+        self.assertNotIn("complete", self.reply.call_args.args[1].lower())
+
+    def test_a_failed_acknowledgement_still_answers_pending(self):
+        self.bank.return_value = BANK_TIER1
+        self.reply.side_effect = RuntimeError("graph down")
+        response = self.send()
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(self.action().state, FACE_PENDING)
 
     def test_bank_refusal_lets_the_customer_retake(self):
         self.upgrade.return_value = {"success": False, "message": "Face mismatch for 1234567890"}
@@ -321,7 +331,17 @@ class FaceLinkTests(TestCase):
         self.assertIn("navigator.wakeLock", self._static("liveness.js"))
         self.assertIn("✅ Tier 2 complete — Verification ongoing. We’ll confirm in WhatsApp shortly.", body)
         self.assertIn("window.close()", body)
-        self.assertIn('href="https://wa.me/"', body)
+        # Return to WhatsApp opens Zitch's chat: a bare wa.me/ cannot be opened.
+        self.assertNotIn('href="https://wa.me/"', body)
+        self.assertRegex(body, r'id="back" href="(https://wa\.me/\d{10,}|whatsapp://send)"')
+
+    def test_return_link_opens_the_business_chat(self):
+        with self.settings(WHATSAPP={**(settings.WHATSAPP or {}), "BUSINESS_NUMBER": "+234 906 283 1750"}):
+            body = self.tap().content.decode()
+        self.assertIn('id="back" href="https://wa.me/2349062831750"', body)
+        with self.settings(WHATSAPP={**(settings.WHATSAPP or {}), "BUSINESS_NUMBER": ""}):
+            body = self.tap().content.decode()
+        self.assertIn('id="back" href="whatsapp://send"', body)
 
     def test_manual_capture_and_picker_remain_as_fallbacks_and_still_take_a_turn(self):
         body = self.tap().content.decode()
