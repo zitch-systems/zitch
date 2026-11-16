@@ -7,6 +7,7 @@ import { Screen, Header, Btn, TxnRow } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 import { transactionParams, useWallet } from '@/lib/wallet';
 import { clearPendingNotificationOpen } from '@/lib/notifications';
+import { whenLabel } from '@/lib/format';
 
 /**
  * Notifications = the user's REAL account activity (credits, purchases,
@@ -49,6 +50,7 @@ const Notifications = () => {
           <TxnRow
             key={x.id}
             txn={x}
+            when={x.ts != null ? whenLabel(x.ts) : undefined}
             last={i === txns.length - 1}
             onPress={() =>
               router.push({

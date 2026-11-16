@@ -47,6 +47,8 @@ const SetThumbprint = () => {
   }, [paymentSupported, screenGeneration]);
 
   const label = kind === 'face' ? 'Face ID' : kind === 'fingerprint' ? 'Fingerprint' : 'Biometrics';
+  // Mid-sentence it reads "your fingerprint", not "Fingerprint"; Face ID is a name and stays as it is.
+  const inSentence = kind === 'fingerprint' ? 'your fingerprint' : kind === 'face' ? 'Face ID' : 'biometrics';
 
   const guardAvailable = async (): Promise<boolean> => {
     if (await isBiometricAvailable()) return true;
@@ -150,8 +152,8 @@ const SetThumbprint = () => {
         </Text>
         <Text style={{ fontSize: 14.5, color: c.ink3, marginTop: 10, lineHeight: 22, textAlign: 'center', fontFamily: font.regular }}>
           {available === false
-            ? `No ${label} is set up on this device yet. Add it in your device settings to use this feature.`
-            : paymentSupported ? `Use ${label} to unlock the app or approve payments on this device.` : `Use ${label} to unlock the app on this device. Enter your transaction PIN to approve payments in a browser.`}
+            ? `No ${kind === 'fingerprint' ? 'fingerprint' : label} is set up on this device yet. Add it in your device settings to use this feature.`
+            : paymentSupported ? `Use ${inSentence} to unlock the app or approve payments on this device.` : `Use ${inSentence} to unlock the app on this device. Enter your transaction PIN to approve payments in a browser.`}
         </Text>
       </View>
 
@@ -159,13 +161,13 @@ const SetThumbprint = () => {
         <ZItem
           icon="fingerprint"
           title={`${label} sign-in`}
-          sub={`Unlock the app with ${label}`}
+          sub={`Unlock the app with ${inSentence}`}
           right={<Toggle accessibilityLabel={`${label} sign-in`} on={signIn} onChange={toggleSignIn} disabled={available !== true || toggleBusy || busy} />}
         />
         <ZItem
           icon="faceid"
           title="Approve payments"
-          sub={paymentSupported ? `Confirm transfers & bills with ${label} instead of your PIN` : 'Available in the mobile app. Use your PIN in this browser.'}
+          sub={paymentSupported ? `Confirm transfers & bills with ${inSentence} instead of your PIN` : 'Available in the mobile app. Use your PIN in this browser.'}
           last
           right={<Toggle accessibilityLabel="Approve payments with biometrics" on={pay} onChange={togglePay} disabled={!paymentSupported || available !== true || toggleBusy || busy} />}
         />
@@ -181,7 +183,7 @@ const SetThumbprint = () => {
         error={pinError}
         onComplete={enablePay}
         title={`Approve payments with ${label}?`}
-        subtitle={`Enter your ${TRANSACTION_PIN_LENGTH}-digit PIN to approve payments with ${label} too. You can skip and just use it to sign in.`}
+        subtitle={`Enter your ${TRANSACTION_PIN_LENGTH}-digit PIN to approve payments with ${inSentence} too. You can skip and just use it to sign in.`}
       />
     </Screen>
   );

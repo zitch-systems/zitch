@@ -14,6 +14,22 @@ import { useWallet } from '@/lib/wallet';
 
 const PRESETS = [20000, 50000, 100000, 200000, 350000, 500000];
 const TENURES = [15, 30, 60];
+
+const DEFAULT_LOAN = 100000;
+
+/**
+ * The amount the page opens on: ₦100,000 when the credit allows it, else the
+ * largest quick amount within the credit, else the credit itself when it is at
+ * least the ₦10,000 minimum, else the smallest quick amount (the page then says
+ * it is over the limit). Never a figure above the limit just because it was the
+ * default, which opened the page on "Amount exceeds your available credit".
+ */
+export const startingLoanAmount = (available: number): number => {
+  if (available >= DEFAULT_LOAN) return DEFAULT_LOAN;
+  const fits = PRESETS.filter((p) => p <= available);
+  if (fits.length) return fits[fits.length - 1];
+  return available >= 10000 ? Math.floor(available) : PRESETS[0];
+};
 type Step = null | 'confirm' | 'pin';
 type ConfirmedLoan = { principal: number; interest: number; repayment: number; days: number };
 
@@ -43,7 +59,8 @@ const GetLoan = () => {
   const { c } = useTheme();
   const { reload } = useWallet();
   const [available, setAvailable] = useState(0);
-  const [amount, setAmount] = useState(100000);
+  const [amount, setAmount] = useState(PRESETS[0]);
+  const amountTouched = useRef(false);
   const [tenure, setTenure] = useState(30);
   const [rate, setRate] = useState(0);
   const [step, setStep] = useState<Step>(null);
@@ -81,7 +98,10 @@ const GetLoan = () => {
       setUnavailableMessage(res.unavailable_message || (res.product_available
         ? 'You do not have an available credit limit right now.'
         : 'Loans are not available right now.'));
-      if (res.available != null) setAvailable(Number(res.available));
+      if (res.available != null) {
+        setAvailable(Number(res.available));
+        if (!amountTouched.current) setAmount(startingLoanAmount(Number(res.available)));
+      }
       if (res.quote_rate != null) setRate(Number(res.quote_rate));
       setHasActiveLoan(Boolean(res.active_loan));
       setStatusError('');
@@ -244,7 +264,7 @@ const GetLoan = () => {
                 accessibilityLabel={money(p)}
                 accessibilityState={{ selected: on, disabled }}
                 disabled={disabled}
-                onPress={() => !disabled && setAmount(p)}
+                onPress={() => { if (!disabled) { amountTouched.current = true; setAmount(p); } }}
                 style={{ alignItems: 'center', paddingVertical: 13, borderRadius: 13, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line, opacity: disabled ? 0.4 : 1 }}
               >
                 <Text style={{ fontSize: 14, fontFamily: font.bold, color: on ? '#fff' : c.ink1, fontVariant: ['tabular-nums'] }}><Naira />{(p / 1000)}k</Text>
@@ -262,7 +282,7 @@ const GetLoan = () => {
       <Field
         label={`Or enter an amount (up to ${money(available)})`}
         value={amount ? String(amount) : ''}
-        onChangeText={(v) => setAmount(Number(v.replace(/\D/g, '')) || 0)}
+        onChangeText={(v) => { amountTouched.current = true; setAmount(Number(v.replace(/\D/g, '')) || 0); }}
         keyboardType="number-pad"
         placeholder="e.g. 75000"
         prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontFamily: font.bold }} />}

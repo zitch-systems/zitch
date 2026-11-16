@@ -76,7 +76,7 @@ it('keeps savings and loans out while the server has them off', async () => {
 
 it('shows the Loan tile and the Fixed Save card, at the best server rate, when both are open', async () => {
   mockApiJson.mockImplementation(async (path: string) => path === EP.savings.rates
-    ? { product_available: true, rates: [{ days: 30, rate: '12.00' }, { days: 365, rate: '22.00' }] }
+    ? { product_available: true, rates: [{ days: 30, rate: '0.12' }, { days: 365, rate: '0.22' }] }
     : { product_available: true });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Home />); });

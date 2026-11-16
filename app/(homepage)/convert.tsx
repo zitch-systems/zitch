@@ -19,8 +19,16 @@ type Currency = { code: string; name: string; symbol: string; rate: number };
 const fx = (value: number, symbol: string) =>
   `${symbol}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+const ISO_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// The rates feed sends "Sun, 15 Nov 2026 09:00:00 +0000"; an ISO time
+// ("2026-11-15T09:00:00Z") reads the same way rather than raw.
+const prettyTime = (s: string) => {
+  const iso = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?Z$/.exec(s);
+  if (iso) return `${iso[3]} ${ISO_MONTHS[+iso[2] - 1]} ${iso[1]}, ${iso[4]}:${iso[5]} UTC`;
+  return prettyRfcTime(s);
+};
 // "Mon, 08 Jun 2026 00:02:31 +0000" -> "08 Jun 2026, 00:02 UTC".
-const prettyTime = (s: string) =>
+const prettyRfcTime = (s: string) =>
   s.replace(/^[A-Za-z]{3},\s*/, '').replace(/(\d{2}:\d{2}):\d{2}\s*\+0000$/, '$1 UTC').replace(/(\d{4})\s/, '$1, ');
 
 const Convert = () => {

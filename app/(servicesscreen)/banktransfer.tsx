@@ -6,17 +6,13 @@ import { notify } from '@/components/design/Notify';
 import { Screen, Header, Card, Btn, NText } from '@/components/design/ui';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font, radius, iconTint } from '@/lib/theme';
+import { groupAccountNumber } from '@/lib/format';
 import { useWallet } from '@/lib/wallet';
 
 // ---- Account number display helpers ----
 // Grouping is DISPLAY ONLY: copy/share always send the raw digits, because a
 // number with spaces in it is rejected by half the bank apps it gets pasted into.
-const digitsOnly = (v: string) => (v || '').replace(/\D/g, '');
-const groupAccount = (v: string) => {
-  const d = digitsOnly(v);
-  if (d.length !== 10) return v || '';
-  return `${d.slice(0, 3)} ${d.slice(3, 6)} ${d.slice(6)}`;
-};
+const groupAccount = (v: string) => groupAccountNumber(v || '');
 
 // ---- Bank app shortcuts ----
 // Best-effort deep links into the bank apps a customer is most likely to

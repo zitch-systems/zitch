@@ -1270,8 +1270,10 @@ export type Txn = {
  * in useCallback, or hoist them.
  */
 export const TxnRow = React.memo((
-  { txn, last, onPress, onSelect }:
-  { txn: Txn; last?: boolean; onPress?: () => void; onSelect?: (txn: Txn) => void },
+  { txn, last, onPress, onSelect, when }:
+  // `when`: the row's time as the screen wants it read ("Today · 8:14am"); without
+  // it the row shows `txn.detail` as given. A string, so the memo still holds.
+  { txn: Txn; last?: boolean; onPress?: () => void; onSelect?: (txn: Txn) => void; when?: string },
 ) => {
   const { c, theme } = useTheme();
   // `onSelect` is the memo-friendly door: callers hand over ONE stable function
@@ -1287,7 +1289,7 @@ export const TxnRow = React.memo((
   const tint = inflow ? 'rgba(0,181,29,.12)' : (ICON_COLORS[txn.icon] ? iconTint(ICON_COLORS[txn.icon], theme === 'dark') : c.surface3);
   const Wrap: any = handlePress ? Pressable : View;
   return (
-    <Wrap onPress={handlePress} accessibilityRole={handlePress ? 'button' : undefined} accessibilityLabel={handlePress ? `${txn.type}, ${money(Math.abs(txn.amount))}, ${txn.status}, ${txn.detail}` : undefined} style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: c.line }}>
+    <Wrap onPress={handlePress} accessibilityRole={handlePress ? 'button' : undefined} accessibilityLabel={handlePress ? `${txn.type}, ${money(Math.abs(txn.amount))}, ${txn.status}, ${when ?? txn.detail}` : undefined} style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: c.line }}>
       {/* A disc, not the rounded square used for service TILES: a tile is a
           thing you tap to start something, a transaction is a thing that already
           happened, and the two should not read as the same affordance. */}
@@ -1296,7 +1298,7 @@ export const TxnRow = React.memo((
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text numberOfLines={1} style={{ fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>{txn.type}</Text>
-        <Text numberOfLines={1} style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{txn.detail}</Text>
+        <Text numberOfLines={1} style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{when ?? txn.detail}</Text>
       </View>
       <View style={{ alignItems: 'flex-end', gap: 4, maxWidth: '47%', flexShrink: 0 }}>
         <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75} style={{ fontSize: 14.5, fontFamily: font.bold, color: inflow ? c.lime : c.ink1, fontVariant: ['tabular-nums'] }}>
