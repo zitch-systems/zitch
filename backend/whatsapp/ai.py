@@ -74,6 +74,13 @@ SYSTEM_PROMPT = (
     "like recharge/top-up/load/kati as airtime and light/wuta/ina as electricity "
     "when the surrounding message makes the intent clear. Do not ask the customer "
     "to retype a request that already contains a usable amount or identifier. "
+    "Worked examples of how details arrive: \"Recharge num_ref_1 100naira\" is "
+    "airtime of 100 to num_ref_1; \"num_ref_1 3100\" or \"3100 num_ref_1\" alone is a "
+    "transfer of 3100 to account num_ref_1 (ask only for the bank); \"N4,000\", "
+    "\"#4000\" and \"4k\" are all 4000 naira; \"send 3k to num_ref_1 monipont\" "
+    "names the bank Moniepoint. Copy a misspelt bank name into bank_name exactly as "
+    "typed (moneypoint, opey, frist bank, acess) - the backend matches it. A number "
+    "token is never part of an amount, and an amount is never part of a token. "
     "Set `narration` ONLY from words the message gives as the PURPOSE of the "
     "payment — the part after \"for\" in \"send 5k to Ada for rent\". It is "
     "optional: leave it null when the message does not say what the money is "
@@ -499,6 +506,70 @@ def _luhn_ok(digits: str) -> bool:
     return total % 10 == 0
 
 
+class _Run:
+    """A stand-in match for one identifier inside a longer digit run."""
+
+    def __init__(self, text):
+        self._text = text
+
+    def group(self, _index=0):
+        return self._text
+
+
+def _split_run(groups: list) -> tuple:
+    """(before, identifier, after) group lists for a run of short digit groups.
+
+    "0803 721 7665 200" is a phone number typed in groups AND an amount, and
+    joining every group made "08037217665200": the amount vanished and the model
+    asked how much, for a number that does not exist (16 Nov 2026). The groups
+    that make a phone (11, starting 0) or an account (10) are the identifier;
+    groups left over are the amount. Tried from both ends, phone shape first.
+    """
+    def cut(seq):
+        total = 0
+        for i, g in enumerate(seq):
+            total += len(g)
+            if total in (10, 11):
+                return i + 1
+            if total > 11:
+                return None
+        return None
+
+    options = []
+    n = cut(groups)
+    if n is not None and n < len(groups):
+        options.append(([], groups[:n], groups[n:]))
+    m = cut(list(reversed(groups)))
+    if m is not None and m < len(groups):
+        options.append((groups[:len(groups) - m], groups[len(groups) - m:], []))
+    if not options:
+        return [], groups, []
+
+    def score(option):
+        ident = "".join(option[1])
+        return (len(ident) == 11 and ident.startswith("0"), len(ident) == 10)
+
+    return max(options, key=score)
+
+
+def _tokenize_run(run: str, tokenize) -> str:
+    """Tokenize the identifiers in a run of digits joined by spaces or dashes,
+    leaving any amount typed beside them as it was."""
+    groups = re.split(r"[ -]", run)
+    if len(groups) == 1:
+        return tokenize(_Run(run))
+    if any(len(g) >= 7 for g in groups):
+        # Each long group stands on its own ("5476951723 3100", "3100 5476951723").
+        return " ".join(tokenize(_Run(g)) if len(g) >= 7 else g for g in groups)
+    total = sum(len(g) for g in groups)
+    if total <= 11:
+        return tokenize(_Run(run))            # "0803 721 7665": one number
+    before, ident, after = _split_run(groups)
+    if not before and not after:
+        return tokenize(_Run(run))            # a long number typed in groups (a meter)
+    return " ".join([*before, tokenize(_Run(" ".join(ident))), *after])
+
+
 def sanitize_for_model(text: str) -> tuple[str, dict]:
     """Split the message into what a model may see and what it may not.
 
@@ -535,7 +606,7 @@ def sanitize_for_model(text: str) -> tuple[str, dict]:
         mapping[token] = re.sub(r"\D", "", m.group(0))
         return token
 
-    safe = _LONG_IDENTIFIER.sub(_tokenize, safe)
+    safe = _LONG_IDENTIFIER.sub(lambda m: _tokenize_run(m.group(0), _tokenize), safe)
     if _SECRET_CONTEXT.search(safe):
         # Only now that identifiers are tokenized: whatever 3-6 digit groups
         # remain next to secret-words are PIN/OTP/CVV-shaped, not accounts.
