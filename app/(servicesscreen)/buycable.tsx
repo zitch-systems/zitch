@@ -37,6 +37,8 @@ const BuyCable = () => {
   const [iuc, setIuc] = useState('');
   const [plan, setPlan] = useState('');
   const [price, setPrice] = useState('');
+  // The bank's charge on the package, debited with it (from the price quote).
+  const [fee, setFee] = useState(0);
   const [quoteRevision, setQuoteRevision] = useState(0);
   const [priceFor, setPriceFor] = useState('');
   const [plans, setPlans] = useState<{ id: string; label: string; sub?: string; price: number }[]>([]);
@@ -109,6 +111,7 @@ const BuyCable = () => {
   // Authoritative price for the chosen bouquet.
   useEffect(() => {
     setPrice('');
+    setFee(0);
     setPriceFor('');
     if (!plan) return;
     const requestedFor = `${prov}|${plan}`;
@@ -118,6 +121,8 @@ const BuyCable = () => {
       .then((res) => {
         if (current && res?.cable_plans_price != null) {
           setPrice(String(res.cable_plans_price));
+          const charge = Number(res.bank_fee ?? 0);
+          setFee(Number.isFinite(charge) && charge > 0 ? charge : 0);
           setPriceFor(requestedFor);
         }
       })
@@ -131,9 +136,12 @@ const BuyCable = () => {
   const currentPrice = priceFor === `${prov}|${plan}` ? price : '';
   const amount = Number(currentPrice || 0);
   const hasAuthoritativePrice = currentPrice !== '' && Number.isFinite(amount) && amount > 0;
+  const bankFee = currentPrice !== '' ? fee : 0;
+  const total = amount + bankFee;
   const validationKey = `${prov}|${iuc.trim()}`;
   const verifiedName = validatedFor === validationKey ? validatedName : '';
-  const valid = billPaymentsAvailable === true && iuc.length >= 8 && !!planObj && !!verifiedName && hasAuthoritativePrice && amount <= balance;
+  const valid = billPaymentsAvailable === true && iuc.length >= 8 && !!planObj && !!verifiedName && hasAuthoritativePrice && total <= balance;
+  const feeRows: [string, string][] = bankFee > 0 ? [['Package', money(amount)], ['Bank fee', money(bankFee)]] : [];
 
   // Auto-resolve the customer name once the smartcard reaches a plausible length
   // (most NUBAN-style IUCs are 10-11 digits). The manual button stays as a
@@ -203,7 +211,7 @@ const BuyCable = () => {
   const purchase = async (enteredPin: string) => {
     if (!isCurrentSession() || !valid || done || purchaseInFlight.current) return;
     const fingerprint = [prov, plan, iuc.trim()].join('|');
-    if (reviewedPayment.current !== null && reviewedPayment.current !== JSON.stringify([fingerprint, amount])) {
+    if (reviewedPayment.current !== null && reviewedPayment.current !== JSON.stringify([fingerprint, total])) {
       setStep('confirm');
       notify('Review payment again', 'The payment details changed. Check them before entering your PIN.');
       return;
@@ -280,7 +288,7 @@ const BuyCable = () => {
             : recovered
               ? 'This confirms your earlier subscription. No new subscription was purchased. Start a new purchase to subscribe again.'
             : `${provider.name} ${planObj?.label || ''} on ${iuc} is now active.`}
-          rows={[['Customer', verifiedName], ['Provider', provider.name], ['Smartcard / IUC', iuc], ['Plan', planObj?.label || '—'], ['Total', money(amount), true]]}
+          rows={[['Customer', verifiedName], ['Provider', provider.name], ['Smartcard / IUC', iuc], ['Plan', planObj?.label || '—'], ...feeRows, ['Total', money(total), true]]}
           reference={txnRef}
           status={pending ? 'Processing' : 'Successful'}
           footer={pending ? <Btn label="Check transaction history" variant="outline" onPress={() => router.push('/history')} /> : undefined}
@@ -330,7 +338,12 @@ const BuyCable = () => {
       )}
       {!!planObj && !hasAuthoritativePrice ? <View style={{ marginVertical: 12 }}><Text style={{ color: c.ink3, fontFamily: font.regular }}>A confirmed price is needed before payment.</Text><Btn label="Refresh price" variant="outline" onPress={() => setQuoteRevision((value) => value + 1)} /></View> : null}
       <View style={{ height: 14 }} />
-      {amount > 0 ? <BalanceHint amount={amount} balance={balance} /> : null}
+      {bankFee > 0 && amount > 0 ? (
+        <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12.5, marginBottom: 4 }}>
+          Bank fee {money(bankFee)} · Total {money(total)}
+        </Text>
+      ) : null}
+      {amount > 0 ? <BalanceHint amount={total} balance={balance} /> : null}
       {billPaymentsAvailable !== true ? <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>Bill payments are currently unavailable. Refresh your wallet or try again later.</Text> : null}
 
       <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
@@ -339,15 +352,15 @@ const BuyCable = () => {
         open={step === 'confirm'}
         onClose={() => setStep(null)}
         title="Confirm subscription"
-        total={amount}
+        total={total}
         balance={balance}
-        rows={[['Customer', verifiedName], ['Provider', provider.name], ['Smartcard', iuc], ['Plan', planObj?.label || '—']]}
-        onPay={() => { reviewedPayment.current = JSON.stringify([[prov, plan, iuc.trim()].join('|'), amount]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
+        rows={[['Customer', verifiedName], ['Provider', provider.name], ['Smartcard', iuc], ['Plan', planObj?.label || '—'], ...feeRows]}
+        onPay={() => { reviewedPayment.current = JSON.stringify([[prov, plan, iuc.trim()].join('|'), total]); setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
       <Sheet protectScreen open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
         <Text style={{ fontSize: 13.5, lineHeight: 20, color: c.ink3, marginBottom: 16, marginTop: 0, fontFamily: font.regular }}>
-          {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
+          {busy ? 'Authorizing payment…' : `Confirm payment of ${money(total)}`}
         </Text>
         <PinPad onComplete={(p) => purchase(p)} busy={busy} error={pinError} />
       </Sheet>

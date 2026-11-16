@@ -213,7 +213,9 @@ def get_cable_plans_price(request):
     ).exclude(wema_code="").first()
     if plan is None:
         return fail("Plan not found", status=404)
-    return ok(cable_plans_price=str(plan.price))
+    # The bank's charge rides on top of the package and is debited with it, so
+    # the app shows it before the PIN (buycable debits price + this charge).
+    return ok(cable_plans_price=str(plan.price), bank_fee=str(plan.wema_charge or 0))
 
 
 @api
