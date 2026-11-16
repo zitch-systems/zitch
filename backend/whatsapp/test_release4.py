@@ -241,7 +241,8 @@ class BillTypeTests(_MoneyBase):
         pa = self.open()
         page = self.submit(pa, flows.BILL_TYPE, bill="electricity")
         self.assertEqual(page["screen"], flows.BILL_CHAIN)
-        self.assertEqual(page["data"]["discos"][0], {"id": "1", "title": "Ikeja Electric (IKEDC)"})
+        first = page["data"]["discos"][0]
+        self.assertEqual({k: first[k] for k in ("id", "title")}, {"id": "1", "title": "Ikeja Electric (IKEDC)"})
         amount = self.submit(pa, flows.BILL_CHAIN, disco="1", meter_type="prepaid", meter="01234567890")
         self.assertEqual(amount["screen"], flows.BILL_AMOUNT)
         pa.refresh_from_db()

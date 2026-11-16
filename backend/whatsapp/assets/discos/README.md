@@ -11,3 +11,11 @@ WhatsApp rejects the electricity screen's data.
 
 A missing or oversized file just shows the name without a logo. Use logos you
 have the right to use (from each disco's brand/partner kit).
+
+## Sources (16 Nov 2026)
+
+Each taken from the disco's own website header, cropped and fitted to a 96x96
+tile: ikejaelectric.com, ekedp.com, abujaelectricity.com, phed.com.ng (on a dark
+tile, its lettering is white), jedplc.com, kadunaelectric.com, enugudisco.com,
+ibedc.com. KEDCO is missing: kedco.ng sits behind a bot check, so it shows its
+name only.

@@ -163,7 +163,10 @@ class DesignReviewTests(TestCase):
                       texts)
 
     def test_discos_carry_their_short_names(self):
-        self.assertEqual(release2._disco_options()[0], {"id": "1", "title": "Ikeja Electric (IKEDC)"})
+        first = release2._disco_options()[0]
+        self.assertEqual({k: first[k] for k in ("id", "title")}, {"id": "1", "title": "Ikeja Electric (IKEDC)"})
+        # The shipped logo rides beside it (whatsapp/assets/discos/IKEDC.png).
+        self.assertTrue(first["image"].startswith("iVBORw0KGgo"))
 
     def test_switched_off_products_say_coming_soon_to_a_customer_with_nothing_open(self):
         from .savings_loans import show_loan, show_savings
