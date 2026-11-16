@@ -259,6 +259,24 @@ class DeployFlowCommandTests(SimpleTestCase):
                          [f"{BASE}/555/deprecate", f"{BASE}/556/deprecate"])
         self.assertIn("Flow 556 deprecated", self.out.getvalue())
 
+    def test_the_hand_published_pin_flows_can_be_retired_but_other_names_cannot(self):
+        self.arm_deprecate()
+        self.owned.return_value = [{"id": "777", "name": NAME, "status": "PUBLISHED"},
+                                  {"id": "555", "name": "Zitch payment PIN 3 SMS", "status": "PUBLISHED"}]
+        self.run_hook("deprecate")
+        self.old_asset.assert_not_called()
+        self.assertIn("Flow 555 deprecated", self.out.getvalue())
+
+        self.post.reset_mock()
+        self.owned.return_value = [{"id": "777", "name": NAME, "status": "PUBLISHED"},
+                                  {"id": "555", "name": "Somebody's payment form", "status": "PUBLISHED"}]
+        self.get.side_effect = [_Resp({"id": "555", "status": "PUBLISHED"})]
+        self.old_asset.return_value = {"flow_id": "555", "status": "published",
+                                       "published_screens": ["PIN_SCREEN", "SUCCESS"]}
+        with self.assertRaises(CommandError):
+            self.run_hook("deprecate")
+        self.post.assert_not_called()
+
     def test_the_selected_replacement_is_never_in_the_retirement_list(self):
         self.arm_deprecate()
         os.environ[PREFIX + "FLOW_ID"] = "555,777"

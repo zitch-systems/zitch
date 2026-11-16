@@ -28,6 +28,11 @@ MAX_LIST_PAGES = 10
 RETIRED_SETUP_SCREENS = {"VAS_SETUP", "VAS_IDENTITY", "VAS_CODE", "VAS_CODE_RETRY", "VAS_REENTRY"}
 #: Every Flow this pipeline creates is named "<prefix><request>".
 RELEASE_NAME_PREFIX = "Zitch Partnership "
+#: Published Zitch Flows that may be deprecated once replaced: this pipeline's
+#: releases, and the PIN Flows published by hand before it existed ("Zitch
+#: payment PIN", "… PIN 2", "… PIN 3 SMS"). Anything else still needs the
+#: retired account setup screens.
+RETIRABLE_NAME_PREFIXES = (RELEASE_NAME_PREFIX, "Zitch payment PIN")
 
 
 def _read(*args, **kwargs):
@@ -269,10 +274,10 @@ class Command(BaseCommand):
             return
         if status != "PUBLISHED":
             raise CommandError("Only an explicitly selected published old Flow can be deprecated.")
-        # A release this pipeline published ("Zitch Partnership <request>") and
-        # since replaced may be retired; anything else only if it still carries
-        # the retired account setup screens.
-        if not str(row.get("name") or "").startswith(RELEASE_NAME_PREFIX):
+        # A release this pipeline published ("Zitch Partnership <request>") or an
+        # earlier hand-published PIN Flow, since replaced, may be retired;
+        # anything else only if it still carries the retired setup screens.
+        if not str(row.get("name") or "").startswith(RETIRABLE_NAME_PREFIXES):
             report = published_flow_report(force=True, flow_id=flow_id)
             screens = report.get("published_screens")
             if (report.get("flow_id") != flow_id or report.get("status") != "published"
