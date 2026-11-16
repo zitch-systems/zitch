@@ -282,6 +282,57 @@ class RealDetectorTests(SimpleTestCase):
         blank = fx.b64(fx.portrait().crop((0, 0, 720, 300)).resize((720, 960)))
         self.assertEqual(selfie.assess(blank).code, "selfie_no_face")
 
+    def test_every_phone_camera_shape_passes_with_the_sizes_the_pages_send(self):
+        """16 Nov 2026: a 16:9 phone's turn frames (270x480) were refused unseen.
+        Runs the real model on frames scaled exactly as the WhatsApp/app page and
+        the camera fallback scale them, with the sizes read from those files, so
+        a later size change that breaks a camera shape fails here first."""
+        import re
+        from pathlib import Path
+
+        from PIL import Image
+
+        static = Path(selfie.__file__).resolve().parents[1] / "whatsapp"
+        script = (static / "static/whatsapp/liveness/liveness.js").read_text()
+        page = (static / "templates/whatsapp/face_camera.html").read_text()
+        def number(text, name):
+            return int(re.search(rf"{name} = (\d+)", text).group(1))
+
+        sizes = {}
+        for name, text in (("liveness.js", script), ("face_camera.html", page)):
+            sizes[name] = (number(text, "FRONT_SIDE"), number(text, "TURN_SIDE"),
+                           number(text, "TURN_MIN_SHORT"), number(text, "TURN_MAX_SIDE"))
+
+        def turn_side(frame, turn, min_short, max_side):  # the pages' turnSide()
+            long, short = max(frame.size), min(frame.size)
+            return min(max_side, max(turn, round(min_short * long / short)))
+
+        portrait = Image.open(Path(__file__).resolve().parent / "testdata/real_portrait.jpg")
+
+        def scaled(frame, side):
+            k = min(1, side / max(frame.size))
+            return frame.resize((round(frame.width * k), round(frame.height * k)), Image.Resampling.LANCZOS)
+
+        cameras = {"4:3": (960, 1280), "16:9": (720, 1280), "18:9": (720, 1440),
+                   "19.5:9": (720, 1560), "20:9": (720, 1600), "21:9": (720, 1680),
+                   "1:1": (1080, 1080), "16:9 1080p": (1080, 1920), "16:9 480p": (480, 854)}
+        for source, (front_side, *turn_rule) in sizes.items():
+            for camera, (width, height) in cameras.items():
+                with self.subTest(page=source, camera=camera):
+                    # A face keeps its shape on a taller sensor; only the frame
+                    # around it grows. Centre a real 3:4 portrait in the frame.
+                    fit = min(width / portrait.width, height / portrait.height)
+                    head = portrait.resize((round(portrait.width * fit), round(portrait.height * fit)),
+                                           Image.Resampling.LANCZOS)
+                    frame = Image.new("RGB", (width, height), (120, 116, 100))
+                    frame.paste(head, ((width - head.width) // 2, (height - head.height) // 2))
+                    photo = selfie.assess(fx.b64(scaled(frame, front_side), 85))
+                    self.assertTrue(photo.ok, (photo.code, photo.metrics))
+                    turned = selfie.assess(fx.b64(scaled(frame, turn_side(frame, *turn_rule)), 80),
+                                           frontal=False)
+                    self.assertTrue(turned.ok and turned.face is not None,
+                                    (turned.code, turned.metrics))
+
     def test_a_changed_model_file_disables_face_checks(self):
         with patch.object(selfie, "_MODEL_SHA256", "0" * 64), self.assertLogs("wallet.selfie", "WARNING"):
             self.assertFalse(selfie.face_checks_available())
@@ -457,3 +508,42 @@ class Tier2UpgradeGateTests(TestCase):
         sent = Image.open(io.BytesIO(base64.b64decode(bank.call_args.kwargs["live_image"])))
         self.assertEqual(sent.size, (720, 960))
         self.assertFalse(sent.getexif())
+
+
+class FailureWatchTests(SimpleTestCase):
+    """A stuck customer, or one failure across customers, raises an alert."""
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.addCleanup(cache.clear)
+
+    def run_checks(self, outcomes):
+        result = []
+        with patch("utility.alerts.alert") as alert:
+            for user_pk, code in outcomes:
+                user = type("U", (), {"pk": user_pk})()
+                face_check.log_outcome("whatsapp", user, face_check.FaceCheck(code, None, 0, {}))
+            result = [call.args[0] for call in alert.call_args_list]
+        return result
+
+    def test_a_customer_failing_three_times_raises_one_alert(self):
+        alerts = self.run_checks([(7, "liveness_no_face")] * 5)
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("may be stuck", alerts[0])
+
+    def test_one_failure_across_three_customers_raises_one_alert(self):
+        alerts = self.run_checks([(1, "liveness_no_face"), (2, "liveness_no_face"),
+                                  (3, "liveness_no_face"), (4, "liveness_no_face")])
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("several customers", alerts[0])
+
+    def test_passing_checks_and_scattered_failures_stay_quiet(self):
+        self.assertEqual(self.run_checks([(1, "ok"), (2, "ok"), (3, "selfie_too_dark"),
+                                          (4, "selfie_blurry"), (1, "ok")]), [])
+
+    def test_a_broken_cache_never_breaks_the_check(self):
+        with patch("django.core.cache.cache.add", side_effect=RuntimeError("down")), \
+                self.assertLogs("wallet.face_check", "WARNING"):
+            self.run_checks([(1, "liveness_no_face")])

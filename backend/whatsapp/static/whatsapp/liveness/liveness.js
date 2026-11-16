@@ -53,9 +53,16 @@
   // Turn frames are only measured by our server. 640 keeps the short side at
   // 360 px on a 16:9 camera (480 gave 270x480, which the server once refused).
   var TURN_SIDE = 640;
+  var TURN_MIN_SHORT = 360;
+  var TURN_MAX_SIDE = 960;
   var FRONT_KEEP = 3;            // straight candidates; the server keeps the clearest
   var FRONT_GAP_MS = 400;        // ... from moments at least this far apart
   var TURN_SNAP_MS = 100;
+  // Pixels between the eye centres in the photo the bank receives. The server
+  // refuses under 36 (wallet/selfie.py MIN_EYE_DISTANCE); asking for 48 here
+  // keeps a margin on tall (21:9) and low-resolution (480p) front cameras,
+  // where a face that fills the circle can still be too small for the bank.
+  var MIN_EYE_PX = 48;
 
   function now() { return (window.performance && performance.now) ? performance.now() : Date.now(); }
 
@@ -168,6 +175,14 @@
     return canvas;
   }
 
+  /** Long side for a head-turn frame: TURN_SIDE, raised so the SHORT side is at
+   * least TURN_MIN_SHORT on tall cameras (21:9 at 640 long is only 274 wide),
+   * never above TURN_MAX_SIDE. Never larger than the camera frame itself. */
+  function turnSide(width, height) {
+    var long = Math.max(width, height), short = Math.min(width, height) || 1;
+    return Math.min(TURN_MAX_SIDE, Math.max(TURN_SIDE, Math.round(TURN_MIN_SHORT * long / short)));
+  }
+
   /** JPEG of a video frame or image, longest side <= `side` (default 1280) px. */
   function snapshot(source, width, height, mirror, side) {
     return grab(source, width, height, side || FRONT_SIDE, mirror).toDataURL('image/jpeg', 0.85);
@@ -203,6 +218,11 @@
     var chinY = points[152].y;
     var pitch = (nose.y - eyeY) / ((chinY - eyeY) || 1e-6);
     var s = blend(shapes);
+    // Eye centres (corner midpoints), in pixels of the photo sent to the bank.
+    var bank = Math.min(1, FRONT_SIDE / Math.max(vw, vh));
+    var rx = (points[33].x + points[133].x) / 2 * vw, ry = (points[33].y + points[133].y) / 2 * vh;
+    var lx = (points[263].x + points[362].x) / 2 * vw, ly = (points[263].y + points[362].y) / 2 * vh;
+    var eyePx = Math.sqrt((rx - lx) * (rx - lx) + (ry - ly) * (ry - ly)) * bank;
     // The circle shows the centre square of the frame (object-fit: cover).
     var side = Math.min(vw, vh);
     var ox = (vw - side) / 2 / vw, oy = (vh - side) / 2 / vh;
@@ -217,7 +237,8 @@
       // Centre and width relative to the visible circle (0..1).
       cx: ((minX + maxX) / 2 - ox) * sx,
       cy: ((minY + maxY) / 2 - oy) * sy,
-      w: (maxX - minX) * sx
+      w: (maxX - minX) * sx,
+      eyePx: eyePx
     };
   }
 
@@ -299,7 +320,7 @@
       if (amount < held.amount + 0.05 || t - lastTurnSnap < TURN_SNAP_MS) return;
       lastTurnSnap = t;
       held.amount = amount;
-      held.peak = grab(video, video.videoWidth, video.videoHeight, TURN_SIDE);
+      held.peak = grab(video, video.videoWidth, video.videoHeight, turnSide(video.videoWidth, video.videoHeight));
       if (!held.steady && amount >= TURN) held.steady = held.peak;
     }
 
@@ -336,11 +357,14 @@
       if (faces.length > 1) { hold = 0; setHint('Only your face should be in the circle'); return; }
       var m = measure(faces[0], result.faceBlendshapes && result.faceBlendshapes[0], video.videoWidth, video.videoHeight);
       var sized = m.w >= 0.22 && m.w <= 0.95;
+      // Turning shrinks the eye distance as seen by the camera, so only the
+      // straight photo (the one the bank gets) is held to MIN_EYE_PX.
+      var near = sized && (Math.abs(m.yaw) >= FRONTAL || m.eyePx >= MIN_EYE_PX);
       var centred = Math.abs(m.cx - 0.5) < 0.22 && Math.abs(m.cy - 0.5) < 0.25;
       var want = STEPS[step];
       var toward = want === 'left' ? m.yaw : want === 'right' ? -m.yaw : 0;
       partSince = toward >= TURN_FROM && toward < TURN ? (partSince || t) : 0;
-      if (m.w < 0.22) setHint('Move a little closer');
+      if (m.w < 0.22 || !near) setHint('Move a little closer');
       else if (m.w > 0.95) setHint('Move back a little');
       else if (partSince && t - partSince > NUDGE_MS) setHint('Turn a little further');
       // Turning moves the face off centre; only nudge when not mid-turn.
@@ -358,7 +382,7 @@
 
       // The selfie: the best frontal frames seen while the moves run.
       var frontal = Math.abs(m.yaw) < FRONTAL && m.pitch > 0.2 && m.pitch < 0.75 &&
-        m.blink < EYES_OPEN && sized && centred;
+        m.blink < EYES_OPEN && near && centred;
       frontHold = frontal ? frontHold + 1 : 0;
       if (frontal && frontHold >= 2 && t - lastSnap > SNAP_MS) {
         keepFront(1 - 2.5 * Math.abs(m.yaw) - Math.abs(m.cx - 0.5) - Math.abs(m.cy - 0.5) -

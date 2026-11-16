@@ -330,7 +330,7 @@ class FaceLinkTests(TestCase):
         self.assertIn("withTimeout(engine,", body)
         # Neither fallback skips the head turn the server measures.
         self.assertIn("Now slowly turn your head to the left", body)
-        self.assertIn("turns.push(videoFrame(TURN_SIDE", body)
+        self.assertIn("turns.push(videoFrame(turnSide(video.videoWidth, video.videoHeight)", body)
         self.assertIn("Now take one with your head turned to the left", body)
         self.assertIn("STALE_PHOTO_MS", body)                # a fresh camera-app photo only
         stay = self.tap(WEBVIEW_UA, path=self.path + "?stay=1").content.decode()
@@ -350,7 +350,7 @@ class FaceLinkTests(TestCase):
     def test_frames_are_sent_unmirrored_and_only_shown_mirrored(self):
         script = self._static("liveness.js")
         self.assertIn("grab(video, video.videoWidth, video.videoHeight, FRONT_SIDE)", script)
-        self.assertIn("grab(video, video.videoWidth, video.videoHeight, TURN_SIDE)", script)
+        self.assertIn("grab(video, video.videoWidth, video.videoHeight, turnSide(video.videoWidth, video.videoHeight))", script)
         self.assertNotIn("snapshot(video, video.videoWidth, video.videoHeight, true)", script)
         self.assertIn(".lv-frame img.lv-mirror { transform: scaleX(-1); }", self._static("liveness.css"))
 

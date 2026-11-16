@@ -113,3 +113,43 @@ def log_outcome(channel: str, user, result: FaceCheck) -> None:
     measured = " ".join(f"{key}={result.metrics[key]}" for key in keys if key in result.metrics)
     log.info("tier2_face_check channel=%s user=%s code=%s frame=%s %s",
              channel, user.pk, result.code, result.index, measured)
+    try:
+        _watch_failures(channel, user.pk, result.code)
+    except Exception:  # noqa: BLE001 - watching must never fail a face check
+        log.warning("tier2_face_watch_failed", exc_info=True)
+
+
+#: A customer who fails this many checks in an hour is stuck; one failure reason
+#: from this many different customers in an hour is a fault on our side. On
+#: 16 Nov 2026 every Android customer with a 16:9 camera failed with
+#: liveness_no_face and nothing told anyone; either rule would have.
+STUCK_FAILURES = 3
+SPREAD_CUSTOMERS = 3
+_WATCH_SECONDS = 3600
+
+
+def _watch_failures(channel: str, user_pk, code: str) -> None:
+    if code == "ok":
+        return
+    from django.core.cache import cache
+
+    from utility.alerts import alert
+
+    def bump(key):
+        cache.add(key, 0, _WATCH_SECONDS)
+        try:
+            return cache.incr(key)
+        except ValueError:  # expired between add and incr
+            cache.set(key, 1, _WATCH_SECONDS)
+            return 1
+
+    if bump(f"tier2_face:user:{user_pk}") >= STUCK_FAILURES and cache.add(
+            f"tier2_face:stuck-alerted:{user_pk}", 1, 6 * 3600):
+        alert("Tier 2 face check: a customer has failed 3 times in an hour and may be stuck",
+              level="error", user_id=user_pk, channel=channel, last_code=code)
+    if cache.add(f"tier2_face:seen:{code}:{user_pk}", 1, _WATCH_SECONDS):
+        customers = bump(f"tier2_face:code:{code}")
+        if customers >= SPREAD_CUSTOMERS and cache.add(f"tier2_face:spread-alerted:{code}", 1, 3 * 3600):
+            alert("Tier 2 face check: the same failure for several customers in an hour - "
+                  "check the face page and wallet/selfie.py", level="error",
+                  code=code, customers=customers, channel=channel)

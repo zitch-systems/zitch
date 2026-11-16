@@ -92,6 +92,14 @@
   // head-turn frames are only measured by our server. Never mirrored: the
   // bank compares the photo with the one on the customer's ID.
   var FRONT_SIDE = 1280, TURN_SIDE = 640;  // 640: short side 360 px on a 16:9 camera
+  var TURN_MIN_SHORT = 360, TURN_MAX_SIDE = 960;
+  /** Long side for a head-turn frame: TURN_SIDE, raised so the SHORT side is at
+   * least TURN_MIN_SHORT on tall cameras (21:9 at 640 long is only 274 wide),
+   * never above TURN_MAX_SIDE. Never larger than the camera frame itself. */
+  function turnSide(width, height) {
+    var long = Math.max(width, height), short = Math.min(width, height) || 1;
+    return Math.min(TURN_MAX_SIDE, Math.max(TURN_SIDE, Math.round(TURN_MIN_SHORT * long / short)));
+  }
   var STRAIGHT_FRAMES = 3, STRAIGHT_GAP = 250, TURN_FRAMES = 8, TURN_GAP = 250, TURN_LEAD = 700;
   var STALE_PHOTO_MS = 10 * 60 * 1000;
   var $ = function (id) { return document.getElementById(id); };
@@ -233,7 +241,7 @@
     await sleep(TURN_LEAD);
     for (var k = 0; k < TURN_FRAMES; k++) {
       if (stale()) return;
-      turns.push(videoFrame(TURN_SIDE, 0.8));
+      turns.push(videoFrame(turnSide(video.videoWidth, video.videoHeight), 0.8));
       await sleep(TURN_GAP);
     }
     if (stale()) return;
@@ -334,7 +342,7 @@
     var img = new Image();
     img.onload = function () {
       var straight = pickStep === 'straight';
-      var canvas = grab(img, img.naturalWidth, img.naturalHeight, straight ? FRONT_SIDE : TURN_SIDE);
+      var canvas = grab(img, img.naturalWidth, img.naturalHeight, straight ? FRONT_SIDE : turnSide(img.naturalWidth, img.naturalHeight));
       URL.revokeObjectURL(url);
       if (straight) {
         frames = [jpeg(canvas, 0.85)];
