@@ -1088,7 +1088,9 @@ class AiIntentTests(TestCase):
     def test_a_bill_that_names_everything_goes_straight_to_confirm(self):
         with self._bill(biller="IKEDC", customer_id="2000010657",
                         variation="prepaid", amount=5000):
-            self.inbound("Load my nepa bill. 2000010657 5,000 to IKEDC", "pb1")
+            # "prepaid" is in the message: the meter type is never guessed (see
+            # the next test), and the built-in bill reader now answers first.
+            self.inbound("Load my nepa bill. 2000010657 5,000 to IKEDC prepaid", "pb1")
         r = self.last_reply()
         self.assertIn("Confirm electricity", r)
         self.assertIn("Ikeja", r)             # IKEDC resolved to the disco

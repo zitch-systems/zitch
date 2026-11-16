@@ -2257,6 +2257,75 @@ _VAS_QUESTION_RE = re.compile(
 _VAS_MAX_AMOUNT = Decimal("100000")
 
 
+#: Words that make a message about electricity even when the disco is named only
+#: by its city ("Ikeja", "Eko"). With one of them, "Ikeja 45058723664 1050" is a
+#: bill; without one, "Ikeja" might be an address.
+_ELECTRIC_WORD_RE = re.compile(
+    r"\b(?:electric\w*|light|meter|prepaid|postpaid|nepa|phcn|disco|token|units?|power|bill)\b",
+    re.I)
+#: A meter number: 6 to 13 digits standing alone (an 11-digit prepaid meter looks
+#: like a phone number to anything that does not know the disco was named).
+_METER_RE = re.compile(r"(?<!\d)\d{6,13}(?!\d)")
+
+
+def _named_disco(text: str) -> str | None:
+    """The disco a message names, by any of the names it is known by: IKEDC,
+    "Ikeja Electric", "ikeja electricity", "Eko disco". A bare city counts only
+    beside an electricity word."""
+    words = re.findall(r"[a-z]+", (text or "").lower())
+    for size in (4, 3, 2, 1):
+        for i in range(len(words) - size + 1):
+            key = "".join(words[i:i + size])
+            if key in DISCO_ALIASES:
+                return DISCO_ALIASES[key]
+    if _ELECTRIC_WORD_RE.search(text or ""):
+        for word in words:
+            found = _choice_id(word, DISCO_NAMES)
+            if found is not None and not word.isdigit():
+                return found
+        joined = " ".join(words)
+        if "port harcourt" in joined:
+            return "5"
+    return None
+
+
+def bill_text_intent(text: str):
+    """An electricity bill read without the model: a named disco and a meter.
+
+    "Recharge 45058723664 Ikeja electric 1050" (16 Nov 2026) went to the model,
+    which offered airtime "for 45058723664" - a number no Nigerian phone has the
+    shape of - because "recharge" is an airtime word and nothing here knew a disco
+    when it saw one. A message that names the disco is a bill, whatever verb it
+    uses. The meter is then verified with the provider and the amount checked,
+    exactly as when the customer types them into the flow one by one.
+    """
+    raw = str(text or "").strip()
+    if not raw or len(raw) > 200 or _VAS_QUESTION_RE.search(raw):
+        return None
+    disco = _named_disco(raw)
+    if disco is None:
+        return None
+    meters = _METER_RE.findall(raw)
+    if len(meters) != 1:
+        return None
+    meter = meters[0]
+    amount = None
+    for digits, suffix in _VAS_AMOUNT_RE.findall(_METER_RE.sub(" ", raw)):
+        try:
+            value = Decimal(digits.replace(",", ""))
+        except InvalidOperation:
+            continue
+        if suffix:
+            value *= 1000 if suffix.lower() == "k" else 1_000_000
+        if value > 0:
+            amount = value
+            break
+    return {"name": "pay_bill",
+            "input": {"category": "electricity", "biller": DISCO_NAMES[disco],
+                      "customer_id": meter, "variation": _meter_type(raw),
+                      "amount": str(amount) if amount is not None else None}}
+
+
 def vas_text_intent(text: str):
     """A "2k airtime" / "recharge me 55 naira airtime" message, read without the LLM.
 
@@ -2286,6 +2355,8 @@ def vas_text_intent(text: str):
     is_data = bool(_VAS_DATA_RE.search(raw))
     if not is_data and not _VAS_AIRTIME_RE.search(raw):
         return None
+    if _named_disco(raw) is not None:
+        return None     # "recharge ... Ikeja electric": a bill, never airtime
 
     phone_match = _VAS_PHONE_RE.search(raw)
     hunting = _VAS_SIZE_RE.sub(" ", _VAS_PHONE_RE.sub(" ", raw))
