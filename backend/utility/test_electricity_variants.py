@@ -1,6 +1,7 @@
 """Electricity must validate and pay the package for the selected meter type."""
 from io import StringIO
 import json
+from decimal import Decimal
 from unittest import mock
 
 from django.core.management import call_command
@@ -95,7 +96,8 @@ class ElectricityVariantRoutingTests(TestCase):
         for meter_type, package_id in (("prepaid", "1043"), ("postpaid", "1411")):
             with self.subTest(meter_type=meter_type):
                 self.assertEqual(self.route(meter_type), {
-                    "type": "bill", "code": package_id, "amount": "1500"})
+                    "type": "bill", "code": package_id, "amount": "1500",
+                    "charge": Decimal("0.00")})
 
     def test_duplicate_service_and_meter_type_is_rejected_by_database(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
@@ -172,7 +174,7 @@ class ElectricityVariantRoutingTests(TestCase):
     def test_betting_keeps_its_existing_blank_variant_mapping(self):
         WemaBiller.objects.create(service_id="bet9ja-betting", package_id="91")
         self.assertEqual(_wema_vas_route("bet9ja-betting", {"amount": "500"}), {
-            "type": "bill", "code": "91", "amount": "500"})
+            "type": "bill", "code": "91", "amount": "500", "charge": Decimal("0.00")})
 
     def test_betting_cannot_accidentally_use_an_electricity_variant_row(self):
         WemaBiller.objects.create(

@@ -203,8 +203,17 @@ def _new_biller_instruction(function):
     def guarded(*args, **kwargs):
         from .providers import _biller_source
         bound = signature.bind(*args, **kwargs)
+        # The bank debits the bill AND its charge from the same account, and the
+        # ledger row reserved that total, so the funding check is on the total.
+        amount = bound.arguments["amount_naira"]
+        try:
+            charge = Decimal(str(bound.arguments.get("charge") or 0))
+        except (InvalidOperation, ValueError):
+            charge = Decimal("0")
+        if charge > 0:
+            amount = Decimal(str(amount)) + charge
         source, blocked = _biller_source(bound.arguments.get("reference"),
-            amount=bound.arguments["amount_naira"],
+            amount=amount,
             source_account=bound.arguments.get("source_account", ""))
         if blocked is not None:
             return blocked

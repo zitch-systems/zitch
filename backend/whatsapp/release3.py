@@ -123,7 +123,7 @@ def vtu_plan_screen(pa, error: str = "") -> dict:
             "data": {"plans": [{"id": plan.plan_code, "title": plan.name[:30],
                                 "description": f"{_money(plan.price)} · {plan.validity}"}
                                for plan in plans],
-                     "summary": f"{net_name} data for {pa.payload.get('phone', '')}",
+                     "summary": f"{net_name} data plans",
                      "error": _warn(error)}}
 
 
@@ -229,15 +229,20 @@ def start_vtu_form(user, msisdn: str, kind: str = "airtime") -> bool:
     kind = kind if kind in ("airtime", "data") else "airtime"
     pa = _new_flow(user, msisdn, kind, F.FLOW_VTU_STATE, _vtu_payload(user, kind, F.VTU_FORM))
     first = vtu_form_screen(pa)
-    res = send_flow(msisdn, sign_flow_token(pa), header="Airtime / Data",
-                    body="Top up any number or buy a data plan - your PIN stays private.",
-                    screen=F.VTU_FORM, screen_data=first["data"], cta="Buy")
+    res = send_flow(msisdn, sign_flow_token(pa), header="", body=VTU_CARD,
+                    screen=F.VTU_FORM, screen_data=first["data"], cta="Buy airtime or data")
     if not res.get("success"):
         log.warning("wa_vtu_form_send_failed pa=%s detail=%r", pa.id, res.get("error_detail", ""))
         _clear_actions(msisdn)
         return False
-    reply(msisdn, "📱 Tap *Buy* on the secure form above.")
     return True
+
+
+#: The approved cards: one message each, the chat path named in it.
+VTU_CARD = ("📱 *Airtime / Data*\n\nTap *Buy airtime or data* to use the secure form, or type it "
+            "here - \"1k airtime\" or \"data for 08166938327\".")
+SEND_CARD = ("💸 *Send money*\n\nTap *Send money* to use the secure form, or type it here - "
+             "\"send 5k to Ada\" or \"3k to opay 8166938327\".")
 
 
 def open_vtu_form_chain(user, msisdn: str, session: str) -> dict:
@@ -296,15 +301,12 @@ def start_send_money(user, msisdn: str) -> bool:
     pa = _new_flow(user, msisdn, "transfer", F.FLOW_FORM_STATE,
                    {SEND_MARK: True, "pin_attempts": 0, "flow_screen": F.SEND_MONEY})
     first = send_money_screen(pa)
-    res = send_flow(msisdn, sign_flow_token(pa), header="Send money",
-                    body="Fill in the details privately - we'll confirm the account name "
-                         "before anything moves.",
+    res = send_flow(msisdn, sign_flow_token(pa), header="", body=SEND_CARD,
                     screen=F.SEND_MONEY, screen_data=first["data"], cta="Send money")
     if not res.get("success"):
         log.warning("wa_send_money_send_failed pa=%s detail=%r", pa.id, res.get("error_detail", ""))
         _clear_actions(msisdn)
         return False
-    reply(msisdn, "💸 Tap *Send money* on the secure form above.")
     return True
 
 

@@ -72,6 +72,16 @@ def _cable_bouquet(name, provider):
     return name.removesuffix("monthly").removesuffix("bouquet")
 
 
+
+def _charge(value):
+    """The bank's per-biller charge as a Decimal, or None when it is absent or
+    not a plausible fee. PayBill refuses a bill without one."""
+    try:
+        charge = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return charge if charge.is_finite() and 0 <= charge < 100_000 else None
+
 class Command(BaseCommand):
     help = "Map Wema catalogue package IDs onto data/cable plans and electricity meter variants."
 
@@ -128,7 +138,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("cable: catalogue unavailable; no plans changed"))
             return
 
-        packages = {}
+        packages, charges = {}, {}
         for category in categories:
             if not isinstance(category, dict) or _norm(str(category.get("name", ""))) != "cabletv":
                 continue
@@ -137,6 +147,7 @@ class Command(BaseCommand):
                     continue
                 biller_name = _norm(str(biller.get("name", "")))
                 packages.setdefault(biller_name, []).append(biller.get("packages") or [])
+                charges.setdefault(biller_name, []).append(_charge(biller.get("charge")))
 
         matched = 0
         with transaction.atomic():
@@ -159,13 +170,16 @@ class Command(BaseCommand):
                         or not 0 < int(code) <= 2_147_483_647
                         or price is None or not price.is_finite() or not 0 < price < 100_000_000):
                     continue
-                if (plan.wema_code, plan.price) == (code, price):
+                found = charges.get(_CABLE_BILLERS.get(plan.provider), [])
+                charge = found[0] if len(found) == 1 and found[0] is not None else plan.wema_charge
+                if (plan.wema_code, plan.price, plan.wema_charge) == (code, price, charge):
                     continue
                 matched += 1
-                self.stdout.write(f"  cable {plan.name}: package {code}, price {plan.price} -> {price}")
+                self.stdout.write(f"  cable {plan.name}: package {code}, price {plan.price} -> {price}, "
+                                  f"charge {plan.wema_charge} -> {charge}")
                 if not dry:
-                    plan.wema_code, plan.price = code, price
-                    plan.save(update_fields=["wema_code", "price"])
+                    plan.wema_code, plan.price, plan.wema_charge = code, price, charge
+                    plan.save(update_fields=["wema_code", "price", "wema_charge"])
         self.stdout.write(self.style.SUCCESS(f"cable: {matched} bouquet(s) mapped{' (dry-run)' if dry else ''}"))
 
     # Exact biller identities observed in the live Electricity catalogue. A
@@ -243,13 +257,19 @@ class Command(BaseCommand):
                 package = candidates[0]
                 code = str(package["id"]).strip()
                 mapped += 1
+                charge = _charge(package.get("charge"))
+                if charge is None:
+                    charge = _charge(hits[0].get("charge"))
                 self.stdout.write(f"  biller {service_id:26} {meter_type:8} -> {code} "
-                                  f"({hits[0]['name']})")
-                updates.append((service_id, meter_type, {
+                                  f"({hits[0]['name']}) charge {charge}")
+                values = {
                     "package_id": code,
                     "biller_id": str(hits[0].get("id") or "")[:60],
                     "name": str(package.get("name", ""))[:120],
-                }))
+                }
+                if charge is not None:
+                    values["charge"] = charge
+                updates.append((service_id, meter_type, values))
         if not dry:
             with transaction.atomic():
                 for service_id, meter_type, values in updates:

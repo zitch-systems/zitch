@@ -196,7 +196,7 @@ class WhatsAppLoginTests(TestCase):
     def test_menu_delivery_exception_does_not_undo_or_misreport_completed_login(self):
         token = self.start()
         self.exchange(token, {"number": "123456"})
-        with patch("whatsapp.router.send_menu", side_effect=RuntimeError(
+        with patch("whatsapp.router.reply", side_effect=RuntimeError(
                 "Private provider error " + self.user.email)), \
                 self.assertLogs("zitch.security", level="WARNING") as logs, \
                 self.captureOnCommitCallbacks(execute=True):

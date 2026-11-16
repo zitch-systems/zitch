@@ -2287,6 +2287,8 @@ class InlineOverrideTests(TestCase):
         # fixture message during the suite.
         with override_settings(WHATSAPP=self.WA, WHATSAPP_PROCESS_INLINE=True), \
              patch("whatsapp.router.send_text",
+                   return_value={"success": True, "message_id": "wamid.test-out"}), \
+             patch("whatsapp.router.send_buttons",
                    return_value={"success": True, "message_id": "wamid.test-out"}):
             res = self._post_hi()
         self.assertEqual(res.status_code, 200)
@@ -3838,7 +3840,7 @@ class AiDataShorthandTests(TestCase):
         self.assertEqual(pa.state, "plan")
         self.assertEqual(pa.payload["phone"], "08051234567")
         self.assertEqual(pa.payload["net"], "2")
-        self.assertIn("Choose a plan", self.last_reply())
+        self.assertIn("Which plan?", self.last_reply())
         self.assertNotIn("Which network", self.last_reply())
 
     def test_ai_data_for_me_keeps_the_same_fast_path(self):

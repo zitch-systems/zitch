@@ -180,14 +180,20 @@ class FlowFileContractTests(SimpleTestCase):
 
         found = [inp for s in FLOW["screens"] for inp in secret_inputs(s["layout"])]
         # 11 before Release 2, plus the code and the PIN on LOGIN_SCREEN and
-        # on its LOGIN_RETRY twin.
-        self.assertEqual(len(found), 15)
+        # on its LOGIN_RETRY twin, plus Release 5's SIGNUP_PIN / SIGNUP_PIN_RETRY
+        # PIN boxes. Their confirm boxes (confirm_pin) are checked at the end.
+        self.assertEqual(len(found), 17)
         for inp in found:
             # The email ADDRESS rides the same field name but is not digits —
             # it keeps the email keyboard. Everything else is a passcode pad.
             expected = "email" if inp.get("input-type") == "email" else "passcode"
             self.assertEqual(inp.get("input-type"), expected)
-        self.assertEqual(sum(1 for i in found if i.get("input-type") == "passcode"), 14)
+        self.assertEqual(sum(1 for i in found if i.get("input-type") == "passcode"), 16)
+        for sid in ("SIGNUP_PIN", "SIGNUP_PIN_RETRY"):
+            confirm = [c for c in BY_ID[sid]["layout"]["children"][-1]["children"]
+                       if c.get("name") == "confirm_pin"]
+            self.assertEqual([(c["input-type"], c.get("min-chars"), c.get("max-chars")) for c in confirm],
+                             [("passcode", 6, 6)], sid)
 
     def test_identity_fields_are_eleven_and_code_fields_six(self):
         """An incomplete BVN is refused AT THE FIELD (red outline), and a code
@@ -320,7 +326,9 @@ class BuildersMatchDeclaredKeysTests(TestCase):
     an extra key fails the exchange at Meta; a missing one renders a hole."""
 
     def _check(self, resp):
-        declared = set(BY_ID[resp["screen"]].get("data", {}).keys())
+        from whatsapp.flows import live_data_keys
+
+        declared = live_data_keys()[resp["screen"]]
         self.assertEqual(set(resp["data"].keys()), declared, resp["screen"])
 
     def test_every_builder(self):

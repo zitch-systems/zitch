@@ -2,6 +2,7 @@
 
 Unmapped services now fail closed instead of falling back to a retired biller.
 """
+from decimal import Decimal
 from unittest import mock
 
 from django.test import TestCase, override_settings
@@ -30,7 +31,7 @@ class BillerRoutingTests(TestCase):
     def test_a_mapped_disco_routes_to_wema_bills(self):
         WemaBiller.objects.create(service_id="ikeja-electric", meter_type="prepaid", package_id="77")
         route = _wema_vas_route("ikeja-electric", {"amount": "1000", "variation_code": "prepaid"})
-        self.assertEqual(route, {"type": "bill", "code": "77", "amount": "1000"})
+        self.assertEqual(route, {"type": "bill", "code": "77", "amount": "1000", "charge": Decimal("0.00")})
 
     def test_a_mapped_bookmaker_routes_to_wema_bills(self):
         WemaBiller.objects.create(service_id="bet9ja-betting", package_id="91")

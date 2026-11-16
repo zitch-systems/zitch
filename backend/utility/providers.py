@@ -342,7 +342,7 @@ def _wema_vas_route(service_id: str, payload: dict):
         if service_id.endswith("-electric") and meter_type not in ("prepaid", "postpaid"):
             return None
         b = (WemaBiller.objects.filter(service_id=service_id, meter_type=meter_type, active=True)
-             .only("package_id").first())
+             .only("package_id", "charge").first())
         if not (b and b.package_id):
             return None
         amount = payload.get("amount")
@@ -350,7 +350,7 @@ def _wema_vas_route(service_id: str, payload: dict):
             # A variable-amount bill with no amount cannot be paid on either rail;
             # returning None makes the caller fail closed.
             return None
-        return {"type": "bill", "code": b.package_id, "amount": amount}
+        return {"type": "bill", "code": b.package_id, "amount": amount, "charge": b.charge}
     var = str(payload.get("variation_code", "") or "")
     if not var:
         return None  # no plan code -> safe partner-bank configuration error
@@ -363,9 +363,25 @@ def _wema_vas_route(service_id: str, payload: dict):
     if service_id in ("dstv", "gotv", "startimes"):
         from .models import CablePlan
         p = CablePlan.objects.filter(cable_plan_code=var, provider=_CABLE_PROVIDER_CHOICE[service_id],
-                                     active=True).only("wema_code", "price").first()
-        return {"type": "bill", "code": p.wema_code, "amount": p.price} if (p and p.wema_code) else None
+                                     active=True).only("wema_code", "price", "wema_charge").first()
+        return ({"type": "bill", "code": p.wema_code, "amount": p.price, "charge": p.wema_charge}
+                if (p and p.wema_code) else None)
     return None
+
+
+def bill_charge(service_id: str, payload: dict):
+    """The partner bank's charge on this bill, as a Decimal (0 for anything that
+    is not a bill, or a bill whose mapping is missing).
+
+    PayBill refuses a bill without its catalogue charge, and the bank takes it
+    from the customer's account on top of the bill, so callers show it before the
+    PIN and debit the bill amount plus this charge in one ledger row."""
+    from decimal import Decimal
+
+    route = _wema_vas_route(service_id, payload)
+    if not route or route.get("type") != "bill":
+        return Decimal("0")
+    return Decimal(str(route.get("charge") or 0))
 
 
 def _bill_contact_email() -> str:
@@ -389,7 +405,13 @@ def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -
             "message": "This service is not configured with our partner bank yet.",
             "vas_rail": "wema",
         }
-    src, source_error = _biller_source(reference, amount=route["amount"],
+    # The ledger row holds the bill AND the bank's charge (bill_charge), which is
+    # what the bank takes from the account; the funding binding is checked
+    # against that same total.
+    from decimal import Decimal as _D
+    charge = _D(str(route.get("charge") or 0))
+    debited = (_D(str(route["amount"])) + charge) if charge > 0 else route["amount"]
+    src, source_error = _biller_source(reference, amount=debited,
         source_account=str(payload.get("source_account") or ""))
     if source_error:
         return source_error
@@ -425,7 +447,8 @@ def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -
         email = str(payload.get("email") or "").strip() or _bill_contact_email()
         res = wema.pay_bill(route["amount"], reference or "", package_id=route["code"],
                             identifier=payload.get("billersCode", ""), source_account=src,
-                            phone=phone, email=email, name=str(payload.get("name") or ""))
+                            phone=phone, email=email, name=str(payload.get("name") or ""),
+                            charge=route.get("charge") or 0)
     res.setdefault("vas_rail", "wema")
     res.setdefault("vas_type", route["type"])
     return res

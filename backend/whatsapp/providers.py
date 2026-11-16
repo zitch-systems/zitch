@@ -292,10 +292,13 @@ def send_flow(msisdn: str, flow_token: str, header: str, body: str,
         parameters["flow_action_payload"] = {"screen": screen, "data": screen_data}
     payload = {"type": "interactive", "interactive": {
         "type": "flow",
-        "header": {"type": "text", "text": header[:60]},
         "body": {"text": body[:1024]},
         "action": {"name": "flow", "parameters": parameters},
     }}
+    if header:
+        # Optional: the approved "Tap X to use the secure form" cards carry their
+        # title in bold inside the body instead.
+        payload["interactive"]["header"] = {"type": "text", "text": header[:60]}
     if footer:
         # WhatsApp's small grey line under the card - the only small text a
         # chat message can carry (max 60 characters).

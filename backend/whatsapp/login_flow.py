@@ -110,7 +110,7 @@ def _screen(ob, error=""):
         return {"screen": ob.payload.get("screen") or LOGIN_SCREEN,
                 "data": {"summary": ONE_SCREEN_SUMMARY, "error": error or ""}}
     if ob.step == PIN_STATE:
-        return _pin_screen("Confirm your identity to connect WhatsApp. No payment will be made.",
+        return _pin_screen("Confirm your identity to connect WhatsApp. No payment will be made.", title="Confirm it's you",
                            error=error, screen=screen or PIN_CHAIN)
     return _identity_screen("email", label="Email code", error=error, screen=screen,
                             summary="Enter the code sent to your verified Zitch email.")
@@ -162,13 +162,17 @@ def start_login(msisdn):
         return reply(msisdn, "The secure sign-in form could not open. Please try again shortly.")
 
 
-def _send_login_menu(msisdn):
+def _send_login_menu(msisdn, first_name=""):
     """Delivery failure after commit must not turn successful authentication into
-    a failed Flow or log provider exception text containing customer data."""
-    from .router import send_menu
+    a failed Flow or log provider exception text containing customer data.
+
+    The approved message: "✅ WhatsApp connected." with the customer's name and
+    one line on what to do next - the menu is a reply away."""
+    from .router import reply
 
     try:
-        send_menu(msisdn)
+        reply(msisdn, f"✅ *WhatsApp connected.*\n\nHi {first_name or 'there'}, your Zitch account "
+                      "now works here. Reply *hi* to see everything you can do.")
     except Exception:
         log.warning("wa_login_menu_delivery_failed")
 
@@ -265,5 +269,6 @@ def handle_login(token, action, data):
         msisdn = ob.msisdn
         ob.delete()
         _mark_verified(msisdn)
-        transaction.on_commit(lambda: _send_login_menu(msisdn))
+        first = (getattr(user, "first_name", "") or "").strip().title()
+        transaction.on_commit(lambda: _send_login_menu(msisdn, first))
     return _result_screen("WhatsApp is connected. Return to the chat to use your account.", "done")

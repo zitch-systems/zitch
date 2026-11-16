@@ -197,7 +197,7 @@ def _disco_options() -> list:
     """The same disco list the chat's "Which disco?" prompt shows."""
     from .router import DISCO_NAMES
 
-    return [{"id": k, "title": v} for k, v in DISCO_NAMES.items()]
+    return [{"id": k, "title": f"{v} Electric"} for k, v in DISCO_NAMES.items()]
 
 
 def bill_screen(error: str = "", screen: str = "") -> dict:
@@ -206,19 +206,24 @@ def bill_screen(error: str = "", screen: str = "") -> dict:
 
 
 def bill_amount_screen(pa, error: str = "") -> dict:
-    from .router import DISCO_NAMES, _detail_lines, _flow_balance_line
+    """"How much?" under the verified meter owner and address, as designed."""
+    from .router import _flow_balance_line
 
     p = pa.payload
     cust = (p.get("customer") or "").strip()
-    return {"screen": F.BILL_AMOUNT,
-            "data": {"verified": f"✓ Meter verified · {cust}" if cust else "✓ Meter verified",
-                     "address": "Address: " + (p.get("customer_address")
-                                               or "Not provided by electricity provider"),
-                     "details": _detail_lines([
-                         ("Disco", DISCO_NAMES.get(p.get("disco", ""), "")),
-                         ("Meter", f"{p.get('meter', '')} ({p.get('meter_type', '')})")]),
-                     "balance": _flow_balance_line(pa) or "Enter the amount in naira",
-                     "error": _warn(error)}}
+    data = {"verified": f"✓ Meter verified · {cust}" if cust else "✓ Meter verified",
+            "address": (p.get("customer_address") or "").strip()
+                       or "Address not provided by the disco",
+            "balance": _flow_balance_line(pa) or "Enter the amount in naira",
+            "error": _warn(error)}
+    if not F.design_v5_live():
+        # The Flow published before Release 5 still declares the details block.
+        from .router import DISCO_NAMES, _detail_lines
+
+        data["details"] = _detail_lines([
+            ("Disco", DISCO_NAMES.get(p.get("disco", ""), "")),
+            ("Meter", f"{p.get('meter', '')} ({p.get('meter_type', '')})")])
+    return {"screen": F.BILL_AMOUNT, "data": data}
 
 
 def bill_screen_for(pa) -> dict:
@@ -427,7 +432,7 @@ def send_menu_form(msisdn: str) -> bool:
     if link is None:
         return False
     first = menu_screen()
-    res = send_flow(msisdn, sign_menu_token(link), header="Zitch",
+    res = send_flow(msisdn, sign_menu_token(link), header="",
                     body="What would you like to do?", screen=F.MENU_SCREEN,
                     screen_data=first["data"], cta="☰ Menu")
     if not res.get("success"):

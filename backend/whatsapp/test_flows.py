@@ -995,8 +995,9 @@ class PublishedFlowJsonTests(unittest.TestCase):
         from .flows import (_email_screen, _identity_screen,  # noqa: SLF001
                             _pin_screen, _success_screen)
 
-        declared = {s["id"]: set(s["data"]) for s in self.doc["screens"]}
-        from .flows import _confirm_pin_screen  # noqa: SLF001
+        from .flows import _confirm_pin_screen, live_data_keys  # noqa: SLF001
+
+        declared = live_data_keys()
 
         for built in (_pin_screen({"amount": "a", "recipient": "b", "details": "c"}, "e"),
                       _confirm_pin_screen("e"),
@@ -1056,7 +1057,9 @@ class SendPayloadsMatchThePublishedScreensTests(TestCase):
 
     def _assert_matches(self, kw):
         screen, data = kw["screen"], kw["screen_data"]
-        self.assertEqual(set(data), self.declared[screen],
+        from .flows import live_data_keys
+
+        self.assertEqual(set(data), live_data_keys()[screen],
                          f"{screen} send keys drifted from the published JSON")
 
     def test_the_transfer_confirm(self):
@@ -1601,10 +1604,12 @@ class ScreenContractTests(TestCase):
     """
 
     def declared(self):
-        path = os.path.join(os.path.dirname(__file__), "flow_assets", "pin_flow.json")
-        with open(path, encoding="utf-8") as fh:
-            return {s["id"]: set((s.get("data") or {}).keys())
-                    for s in json.load(fh)["screens"]}
+        # What the endpoint answers each screen with right now - the bundled
+        # file, with the Release 5 pages in their published shape until the
+        # DESIGN_V5 flag is on (flows.live_data_keys).
+        from .flows import live_data_keys
+
+        return live_data_keys()
 
     def test_the_endpoints_own_error_screen_is_renderable(self):
         """The regression. This screen only ever appears when something has
