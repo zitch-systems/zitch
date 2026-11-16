@@ -810,6 +810,39 @@ def approve_execute(request):
     return ok(success=True, message=outcome, outcome=getattr(outcome, "status", "done"))
 
 
+_EXPIRED_APPROVE_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>Zitch</title><style>body{margin:0;font-family:-apple-system,'Helvetica Neue',Roboto,sans-serif;
+background:#0b1416;color:#e7eef0;display:flex;min-height:100vh;align-items:center;justify-content:center;
+text-align:center}.card{padding:40px 28px;max-width:340px}p{color:#93a5aa;font-size:15px;line-height:1.55}
+.mark{font-size:34px;font-weight:800;color:#0FA295}</style></head><body><div class="card">
+<div class="mark">zitch</div><p>This approval link has expired or was already used. Go back to WhatsApp
+and start again.</p></div></body></html>"""
+
+
+def approve_short(request, code: str):
+    """GET /a/<code> - the short approve link (zitch.ng/a/<code> forwards here).
+
+    The code only points at a pending action; this rebuilds that action's signed
+    hand-off and serves the same blank bounce page as /wa/approve/<...>. A code
+    that is unknown, used or expired gets a page that says so and nothing else,
+    so the short link reveals no more than the long one did."""
+    from .flows import resolve_approve_token, sign_approve_token
+    from .models import PendingAction
+
+    if request.method != "GET":
+        return HttpResponse(status=405)
+    safe = re.sub(r"[^A-Za-z0-9]", "", code or "")[:12]
+    pa = PendingAction.objects.filter(approve_code=safe).first() if safe else None
+    handle = sign_approve_token(pa) if pa else ""
+    if not handle or resolve_approve_token(handle) is None:
+        response = HttpResponse(_EXPIRED_APPROVE_PAGE, content_type="text/html; charset=utf-8",
+                                status=404)
+        response["Cache-Control"] = "no-store"
+        return response
+    return approve_handoff(request, handle)
+
+
 def approve_handoff(request, token: str):
     """GET /wa/approve/<token> — the https bounce into the app.
 

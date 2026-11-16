@@ -102,9 +102,10 @@ class Release3FlowJsonTests(SimpleTestCase):
            "BILL_SCREEN", "BILL_CHAIN", "BILL_AMOUNT", "IDENTITY_SCREEN", "IDENTITY_RETRY",
            "IDENTITY_CHAIN", "CODE_SCREEN", "CODE_RETRY", "PIN_SCREEN", "PIN_CHAIN", "PIN_RETRY",
            "PIN_CONFIRM", "PIN_CONFIRM_RETRY", "RESULT", "SUCCESS"]
-    # Release 5 retitled these pages to the approved design and gave the three PIN
-    # pages their own `title` and `cta` (gated by WHATSAPP_FLOW['DESIGN_V5']).
-    OLD_CONTRACT_SHA256 = "c5756ff5c4511ecf2717e75c88c21e8c043072b4de175c6f004345f025fa82d7"
+    # Release 5 retitled these pages to the approved design, gave the three PIN
+    # pages their own `title` and `cta`, and gave MENU's rows a second line
+    # (`description`) - all gated by WHATSAPP_FLOW['DESIGN_V5'].
+    OLD_CONTRACT_SHA256 = "4ee480da79bc2cf262d8dd7ae3418f5317bd94d7496a944513f904c5178a5115"
 
     def test_the_existing_screens_contract_is_unchanged(self):
         contract = {}
@@ -136,14 +137,14 @@ class Release3FlowJsonTests(SimpleTestCase):
     def test_version_size_and_format(self):
         path = Path(whatsapp.__file__).parent / "flow_assets" / "pin_flow.json"
         raw = path.read_text()
-        self.assertEqual(_DOC["version"], "6.0")
+        self.assertEqual(_DOC["version"], "6.3")   # 6.3 for the airtime ChipsSelector
         self.assertEqual(len(_DOC["screens"]), 49)   # 40 + Release 4's 7 + Release 5's 2
         self.assertLess(len(raw.encode()), 750_000)
         self.assertEqual(raw, json.dumps(_DOC, indent=2, ensure_ascii=True) + "\n")
 
     def test_only_known_components_and_a_footer_last(self):
         allowed = {"SingleColumnLayout", "Image", "TextHeading", "TextBody", "TextCaption",
-                   "TextInput", "Dropdown", "RadioButtonsGroup", "Form", "Footer"}
+                   "TextInput", "Dropdown", "RadioButtonsGroup", "ChipsSelector", "Form", "Footer"}
         for sid in NEW:
             with self.subTest(sid=sid):
                 found = {n["type"] for n in _walk(_BY_ID[sid]["layout"])

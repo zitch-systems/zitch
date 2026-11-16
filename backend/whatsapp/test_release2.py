@@ -816,7 +816,7 @@ class Release2FlowJsonTests(SimpleTestCase):
     def test_version_unchanged_and_only_known_components_used(self):
         """No NavigationList: it needs a newer Flow JSON version than 6.0, and
         RadioButtonsGroup + data_exchange does the job without bumping it."""
-        self.assertEqual(_DOC["version"], "6.0")
+        self.assertEqual(_DOC["version"], "6.3")   # 6.3 for the airtime ChipsSelector
         allowed = {"SingleColumnLayout", "Image", "TextHeading", "TextBody", "TextCaption",
                    "TextInput", "Dropdown", "RadioButtonsGroup", "EmbeddedLink", "Form", "Footer"}
         found = set()

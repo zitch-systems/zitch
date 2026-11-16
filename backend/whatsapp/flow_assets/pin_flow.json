@@ -1,5 +1,5 @@
 {
-  "version": "6.0",
+  "version": "6.3",
   "data_api_version": "3.0",
   "routing_model": {
     "PRIVACY_NOTICE": [
@@ -1742,13 +1742,17 @@
               },
               "title": {
                 "type": "string"
+              },
+              "description": {
+                "type": "string"
               }
             }
           },
           "__example__": [
             {
               "id": "1",
-              "title": "\ud83d\udcb0 Check balance"
+              "title": "\ud83d\udcb0 Check balance",
+              "description": "Your Zitch balance"
             }
           ]
         },
@@ -2719,6 +2723,31 @@
                 "helper-text": "${data.amount_help}"
               },
               {
+                "type": "ChipsSelector",
+                "name": "quick_amount",
+                "label": "Or pick one",
+                "required": false,
+                "max-selected-items": 1,
+                "data-source": [
+                  {
+                    "id": "500",
+                    "title": "\u20a6500"
+                  },
+                  {
+                    "id": "1000",
+                    "title": "\u20a61,000"
+                  },
+                  {
+                    "id": "2000",
+                    "title": "\u20a62,000"
+                  },
+                  {
+                    "id": "5000",
+                    "title": "\u20a65,000"
+                  }
+                ]
+              },
+              {
                 "type": "TextCaption",
                 "text": "For data, leave the amount blank - you'll choose a plan next."
               },
@@ -2731,7 +2760,8 @@
                     "kind": "${form.kind}",
                     "phone": "${form.phone}",
                     "network": "${form.network}",
-                    "amount": "${form.amount}"
+                    "amount": "${form.amount}",
+                    "quick_amount": "${form.quick_amount}"
                   }
                 }
               }
@@ -2860,6 +2890,31 @@
                 "helper-text": "${data.amount_help}"
               },
               {
+                "type": "ChipsSelector",
+                "name": "quick_amount",
+                "label": "Or pick one",
+                "required": false,
+                "max-selected-items": 1,
+                "data-source": [
+                  {
+                    "id": "500",
+                    "title": "\u20a6500"
+                  },
+                  {
+                    "id": "1000",
+                    "title": "\u20a61,000"
+                  },
+                  {
+                    "id": "2000",
+                    "title": "\u20a62,000"
+                  },
+                  {
+                    "id": "5000",
+                    "title": "\u20a65,000"
+                  }
+                ]
+              },
+              {
                 "type": "TextCaption",
                 "text": "For data, leave the amount blank - you'll choose a plan next."
               },
@@ -2872,7 +2927,8 @@
                     "kind": "${form.kind}",
                     "phone": "${form.phone}",
                     "network": "${form.network}",
-                    "amount": "${form.amount}"
+                    "amount": "${form.amount}",
+                    "quick_amount": "${form.quick_amount}"
                   }
                 }
               }

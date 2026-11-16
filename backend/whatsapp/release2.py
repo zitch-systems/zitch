@@ -400,6 +400,30 @@ def _cache_key(session: str) -> str:
     return "wa_menu_session:" + session
 
 
+#: The approved menu's second line under each row (Release 5).
+MENU_DESCRIPTIONS = {
+    "balance": "Your Zitch balance",
+    "send money": "Opens the send form",
+    "3": "Opens the airtime and data form",
+    "bill": "Electricity and cable TV",
+    "exam": "WAEC, NECO, JAMB",
+    "add money": "Your account number",
+    "account details": "Name, account number and email",
+    "verify": "Upgrade your tier",
+    "history": "Your recent payments",
+    "scan": "Pay with a QR code",
+    "saved people": "People you send to often",
+    "convert": "Between your wallets",
+    "savings": "Your savings plans",
+    "loan": "Balance and repayment",
+}
+
+#: Menu items answered inside the form rather than in the chat (Release 5):
+#: the ones that read only our own records, so they fit Meta's ~10 seconds.
+IN_FORM = {"balance": ("💰 Your balance", "_do_balance"),
+           "account details": ("🧾 My account details", "_do_account_details")}
+
+
 def menu_items() -> list:
     """The chat menu's own items, in its order and with its numbers as ids."""
     from utility.providers import partnership_new_business_allowed
@@ -407,14 +431,49 @@ def menu_items() -> list:
     from .router import _menu_items
 
     live = partnership_new_business_allowed()
+    described = F.design_v5_live()
     items = []
     for number, key, emoji, label in _menu_items():
         if not live and key == "send money":
             label = "Transfers unavailable"
         if not live and key == "scan":
             label = "QR payments unavailable"
-        items.append({"id": number, "title": f"{emoji} {label}"[:30]})
+        item = {"id": number, "title": f"{emoji} {label}"[:30]}
+        if described:
+            item["description"] = ("Unavailable right now" if label.endswith("unavailable")
+                                   else MENU_DESCRIPTIONS.get(key, ""))[:300]
+        items.append(item)
     return items
+
+
+def _answer_in_form(user, msisdn: str, key: str):
+    """Balance or account details shown on the form's result page, or None to
+    answer in the chat instead. The chat's own handler builds the text, so the
+    two can't disagree, and the idle re-check is the chat's own: after the idle
+    window the chat asks for the PIN first, exactly as if it had been typed."""
+    from . import router
+    from .models import ConversationState
+
+    if key not in IN_FORM or not F.design_v5_live():
+        return None
+    if router._needs_reauth(ConversationState.for_msisdn(msisdn)):  # noqa: SLF001
+        return None
+    heading, handler = IN_FORM[key]
+    try:
+        texts = router.capture_replies(getattr(router, handler), user, msisdn)
+    except Exception:  # noqa: BLE001 - fall back to the chat, which retries
+        log.exception("wa_menu_in_form_answer_failed")
+        return None
+    text = "\n\n".join(t for t in texts if t).strip()
+    if not text:
+        return None
+    # A form shows text as written: drop the chat's *bold* and _italic_ marks
+    # and the heading the result page already carries.
+    plain = re.sub(r"[*_]", "", text)
+    plain = re.sub(r"^\W*(My account details|Your balances?:?)\s*", "", plain).strip()
+    screen = F._result_screen(plain)
+    screen["data"]["status"] = heading
+    return screen
 
 
 def menu_screen(error: str = "") -> dict:
@@ -516,6 +575,9 @@ def submit_menu(link, token: str, session: str, data: dict) -> dict:
     response = opener(user, msisdn, token, session) if opener else None
     if response is not None:
         return response
+    answered = _answer_in_form(user, msisdn, key)
+    if answered is not None:
+        return answered
     _dispatch_in_chat(msisdn, key, session)
     return F._close_flow(token)
 

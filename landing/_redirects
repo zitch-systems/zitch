@@ -1,0 +1,2 @@
+# The short WhatsApp approve link (zitch.ng/a/<code>) is served by the API.
+/a/*  https://api.zitch.ng/a/:splat  302

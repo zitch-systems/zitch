@@ -71,6 +71,10 @@ class PendingAction(models.Model):
     payload = models.JSONField(default=dict, blank=True)
     expires_at = models.DateTimeField()
     created = models.DateTimeField(auto_now_add=True)
+    # The short approve link (zitch.ng/a/<code>). Only a pointer to this row:
+    # opening it shows the same blank bounce page as the long link, and the app
+    # still needs the owner's own signed-in session and fingerprint/Face ID.
+    approve_code = models.CharField(max_length=12, unique=True, null=True, blank=True)
 
     @property
     def expired(self) -> bool:
