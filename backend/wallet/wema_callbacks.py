@@ -1273,8 +1273,11 @@ def wema_address_callback(request):
         {title, message, data: {email, nuban, nubanName, type, nubanStatus,
          phoneNumber}, requestType: 2}
     with title "Account Upgraded Successfully" and message "Address has been
-    verified and account upgraded successfully ..." when it passes. We answer
-    with that same title and message.
+    verified and account upgraded successfully ..." when it passes, and title
+    "Address verification failed" / message "Address verification failed for
+    customer with details below" when it fails. We answer with the success
+    title and message. Wema calls from 135.236.18.76 and 74.178.162.156
+    (DEFAULT_CALLBACK_IPS).
 
     Tier 3 is granted only when all of these hold:
       * the call passed the path key and source-IP checks (the decorator);

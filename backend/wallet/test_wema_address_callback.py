@@ -7,7 +7,9 @@ is instant). It sends
      phoneNumber}, requestType: 2}
 
 and expects back {title: "Account Upgraded Successfully", message: "Address has
-been verified and account upgraded successfully ..."}.
+been verified and account upgraded successfully ..."}. A failure arrives as
+title "Address verification failed", message "Address verification failed for
+customer with details below". Source IPs: 135.236.18.76 and 74.178.162.156.
 """
 import json
 from unittest.mock import patch
@@ -97,6 +99,25 @@ class AddressCallbackTests(TestCase):
         read.assert_not_called()
         self.assertFalse(self.user.address_verified)
         self.assertFalse(self.user.address_verification_pending)
+        self.assertEqual(self.user.tier3_review, "rejected")
+
+    def test_wemas_own_failure_callback_stops_the_wait(self):
+        """Wema, 17 Nov 2026: the failed address verification callback."""
+        r, read, _reply = self._post(wema_body(
+            title="Address verification failed",
+            message="Address verification failed for customer with details below"))
+        self.assertEqual(r.status_code, 200)
+        read.assert_not_called()
+        self.assertFalse(self.user.address_verified)
+        self.assertFalse(self.user.address_verification_pending)
+        self.assertEqual(self.user.tier3_review, "rejected")
+        self.assertEqual(self.user.tier, 2)
+
+    def test_wemas_failure_callback_on_the_account_url_is_handled_too(self):
+        r, _read, _reply = self._post(wema_body(
+            title="Address verification failed",
+            message="Address verification failed for customer with details below"), path="account")
+        self.assertEqual(r.json(), ADDRESS_CB_RESPONSE)
         self.assertEqual(self.user.tier3_review, "rejected")
 
     def test_an_unknown_account_changes_nothing(self):
