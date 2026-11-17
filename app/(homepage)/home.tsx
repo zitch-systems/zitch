@@ -185,7 +185,7 @@ ActivityRow.displayName = 'ActivityRow';
 
 const Home = () => {
   const { c } = useTheme();
-  const { balance, totalBalance, firstName, fullName, avatar, accountNumber, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, reloadLinked, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
+  const { balance, totalBalance, firstName, fullName, avatar, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, reloadLinked, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
   const capabilityMessage = walletCapabilityMessage({ billPaymentsAvailable, transfersAvailable });
   const products = useHomeProducts();
   const loadProducts = products.load;
@@ -301,7 +301,7 @@ const Home = () => {
                   style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   <ZIcon name="bank" size={14} color="rgba(255,255,255,0.85)" />
                   <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85} style={{ flexShrink: 1, fontSize: 12.5, fontFamily: fontA.bodySemi, color: '#fff', fontVariant: ['tabular-nums'] }}>
-                    {groupedAccount} · Zitch account
+                    {groupedAccount} · {bankName || 'Zitch account'}
                   </NText>
                   <ZIcon name="copy" size={14} color="rgba(255,255,255,0.85)" />
                 </Pressable>

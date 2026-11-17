@@ -16,7 +16,7 @@ import { walletCapabilityMessage } from '@/lib/services/wallet';
 
 const Wallet = () => {
   const { c } = useTheme();
-  const { balance, totalBalance, fullName, firstName, accountNumber, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, reloadLinked, loading, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
+  const { balance, totalBalance, fullName, firstName, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, reloadLinked, loading, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
   const capabilityMessage = walletCapabilityMessage({ billPaymentsAvailable, transfersAvailable });
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -106,7 +106,7 @@ const Wallet = () => {
                     {fullName || firstName || 'Your account'}
                   </Text>
                   <NText numberOfLines={1} style={{ color: 'rgba(255,255,255,.82)', fontSize: 11.5, fontFamily: font.medium, marginTop: 1 }}>
-                    {groupedAccount} · Zitch account
+                    {groupedAccount} · {bankName || 'Zitch account'}
                   </NText>
                 </View>
                 <ZIcon name="copy" size={15} color="rgba(255,255,255,.85)" />
