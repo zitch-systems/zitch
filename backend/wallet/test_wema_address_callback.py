@@ -237,10 +237,10 @@ class AddressWebhookWatchTests(TestCase):
             call_command("address_webhook_watch", stdout=out)
         return alert, out.getvalue()
 
-    def _waiting(self, days, review="pending"):
+    def _waiting(self, hours, review="pending"):
         from datetime import timedelta
 
-        at = timezone.now() - timedelta(days=days)
+        at = timezone.now() - timedelta(hours=hours)
         User.objects.filter(pk=self.user.pk).update(
             address="12 Allen Avenue, Ikeja, Lagos",
             address_verification_pending=True, address_verification_account_number=ACCOUNT,
@@ -251,25 +251,29 @@ class AddressWebhookWatchTests(TestCase):
         alert.assert_not_called()
         self.assertIn("no_webhook=0", out)
 
-    def test_a_check_with_no_webhook_after_two_days_is_listed_without_the_full_account(self):
+    def test_a_check_with_no_webhook_after_two_hours_is_listed_without_the_full_account(self):
         self._waiting(3)
         alert, _out = self._run()
         alert.assert_called_once()
         context = alert.call_args.kwargs
         self.assertEqual(context["level"], "error")
         self.assertEqual(context["no_webhook"], 1)
-        self.assertIn(f"user {self.user.pk}", context["no_webhook_list"])
-        self.assertIn("******6789", context["no_webhook_list"])
+        self.assertIn(f"user {self.user.pk} (account ******6789, 3h)", context["no_webhook_list"])
         self.assertNotIn(ACCOUNT, context["no_webhook_list"])
         self.assertNotIn("Allen", str(context))
 
-    def test_a_recent_check_is_not_listed_yet(self):
+    def test_a_check_under_two_hours_old_is_not_listed_yet(self):
         self._waiting(1)
         alert, _out = self._run()
         alert.assert_not_called()
 
+    def test_a_long_wait_is_shown_in_days(self):
+        self._waiting(24 * 3 + 1)
+        alert, _out = self._run()
+        self.assertIn("3d)", alert.call_args.kwargs["no_webhook_list"])
+
     def test_a_webhook_passed_check_whose_record_lags_is_listed_separately(self):
-        self._waiting(2, review="bank_ok")
+        self._waiting(48, review="bank_ok")
         alert, _out = self._run()
         context = alert.call_args.kwargs
         self.assertEqual((context["no_webhook"], context["bank_record_behind"]), (0, 1))
