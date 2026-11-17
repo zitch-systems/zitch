@@ -21,7 +21,7 @@ from wallet.services import existing_for_key
 
 from .bank_aliases import aliases_for, short_name
 from .models import Bank
-from .services import PayoutError, detect_account_banks, execute_payout
+from .services import PayoutError, detect_account_banks, execute_payout, rank_account_matches
 
 
 def _name_tokens(name: str) -> set:
@@ -249,6 +249,9 @@ def resolve_account(request):
                   matches=[{"bank": bank.code, "bank_name": bank.name, "name": res.get("name", "")}])
 
     matches = detect_account_banks(acct)  # auto-detect across banks
+    # More than one bank: put the most probable first (this customer's own
+    # history, the check digit, then where other customers send it).
+    matches = rank_account_matches(request.user_obj, acct, matches)
     if not matches:
         return fail("Couldn't detect the bank for this account number — pick the bank manually.", status=404)
     top = matches[0]

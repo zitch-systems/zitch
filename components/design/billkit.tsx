@@ -7,7 +7,7 @@ import { View, Text, Pressable, Image, TextInput, ScrollView } from 'react-nativ
 import { LinearGradient } from 'expo-linear-gradient';
 import ZIcon from '@/components/design/ZIcon';
 import { Naira } from '@/components/design/Naira';
-import { money } from '@/components/design/ui';
+import { money, NO_WEB_OUTLINE } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 import { providerInitials } from '@/lib/format';
 
@@ -189,7 +189,7 @@ export const RecentField = ({
             textContentType={autoComplete === 'tel' ? 'telephoneNumber' : undefined}
             maxLength={maxLength}
             accessibilityLabel={accessibilityLabel || label}
-            style={{ flexShrink: 1, minWidth: 60, paddingVertical: 0, fontSize: 15.5, color: c.ink1, fontFamily: font.bold, fontVariant: ['tabular-nums'] }}
+            style={[{ flexShrink: 1, minWidth: 60, paddingVertical: 0, fontSize: 15.5, color: c.ink1, fontFamily: font.bold, fontVariant: ['tabular-nums'] }, NO_WEB_OUTLINE]}
           />
           {tag && value && !focused ? (
             <View style={{ paddingVertical: 3, paddingHorizontal: 8, borderRadius: 999, backgroundColor: 'rgba(6,110,102,0.12)' }}>

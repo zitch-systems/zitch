@@ -26,7 +26,9 @@ type Beneficiary = {
   id: number; name: string; account_number: string; bank_name: string; bank_code?: string; initials: string; color: string;
   display_name?: string; saved?: boolean; last_sent_at?: string | null;
 };
-type BankMatch = { bank: string; bank_name: string; name: string };
+// `likely`: the server ranks the banks most probable first and flags the top
+// one only when a real signal sets it apart (history, check digit).
+type BankMatch = { bank: string; bank_name: string; name: string; likely?: boolean };
 type PendingAttempt = { scope: string; fingerprint: string; key: string };
 
 const SendMoney = () => {
@@ -542,7 +544,14 @@ const SendMoney = () => {
                   }}
                   style={{ paddingVertical: 7 }}
                 >
-                  <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 13 }}>{m.bank_name}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 13 }}>{m.bank_name}</Text>
+                    {m.likely ? (
+                      <View testID="bank-match-likely" style={{ paddingVertical: 2, paddingHorizontal: 8, borderRadius: 999, backgroundColor: 'rgba(6,110,102,0.12)' }}>
+                        <Text style={{ color: c.brand, fontFamily: font.bold, fontSize: 10.5 }}>Most likely</Text>
+                      </View>
+                    ) : null}
+                  </View>
                   <Text style={{ color: c.ink2, fontFamily: font.regular, fontSize: 12 }}>{m.name}</Text>
                 </Pressable>
               ))}
