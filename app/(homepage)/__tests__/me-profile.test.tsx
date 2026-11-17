@@ -78,6 +78,20 @@ it('shows Tier 0, gives the balance eye an action and opens linked accounts', as
   act(() => tree.unmount());
 });
 
+it('lays the menu straight on the page: no white cards, only the WhatsApp card keeps one', async () => {
+  mockGetStatus.mockResolvedValueOnce({ success: true, tier: 2 });
+  const ui = jest.requireMock('@/components/design/ui');
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Me />); });
+  const rows = tree.root.findAll((n) => n.type === ui.ZItem);
+  expect(rows.length).toBeGreaterThanOrEqual(8);
+  expect(rows.every((r) => r.props.bare === true)).toBe(true);
+  const cards = tree.root.findAll((n) => n.type === ui.Card);
+  expect(cards).toHaveLength(1);
+  expect(cards[0].findAll((n) => n.props.children === 'Bank on WhatsApp').length).toBeGreaterThan(0);
+  act(() => tree.unmount());
+});
+
 it('does not present an invalid or unsuccessful tier response as verified', async () => {
   mockGetStatus.mockResolvedValueOnce({ success: false, tier: 3 });
   let tree!: renderer.ReactTestRenderer;
