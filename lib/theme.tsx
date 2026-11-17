@@ -162,6 +162,7 @@ export const ICON_COLORS: Record<string, string> = {
   dice: '#F5A623',     // betting
   tv: '#7A5CFF',       // cable
   fixed: '#1EA05E',    // save
+  water: '#0EA5E9',
   loan: '#E8590C',
   jamb: '#F5760A',     // exams
   bills: '#F59E0B',    // electricity
