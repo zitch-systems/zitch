@@ -261,7 +261,7 @@ class PartnershipJourneyTests(TestCase):
         with patch("utility.wema.upgrade_tier3") as sent, patch.object(router, "reply") as reply:
             router.handle_inbound(MSISDN, "tier3")
         sent.assert_not_called()
-        self.assertIn("You're now Tier 3", reply.call_args.args[1])
+        self.assertIn("Tier 3 verification complete", reply.call_args.args[1])
         self.user.refresh_from_db()
         self.assertEqual(self.user.tier, 3)
 

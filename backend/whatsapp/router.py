@@ -3616,8 +3616,9 @@ def _send_tier3_from_chat(user, msisdn: str) -> None:
         if apply_confirmed_tier(user, 3) >= 3:
             from accounts.models import User
 
-            return reply(msisdn, "✅ *You're now Tier 3.*\n\n"
-                         f"Up to {_money(User.DAILY_TRANSFER_LIMITS[3])} a day.")
+            return reply(msisdn, "✅ *Tier 3 verification complete.*\n\n"
+                         "Your address is verified. Your daily limit has been increased to "
+                         f"*{_money(User.DAILY_TRANSFER_LIMITS[3])}*.")
     parts = saved_address_parts(user.address)
     if not parts:
         return reply(msisdn, TIER3_IN_APP_TEXT)
