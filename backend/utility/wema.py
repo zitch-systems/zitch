@@ -52,6 +52,7 @@ import json
 import logging
 import re
 import secrets
+import time
 from decimal import Decimal, InvalidOperation
 from functools import wraps
 from urllib.parse import urlsplit
@@ -662,6 +663,42 @@ def _post(product: str, path: str, body: dict, params: dict | None = None) -> re
     return _note_non_json(product, path, _raise_if_ambiguous(
         _gateway().post(_url(product, path), json=body, params=params or {},
                         headers=_headers(product), timeout=REQUEST_TIMEOUT)))
+
+
+# A read refused by the bank's edge with its own page (HTML, no API-gateway
+# request id) never reached the API. On 16 Nov 2026 at 21:21 UTC one statement
+# read came back as a 179-byte HTML 403 while the reads ten minutes before and
+# after were fine, and the whole reconcile run failed and paged. One such page
+# is a blip, so a READ is asked again a couple of times before it counts as
+# failed. Never used for anything that moves money.
+_EDGE_RETRY_DELAYS = (1.0, 3.0)
+
+
+def _edge_refused(resp: requests.Response) -> bool:
+    if getattr(resp, "status_code", None) != 403:
+        return False
+    if _gateway_request_id(getattr(resp, "headers", None) or {}):
+        return False
+    body = getattr(resp, "content", None)
+    if not isinstance(body, (bytes, bytearray)):
+        return False
+    try:
+        json.loads(body)
+    except ValueError:
+        return True
+    return False
+
+
+def _post_read(product: str, path: str, body: dict) -> requests.Response:
+    """POST for a read-only call, asked again when the bank's edge blocks it."""
+    resp = _post(product, path, body)
+    for delay in _EDGE_RETRY_DELAYS:
+        if not _edge_refused(resp):
+            return resp
+        log.info("wema_edge_refused_retry route=%s wait_s=%s", _gateway_route(path), delay)
+        time.sleep(delay)
+        resp = _post(product, path, body)
+    return resp
 
 
 def _response_meta(resp: requests.Response, data) -> dict:
@@ -2020,8 +2057,8 @@ def _history_request(account_number: str, date_from: str, date_to: str, keyword:
         if keyword:
             # Optional in the bank's spec; sent only for a real search.
             body["keyWord"] = keyword
-        resp = _post("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
-                     body)
+        resp = _post_read("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
+                          body)
         data = resp.json()
         if not isinstance(data, dict):
             return {"success": False, "transactions": [], "message": "Request failed",

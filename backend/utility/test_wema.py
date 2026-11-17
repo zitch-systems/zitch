@@ -318,6 +318,46 @@ class WemaLiveTests(SimpleTestCase):
         self.assertFalse(result["success"])
         self.assertFalse(result["complete"])
 
+    @staticmethod
+    def _edge_page():
+        # What the bank's edge sent on 16 Nov 2026 21:21 UTC: HTML, 403, no
+        # API-gateway request id.
+        m = _resp(None, status=403)
+        m.content = b"<html><head><title>403 Forbidden</title></head><body></body></html>"
+        m.headers = {"Content-Type": "text/html"}
+        m.json.side_effect = ValueError("not json")
+        return m
+
+    @patch("utility.wema.time.sleep")
+    @patch("utility.wema.requests.post")
+    def test_statement_read_survives_one_edge_block_page(self, mock_post, mock_sleep):
+        ok = _resp({"result": [{"referenceId": "R1", "amount": 100, "creditType": "Credit"}],
+                    "successful": True})
+        ok.content = b"{}"
+        mock_post.side_effect = [self._edge_page(), ok]
+        result = wema.get_transactions("0410530975", "2026-07-01", "2026-08-20")
+        self.assertTrue(result["success"])
+        self.assertEqual(mock_post.call_count, 2)
+        mock_sleep.assert_called_once()
+
+    @patch("utility.wema.time.sleep")
+    @patch("utility.wema.requests.post")
+    def test_statement_read_still_fails_when_the_edge_keeps_blocking(self, mock_post, mock_sleep):
+        mock_post.side_effect = lambda *a, **k: self._edge_page()
+        result = wema.get_transactions("0410530975", "2026-07-01", "2026-08-20")
+        self.assertFalse(result["success"])
+        self.assertEqual(mock_post.call_count, 1 + len(wema._EDGE_RETRY_DELAYS))
+
+    @patch("utility.wema.time.sleep")
+    @patch("utility.wema.requests.post")
+    def test_a_gateway_json_403_is_not_retried(self, mock_post, mock_sleep):
+        refused = _resp({"successful": False, "message": "Forbidden"}, status=403)
+        refused.content = b'{"successful": false}'
+        mock_post.return_value = refused
+        wema.get_transactions("0410530975", "2026-07-01", "2026-08-20")
+        self.assertEqual(mock_post.call_count, 1)
+        mock_sleep.assert_not_called()
+
     def test_naira_tolerates_formatting(self):
         self.assertEqual(wema._naira("1,000.50"), Decimal("1000.50"))
         self.assertEqual(wema._naira("₦2,500"), Decimal("2500.00"))

@@ -28,6 +28,7 @@ Two consequences worth naming rather than discovering:
   a hostile image can do is propose a payment its owner is then asked to approve.
 """
 import logging
+import re
 
 log = logging.getLogger("whatsapp")
 
@@ -110,8 +111,52 @@ def interpret(kind: str, media_id: str, caption: str = "") -> tuple:
     described = llm.describe_image(data, mime).strip()
     if not described:
         return "", CANNOT_READ["image"], None
+    request, described = payment_request(described)
+    if request:
+        # A picture of payment details IS the request. Routed as a typed
+        # transfer ("send 2800 to 9727326728 Paystack-Titan"), it reaches the
+        # same parser, name enquiry, confirm card and PIN as typed text. Before
+        # this, a forwarded screenshot reached the model as a description of a
+        # chat and was refused as "not a request" (17 Nov 2026).
+        if caption.strip():
+            return f"{caption.strip()}\n{request}", "", None
+        return request, "", None
     # The caption leads: it is what the customer actually asked for, and the
     # description is context for it. Reversed, a model reading the pair tends to
     # answer the picture instead of the request.
     return (f"{caption.strip()}\n\n(Attached image shows: {described})"
             if caption.strip() else described), "", None
+
+
+_PAYMENT_LINE = re.compile(r"^\s*\**\s*PAYMENT\s*:\s*(.*)$", re.I | re.M)
+_FIELD = re.compile(r"\b(account|bank|amount|name)\s*=\s*(.*?)(?=\s+\b(?:account|bank|amount|name)\s*=|$)",
+                    re.I)
+
+
+def payment_request(described: str) -> tuple:
+    """(transfer sentence or "", description without the PAYMENT line).
+
+    The reader is asked for one fixed line before its description. With a
+    10-digit account on it, that line becomes the transfer the customer would
+    have typed; anything else leaves the description to be read as before.
+    """
+    match = _PAYMENT_LINE.search(described or "")
+    if not match:
+        return "", described
+    rest = (described[:match.start()] + described[match.end():]).strip()
+    fields = {}
+    for key, value in _FIELD.findall(match.group(1)):
+        value = value.strip().strip("*`'\".,;").strip()
+        if value and value.lower() not in ("none", "n/a", "unknown", "-", "null"):
+            fields[key.lower()] = value
+    account = re.sub(r"\D", "", fields.get("account", ""))
+    if len(account) != 10:
+        return "", rest or described
+    parts = ["send"]
+    amount = re.sub(r"[^\d.]", "", fields.get("amount", ""))
+    if amount and amount.strip("."):
+        parts.append(amount.rstrip(".").split(".")[0] if amount.endswith(".00") else amount)
+    parts += ["to", account]
+    if fields.get("bank"):
+        parts.append(fields["bank"])
+    return " ".join(parts), rest
