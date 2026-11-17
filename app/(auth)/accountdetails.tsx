@@ -24,6 +24,8 @@ const AccountDetails = () => {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [current, setCurrent] = useState({ firstName: '', lastName: '', email: '', phone: '' });
+  // A verified email is fixed (17 Nov 2026): shown, never edited here.
+  const [emailVerified, setEmailVerified] = useState(false);
   const [form, setForm] = useState({ firstName: '', lastName: '', email: '' });
   const [password, setPassword] = useState('');
   const inFlight = useRef(false);
@@ -55,6 +57,7 @@ const AccountDetails = () => {
             email: data.user_email ?? '',
             phone: data.user_phone_number ?? '',
           });
+          setEmailVerified(data.user_email_verified === true);
           setAvatar(data.user_avatar ?? '');
         } else setLoadError('Your profile could not be loaded. Please try again.');
     } catch {
@@ -112,7 +115,7 @@ const AccountDetails = () => {
   const dirty = !!((form.firstName.trim() && form.firstName.trim() !== current.firstName)
     || (form.lastName.trim() && form.lastName.trim() !== current.lastName)
     || (form.email.trim() && form.email.trim().toLowerCase() !== current.email.toLowerCase()));
-  const changingEmail = !!form.email.trim() && form.email.trim().toLowerCase() !== current.email.toLowerCase();
+  const changingEmail = !emailVerified && !!form.email.trim() && form.email.trim().toLowerCase() !== current.email.toLowerCase();
   const canSave = !loading && !loadError && dirty && emailOk && (!changingEmail || !!password);
 
   const handleUpdate = async () => {
@@ -128,7 +131,7 @@ const AccountDetails = () => {
     try {
       if (!owns()) return;
       const response = await apiPost(EP.auth.updateInfo, {
-        email: form.email.trim() || current.email,
+        email: (!emailVerified && form.email.trim()) || current.email,
         first_name: form.firstName.trim() || current.firstName,
         last_name: form.lastName.trim() || current.lastName,
         ...(changingEmail ? { password } : {}),
@@ -136,9 +139,9 @@ const AccountDetails = () => {
       const result = await response.json();
       if (!owns()) return;
       if (response.ok) {
-        if (form.email) await AsyncStorage.setItem('UserEmail', form.email.trim());
+        if (changingEmail) await AsyncStorage.setItem('UserEmail', form.email.trim());
         if (!owns()) return;
-        setCurrent((previous) => ({ ...previous, firstName: form.firstName.trim() || previous.firstName, lastName: form.lastName.trim() || previous.lastName, email: form.email.trim() || previous.email }));
+        setCurrent((previous) => ({ ...previous, firstName: form.firstName.trim() || previous.firstName, lastName: form.lastName.trim() || previous.lastName, email: (changingEmail && form.email.trim()) || previous.email }));
         setForm({ firstName: '', lastName: '', email: '' });
         setPassword('');
         void reloadWallet();
@@ -183,7 +186,24 @@ const AccountDetails = () => {
       <View style={{ gap: 16 }}>
         <Field editable={!isUpdating} autoComplete="given-name" label="First name" value={form.firstName} onChangeText={(e) => setForm({ ...form, firstName: e })} placeholder={current.firstName || 'First name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
         <Field editable={!isUpdating} autoComplete="family-name" label="Last name" value={form.lastName} onChangeText={(e) => setForm({ ...form, lastName: e })} placeholder={current.lastName || 'Last name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
-        <Field label="Email" value={form.email} onChangeText={(e) => setForm({ ...form, email: e })} editable={!isUpdating} autoCapitalize="none" autoCorrect={false} autoComplete="email" keyboardType="email-address" placeholder={current.email || 'you@email.com'} prefix={<ZIcon name="remita" size={18} color={c.ink3} />} />
+        {emailVerified ? (
+          <View>
+            <Field label="Verified email" value={current.email} editable={false} prefix={<ZIcon name="remita" size={18} color={c.ink3} />} />
+            <Text style={{ fontSize: 12, color: c.ink3, fontFamily: font.regular, lineHeight: 18, marginTop: 7 }}>
+              Your email is verified, so it can’t be changed.
+            </Text>
+          </View>
+        ) : (
+          <View>
+            <Field label="Email" value={form.email} onChangeText={(e) => setForm({ ...form, email: e })} editable={!isUpdating} autoCapitalize="none" autoCorrect={false} autoComplete="email" keyboardType="email-address" placeholder={current.email || 'you@email.com'} prefix={<ZIcon name="remita" size={18} color={c.ink3} />} />
+            <Text style={{ fontSize: 12, color: c.ink3, fontFamily: font.regular, lineHeight: 18, marginTop: 7 }}>
+              Not verified yet. You can change it until you verify it.
+            </Text>
+            <Tap onPress={() => router.push('/kyc')} accessibilityLabel="Verify your email" hitSlop={8} style={{ alignSelf: 'flex-start', marginTop: 6 }}>
+              <Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.bold }}>Verify your email ›</Text>
+            </Tap>
+          </View>
+        )}
         {!emailOk && <Text style={{ color: c.red, fontFamily: font.regular, fontSize: 12.5 }}>Enter a valid email address.</Text>}
         {changingEmail && <Field label="Account password" value={password} onChangeText={setPassword}
           secureTextEntry autoComplete="current-password" placeholder="Confirm password to change email" />}
