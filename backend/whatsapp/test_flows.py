@@ -1250,6 +1250,16 @@ class SignupFormFlowTests(TestCase):
                                     "flow_token": sign_onboarding_token(ob),
                                     "data": data})
 
+    def _phone_and_code(self, ob, phone):
+        """Type the number, then the SMS code sent to it - every sign-up gets
+        one, the number they chat from included (17 Nov 2026)."""
+        with patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
+            sent = self._submit(ob, phone=phone)
+            code = sms.call_args[0][1].split("Zitch: ")[1][:6]
+        ob.refresh_from_db()
+        return sent, self._submit(ob, phone_code=code)
+
     def _verify_details(self, ob, email):
         from .flows import SIGNUP_PHONE
 
@@ -1285,11 +1295,12 @@ class SignupFormFlowTests(TestCase):
         self.assertIn("already has a Zitch account", taken["data"]["error"])
         self.assertIn("registered WhatsApp number", taken["data"]["error"])
 
-    def test_the_phone_page_chains_into_the_pin_screen(self):
-        from .flows import FLOW_PHONE_STATE, PIN_CHAIN
+    def test_the_phone_page_chains_into_the_pin_screen_once_the_code_is_in(self):
+        from .flows import FLOW_PHONE_STATE, PIN_CHAIN, SIGNUP_PHONE_CODE
 
         ob = self._ob(step=FLOW_PHONE_STATE)
-        resp = self._submit(ob, phone="08099990001")
+        sent, resp = self._phone_and_code(ob, "08099990001")
+        self.assertEqual(sent["screen"], SIGNUP_PHONE_CODE)
         self.assertEqual(resp["screen"], PIN_CHAIN)
         ob.refresh_from_db()
         self.assertEqual(ob.payload["phone"], "08099990001")
@@ -1299,8 +1310,8 @@ class SignupFormFlowTests(TestCase):
 
         ob = self._ob()
         self._verify_details(ob, "ngozi1@example.com")
-        # Typing the number you are chatting from proves possession of it.
-        self._submit(ob, phone="08099990001")
+        # Even the number you chat from is confirmed by an SMS code.
+        self._phone_and_code(ob, "08099990001")
         ob.refresh_from_db()
         first = self._submit(ob, pin="246810")
         self.assertEqual(first["screen"], PIN_CONFIRM)
@@ -1309,7 +1320,7 @@ class SignupFormFlowTests(TestCase):
         u = User.objects.get(phone="08099990001")
         self.assertEqual(u.email, "ngozi1@example.com")
         self.assertFalse(u.email_verified)                    # the KYC ladder proves it later
-        self.assertTrue(u.phone_verified)                     # same number as the chat
+        self.assertTrue(u.phone_verified)                     # proven by the SMS code
         self.assertTrue(u.check_transaction_pin("246810"))
 
     def test_signup_rejects_predictable_pin_onto_the_empty_retry_twin(self):
@@ -1325,7 +1336,7 @@ class SignupFormFlowTests(TestCase):
 
         ob = self._ob()
         self._verify_details(ob, "weak-pin@example.com")
-        self._submit(ob, phone="08099990001")
+        self._phone_and_code(ob, "08099990001")
         rejected = self._submit(ob, pin="123456")
         self.assertEqual(rejected["screen"], PIN_RETRY)
         self.assertIn("less predictable", rejected["data"]["error"])
@@ -1536,15 +1547,51 @@ class SignupPhoneCodeTests(TestCase):
         return handle_flow_request({"action": "data_exchange",
                                     "flow_token": sign_onboarding_token(ob), "data": data})
 
-    def test_the_chat_number_skips_the_code_page(self):
-        from .flows import PIN_CHAIN
+    def test_the_chat_number_still_gets_the_code_page(self):
+        """17 Nov 2026: an SMS code even for the number they chat from."""
+        from .flows import SIGNUP_PHONE_CODE
 
         ob = self._ob()
         with patch("whatsapp.router.sms_live", return_value=True), \
-             patch("whatsapp.router.send_sms") as sms:
+             patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
             resp = self._submit(ob, phone="08099990001")   # the number they chat from
-        self.assertEqual(resp["screen"], PIN_CHAIN)
-        sms.assert_not_called()                            # possession already proven
+        self.assertEqual(resp["screen"], SIGNUP_PHONE_CODE)
+        self.assertEqual(sms.call_args[0][0], "08099990001")
+        ob.refresh_from_db()
+        self.assertFalse(ob.payload.get("phone_verified_flow"))
+
+    def test_three_wrong_codes_lock_for_ten_minutes_and_keep_the_signup(self):
+        from datetime import timedelta as td
+
+        from .flows import PIN_CHAIN, SIGNUP_PHONE_CODE
+        from .models import WaOnboarding
+        from .router import PHONE_CODE_LOCKED_TEXT
+
+        ob = self._ob()
+        with patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.send_sms", return_value={"success": True}):
+            self._submit(ob, phone="08077770012")
+        for _ in range(2):
+            self.assertIn("attempt", self._submit(ob, phone_code="000000")["data"]["error"])
+        locked = self._submit(ob, phone_code="000000")
+        self.assertEqual(locked["screen"], SIGNUP_PHONE_CODE)
+        self.assertIn(PHONE_CODE_LOCKED_TEXT, locked["data"]["error"])
+        self.assertIn("10 minutes", PHONE_CODE_LOCKED_TEXT)
+        self.assertTrue(WaOnboarding.objects.filter(pk=ob.pk).exists())   # not cancelled
+        # Even the right code is refused while the lock is on.
+        self.assertIn(PHONE_CODE_LOCKED_TEXT,
+                      self._submit(ob, phone_code="123456")["data"]["error"])
+        # After the wait a new code goes out and works.
+        ob.refresh_from_db()
+        ob.payload["phone_code_locked_until"] = (timezone.now() - td(seconds=1)).isoformat()
+        ob.save(update_fields=["payload"])
+        with patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
+            from .router import send_onboarding_phone_code
+            self.assertTrue(send_onboarding_phone_code(ob))
+            ob.save(update_fields=["payload"])
+            code = sms.call_args[0][1].split("Zitch: ")[1][:6]
+        self.assertEqual(self._submit(ob, phone_code=code)["screen"], PIN_CHAIN)
 
     def test_a_different_number_gets_the_code_page_and_verifies(self):
         from .flows import PIN_CHAIN, SIGNUP_PHONE_CODE

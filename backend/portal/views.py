@@ -356,7 +356,6 @@ def kyc_queue(request):
     a secure verification flow must resolve). No row authorizes manual proof."""
     qs = User.objects.filter(is_staff=False, is_active=True).filter(
         Q(bvn_hash__gt="", bvn_verified=False) | Q(nin_hash__gt="", nin_verified=False)
-        | Q(tier=0, bvn_verified=True, nin_verified=True)
     ).order_by("-date_joined")
     rows = [
         {

@@ -164,14 +164,18 @@ class SignupDetailsPageTests(FlowContractMixin, TestCase):
         resp = self.submit(_signup_ob(), first_name="N", phone="1")
         self.assertIn("first and last name", resp["data"]["error"])
 
-    def test_the_whatsapp_number_skips_the_code_and_goes_to_the_pin(self):
+    def test_the_whatsapp_number_still_gets_an_sms_code(self):
+        """17 Nov 2026: every sign-up confirms its number by SMS, even the one
+        they chat from."""
         ob = _signup_ob()
-        with patch("whatsapp.router.send_sms") as sms:
+        with patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
             resp = self.submit(ob)
-        sms.assert_not_called()
-        self.assertEqual(resp["screen"], flows.PIN_CHAIN)
+        self.assertEqual(sms.call_args[0][0], "08099990001")
+        self.assertEqual(resp["screen"], flows.SIGNUP_PHONE_CODE)
         ob.refresh_from_db()
-        self.assertEqual(ob.step, flows.FLOW_PIN_STATE)
+        self.assertEqual(ob.step, flows.FLOW_PHONE_CODE_STATE)
+        self.assertFalse(ob.payload.get("phone_verified_flow"))
         self.assertEqual({k: ob.payload[k] for k in DETAILS},
                          {**DETAILS, "email": "ngozi@example.com"})
 
@@ -179,7 +183,11 @@ class SignupDetailsPageTests(FlowContractMixin, TestCase):
                                       "PASSWORD_SCREEN": True})
     def test_with_the_password_page_live_the_details_survive_its_step_only_save(self):
         ob = _signup_ob()
-        resp = self.submit(ob)
+        with patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
+            self.assertEqual(self.submit(ob)["screen"], flows.SIGNUP_PHONE_CODE)
+            code = sms.call_args[0][1].split("Zitch: ")[1][:6]
+        resp = _exchange(sign_onboarding_token(ob), {"phone_code": code})
         self.assertEqual(resp["screen"], flows.SIGNUP_PASSWORD)
         ob.refresh_from_db()
         self.assertEqual(ob.step, flows.FLOW_PASSWORD_STATE)
@@ -204,7 +212,11 @@ class SignupDetailsPageTests(FlowContractMixin, TestCase):
     def test_a_whole_signup_on_the_one_page_form_creates_the_account(self):
         ob = _signup_ob()
         token = sign_onboarding_token(ob)
-        self.submit(ob)
+        with patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
+            self.submit(ob)
+            code = sms.call_args[0][1].split("Zitch: ")[1][:6]
+        self.assertEqual(_exchange(token, {"phone_code": code})["screen"], flows.PIN_CHAIN)
         self.assertEqual(_exchange(token, {"pin": "246810"})["screen"], flows.PIN_CONFIRM)
         with patch("wallet.views._wema_funding_enabled", return_value=False):
             done = _exchange(token, {"pin": "246810"})
@@ -267,12 +279,37 @@ class VerifyPasswordTests(FlowContractMixin, TestCase):
         self.ob.refresh_from_db()
         self.assertNotIn("flow_pw_hash", self.ob.payload)
 
-    def test_three_wrong_codes_end_the_signup(self):
+    def test_three_wrong_codes_lock_for_ten_minutes_without_ending_the_signup(self):
+        from .router import PHONE_CODE_LOCKED_TEXT
+
         for _ in range(2):
             self.submit(phone_code="000000", password=GOOD_PW, confirm_password=GOOD_PW)
         resp = self.submit(phone_code="000000", password=GOOD_PW, confirm_password=GOOD_PW)
-        self.assertEqual(resp["screen"], flows.RESULT_SCREEN)
-        self.assertFalse(WaOnboarding.objects.exists())
+        self.assertEqual(resp["screen"], flows.VERIFY_PASSWORD)
+        self.assertIn("wait 10 minutes", resp["data"]["error"])
+        self.assertNotIn("later", resp["data"]["error"])
+        self.assertTrue(WaOnboarding.objects.filter(pk=self.ob.pk).exists())
+        # No new code while the lock is on, and even the old right code is refused.
+        with patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
+            held = self.submit(resend=True)
+        sms.assert_not_called()
+        self.assertIn(PHONE_CODE_LOCKED_TEXT, held["data"]["error"])
+        held = self.submit(phone_code=self.code, password=GOOD_PW, confirm_password=GOOD_PW)
+        self.assertIn(PHONE_CODE_LOCKED_TEXT, held["data"]["error"])
+        # Ten minutes on, Resend code sends a fresh one that works.
+        self.ob.refresh_from_db()
+        self.ob.payload["phone_code_locked_until"] = (
+            timezone.now() - timedelta(seconds=1)).isoformat()
+        self.ob.payload["verify_resent_at"] = (timezone.now() - timedelta(minutes=11)).isoformat()
+        self.ob.save(update_fields=["payload"])
+        with patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
+            again = self.submit(resend=True)
+            fresh = sms.call_args[0][1].split("Zitch: ")[1][:6]
+        self.assertEqual(again["data"]["error"], "")
+        ok = self.submit(phone_code=fresh, password=GOOD_PW, confirm_password=GOOD_PW)
+        self.assertEqual(ok["screen"], flows.PIN_CHAIN)
 
     def test_the_right_code_and_password_go_on_to_the_pin_holding_only_a_hash(self):
         resp = self.submit(phone_code=self.code, password=GOOD_PW, confirm_password=GOOD_PW)
@@ -315,17 +352,20 @@ class VerifyPasswordTests(FlowContractMixin, TestCase):
         sms.assert_not_called()
         self.assertIn("3 new codes", resp["data"]["error"])
 
-    def test_the_whatsapp_number_gets_just_the_password_page(self):
-        """No SMS needed: the existing SIGNUP_PASSWORD page, even with the old
-        PASSWORD_SCREEN flag off - this release collects the password."""
+    def test_the_whatsapp_number_gets_the_same_code_and_password_page(self):
+        """17 Nov 2026: the number they chat from gets an SMS code too, on the
+        same combined page as any other number."""
         ob = WaOnboarding.objects.create(
             msisdn="2348066660001", step=flows.FLOW_SIGNUP_STATE,
             payload={"details_form": True, "flow_screen": flows.SIGNUP_DETAILS},
             expires_at=timezone.now() + timedelta(minutes=15))
-        resp = _exchange(sign_onboarding_token(ob),
-                         {**DETAILS, "email": "own@example.com", "phone": "08066660001"})
+        with patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
+            resp = _exchange(sign_onboarding_token(ob),
+                             {**DETAILS, "email": "own@example.com", "phone": "08066660001"})
+        self.assertEqual(sms.call_args[0][0], "08066660001")
         self.assertScreen(resp, standing_on=flows.SIGNUP_DETAILS)
-        self.assertEqual(resp["screen"], flows.SIGNUP_PASSWORD)
+        self.assertEqual(resp["screen"], flows.VERIFY_PASSWORD)
 
     def test_the_two_page_phone_step_also_uses_the_combined_page(self):
         ob = WaOnboarding.objects.create(
@@ -360,13 +400,15 @@ class VerifyPasswordFlagOffTests(TestCase):
             resp = _exchange(sign_onboarding_token(ob), {"phone": "08077770013"})
         self.assertEqual(resp["screen"], flows.SIGNUP_PHONE_CODE)
 
-    def test_the_whatsapp_number_still_skips_the_password(self):
+    def test_the_whatsapp_number_also_gets_the_code_page(self):
         ob = WaOnboarding.objects.create(
             msisdn=NEW_MSISDN, step=flows.FLOW_PHONE_STATE,
             payload={"first_name": "Ada", "last_name": "Obi", "email": "a4@example.com"},
             expires_at=timezone.now() + timedelta(minutes=15))
-        resp = _exchange(sign_onboarding_token(ob), {"phone": "08099990001"})
-        self.assertEqual(resp["screen"], flows.PIN_CHAIN)
+        with patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
+            resp = _exchange(sign_onboarding_token(ob), {"phone": "08099990001"})
+        self.assertEqual(resp["screen"], flows.SIGNUP_PHONE_CODE)
 
 
 # --------------------------------------------------------------------------- #

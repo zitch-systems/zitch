@@ -454,14 +454,22 @@ class SignupBvnTests(FlowContractMixin, TestCase):
         self.assertEqual(page["data"]["summary"], "✓ BVN verified · NGOZI ADE")
         self.assertFalse(PendingAction.objects.filter(msisdn=NEW_MSISDN).exists())
 
-    def test_a_refused_bvn_offers_do_this_later(self):
+    def test_a_refused_bvn_cannot_be_skipped(self):
+        """17 Nov 2026: no "Do this later" - the BVN opens the account. A refused
+        BVN offers the face check instead, and a stale "later" tap from the
+        published retry page goes back to the BVN page."""
         with patch("whatsapp.router._account_submit_identity", return_value="fail"):
             resp = self.submit(bvn="22345678901")
         self.assertEqual(resp["screen"], flows.SIGNUP_BVN)
-        self.assertEqual((resp["data"]["alt_link"], resp["data"]["alt_text"]), (True, "Do this later"))
-        self.assertIn("Do this later", resp["data"]["error"])
-        later = self.submit(alt=True)
-        self.assertEqual(later["screen"], flows.SIGNUP_ADDRESS)
+        self.assertEqual((resp["data"]["alt_link"], resp["data"]["alt_text"]),
+                         (True, "Use face check instead"))
+        self.assertNotIn("later", resp["data"]["error"])
+        later = self.submit(later=True)
+        self.assertEqual(later["screen"], flows.SIGNUP_BVN)
+        self.assertIn("can't be skipped", later["data"]["error"])
+        face = self.submit(alt=True)
+        self.assertEqual(face["screen"], flows.SIGNUP_BVN)
+        self.assertIn("face check link", face["data"]["notice"])
 
     def test_face_check_instead(self):
         with patch("whatsapp.router._account_submit_identity", side_effect=_otp):

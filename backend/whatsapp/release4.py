@@ -395,11 +395,9 @@ def signup_bvn_screen(ob, error: str = "", notice: str = "") -> dict:
         return {"screen": F.SIGNUP_BVN_RETRY,
                 "data": {"summary": notice or "Enter the code your bank sent by SMS.",
                          "error": _warn(error)}}
-    # One link serves two purposes - Meta allows two EmbeddedLinks per screen
-    # and "Resend code" is the other. They never apply at once: "Do this later"
-    # when the bank step can't finish here, else "Use face check instead" while
-    # a code is out. The choice is kept so the tap is read back the same way.
-    alt = "later" if (error or face_sent) else "face" if code_sent else ""
+    # The second link offers the bank's face check instead of its SMS code.
+    # There is no "Do this later": the BVN can't be skipped (17 Nov 2026).
+    alt = "face" if (code_sent or error) and not face_sent else ""
     if p.get("bvn_alt", "") != alt:
         p["bvn_alt"] = alt
         ob.save(update_fields=["payload"])
@@ -407,8 +405,7 @@ def signup_bvn_screen(ob, error: str = "", notice: str = "") -> dict:
             "data": {"summary": "✓ Phone number verified", "notice": notice,
                      "code_sent": code_sent,
                      "alt_link": bool(alt),
-                     "alt_text": {"later": "Do this later",
-                                  "face": "Use face check instead"}.get(alt, " "),
+                     "alt_text": "Use face check instead" if alt else " ",
                      "error": _warn(error)}}
 
 
@@ -457,8 +454,8 @@ def submit_signup_bvn(ob, data: dict) -> dict:
     the bank checks it and sends its SMS code, and the code box appears on this
     same page (the BVN stays typed). Next again: the code opens the account, then
     the address. A wrong code lands on SIGNUP_BVN_RETRY, whose box starts empty.
-    "Do this later" (offered when the bank step can't finish here) goes on to the
-    address; the chat's account setup then picks the BVN up after the PIN.
+    The BVN can't be skipped (17 Nov 2026): the published retry page still
+    shows a "Do this later" link, and tapping it now goes back to the BVN page.
     """
     from .router import _account_submit_identity
 
@@ -468,10 +465,9 @@ def submit_signup_bvn(ob, data: dict) -> dict:
                                  status="failed")
     p = ob.payload
     if data.get("alt"):
-        # The page's second link: whichever option it was showing.
-        data = {"later": True} if p.get("bvn_alt") == "later" else {"face": True}
+        data = {"face": True}
     if data.get("later"):
-        return _to_address(ob)
+        return _back_to_bvn(ob, NO_SKIP)
     if data.get("resend"):
         return _resend_bank_code(ob, user)
     if data.get("face"):
@@ -507,7 +503,7 @@ def submit_signup_bvn(ob, data: dict) -> dict:
         p.pop(_ACCOUNT_PA_KEY, None)
         p[_CODE_SENT] = False
         return _stay(ob, error="We couldn't verify that BVN - see the chat for why. Check it "
-                               "and try again, or tap Do this later.")
+                               "and try again.")
     # "processing", "adopted", "upgrade" or an adopted account: the bank has it.
     return _to_address(ob)
 
@@ -545,14 +541,26 @@ def _code_retry(ob, error: str) -> dict:
     return _stay(ob, error=error)
 
 
-def _code_expired(ob, reason: str) -> dict:
-    """The attempt itself is over. On SIGNUP_BVN the BVN is still typed, so Next
-    starts a fresh one; SIGNUP_BVN_RETRY has no BVN box, so it offers Do this later."""
+NO_SKIP = ("Your BVN opens your account, so this step can't be skipped. "
+           "Enter your BVN and tap Next for a new code.")
+
+
+def _back_to_bvn(ob, error: str) -> dict:
+    """Back to SIGNUP_BVN for a fresh attempt: the retry page has no BVN box."""
     ob.payload.pop(_ACCOUNT_PA_KEY, None)
     ob.payload[_CODE_SENT] = False
+    ob.payload["flow_screen"] = F.SIGNUP_BVN
+    return _stay(ob, error=error)
+
+
+def _code_expired(ob, reason: str) -> dict:
+    """The attempt itself is over. On SIGNUP_BVN the BVN is still typed, so Next
+    starts a fresh one; from SIGNUP_BVN_RETRY, which has no BVN box, it goes back
+    to SIGNUP_BVN. There is no skipping the BVN."""
     if _bvn_page(ob) == F.SIGNUP_BVN_RETRY:
-        return _stay(ob, error=f"{reason} Tap Do this later - we'll finish your account "
-                               "number in the chat after your PIN.")
+        return _back_to_bvn(ob, f"{reason} Enter your BVN and tap Next for a new code.")
+    ob.payload.pop(_ACCOUNT_PA_KEY, None)
+    ob.payload[_CODE_SENT] = False
     return _stay(ob, error=f"{reason} Tap Next to get a new code.")
 
 

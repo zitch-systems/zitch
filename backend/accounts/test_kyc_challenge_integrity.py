@@ -83,7 +83,7 @@ class KycChallengeIntegrityTests(TestCase):
         self.assertTrue(views._save_verified_identity(self.user, "bvn", self.raw))
         self.user.refresh_from_db()
         self.assertTrue(self.user.bvn_verified)
-        self.assertEqual(self.user.tier, 0)
+        self.assertEqual(self.user.tier, 1)
 
     def test_non_string_face_session_is_rejected_without_exception(self):
         request = RequestFactory().post("/api/kyc/face/status/", content_type="application/json")

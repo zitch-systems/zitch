@@ -48,7 +48,7 @@ jest.mock('@/components/design/ui', () => {
   };
 });
 
-const base = { success: true, tier: 0, transaction_limit: '0', bvn_verified: false, nin_verified: false, face_verified: false,
+const base = { success: true, tier: 1, transaction_limit: '0', bvn_verified: false, nin_verified: false, face_verified: false,
   email_verified: false, account_provider: 'partnership', identity_face_available: true };
 
 const byLabel = (tree: renderer.ReactTestRenderer, label: string) =>
@@ -150,12 +150,13 @@ it('uses the face check when the customer picks it', async () => {
   await act(async () => tree.unmount());
 });
 
-it('can be left for later, straight to the PIN set-up', async () => {
+it('has no way to skip the BVN step', async () => {
   mockApiJson.mockResolvedValue(base);
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  await act(async () => { byLabel(tree, "I'll do this later").props.onPress(); });
-  expect(mockReplace).toHaveBeenCalledWith('/setup');
+  expect(tree.root.findAll((n) => n.props.accessibilityLabel === "I'll do this later")).toHaveLength(0);
+  expect(JSON.stringify(tree.toJSON())).not.toContain('do this later');
+  expect(mockReplace).not.toHaveBeenCalledWith('/setup');
   await act(async () => tree.unmount());
 });
 

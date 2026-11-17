@@ -62,7 +62,7 @@ class BrowserFaceCorrelationTrustTests(TestCase):
         self.session.refresh_from_db()
         self.assertFalse(self.user.nin_verified)
         self.assertEqual(self.user.nin_hash, "")
-        self.assertEqual(self.user.tier, 0)
+        self.assertEqual(self.user.tier, 1)
         self.assertEqual(self.session.status, WemaFaceSession.FAILED)
         self.assertEqual(self.session.correlation_id, "")
         self.assertFalse(IdentityProof.objects.filter(user=self.user).exists())

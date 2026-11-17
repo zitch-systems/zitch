@@ -431,8 +431,24 @@ def phone_verification(request):
 @ratelimit("otp_verify", limit=20, window=60)
 @api
 def verify_otp(request):
-    """POST /api/verify_otp/ {otp, phone} -> creates user + {access_token}"""
+    """POST /api/verify_otp/ {otp, phone, first_name, last_name, ...}
+
+    The account is created when the password is set (17 Nov 2026):
+
+    * ``check_only: true`` confirms the code without using it and creates
+      nothing, so the app can show "Create a password" next.
+    * ``password`` with the same code creates the account with that password
+      and the verified phone in one step and returns the session.
+
+    A request with neither (an app build from before this change) keeps the old
+    behaviour: the account is created here and the password set afterwards.
+    """
     raw_phone, raw_code = request.data.get("phone"), request.data.get("otp")
+    check_only = request.data.get("check_only") is True
+    raw_password = request.data.get("password")
+    if raw_password is not None and not isinstance(raw_password, str):
+        return fail("Enter a valid password")
+    password = raw_password or ""
     if not isinstance(raw_phone, str) or not isinstance(raw_code, str):
         return fail("Phone and OTP are required")
     phone, code = raw_phone.strip(), raw_code.strip()
@@ -447,6 +463,11 @@ def verify_otp(request):
     if not all(isinstance(value, str) for value in names):
         return fail("Enter your first and last name")
     first_name, last_name = (value.strip()[:150] for value in names)
+    if password and not check_only:
+        # Refused before the code is touched, so a weak password costs nothing.
+        weak = _weak_password(password)
+        if weak:
+            return fail(weak, code="weak_password")
     with db_transaction.atomic():
         # Existing accounts always lock before their challenge, matching contact
         # verification/reset. The challenge itself serializes first-time signup.
@@ -476,6 +497,9 @@ def verify_otp(request):
             # unique username. SMS proof never authorizes merging those accounts.
             return fail("We need to review this phone number before registration. Contact Zitch Support.",
                         status=409, code="registration_review_required")
+        if check_only:
+            # The code is right; it stays unused until the password arrives with it.
+            return ok(success=True, verified=True, message="Code confirmed")
         if not OTP.objects.filter(pk=otp.pk, used=False,
                                   attempts__lt=OTP.MAX_ATTEMPTS).update(used=True):
             return fail("Invalid OTP", status=400)
@@ -486,7 +510,8 @@ def verify_otp(request):
                         phone=phone,
                         defaults={"username": phone, "email": otp.email or "",
                                   "first_name": first_name, "last_name": last_name,
-                                  "password": make_password(None), "phone_verified": True},
+                                  "password": make_password(password or None),
+                                  "phone_verified": True},
                     )
             except IntegrityError:
                 return fail("We need to review this phone number before registration. Contact Zitch Support.",
@@ -498,6 +523,9 @@ def verify_otp(request):
                 return fail("Invalid OTP", status=400)
         fields = ["phone_verified", "tier"]
         user.phone_verified = True
+        if password and not user.has_usable_password():
+            user.set_password(password)
+            fields.append("password")
         if (first_name or last_name) and not (user.first_name or user.last_name):
             user.first_name, user.last_name = first_name, last_name
             fields.extend(["first_name", "last_name"])
@@ -1654,7 +1682,7 @@ def apply_confirmed_tier(user, tier: int) -> int:
     """The customer asked for a tier the bank already confirmed (Verify on
     Account limits, or Upgrade in the chat): lift the sign-up hold and recompute.
     Returns the tier the account is on now, which can still be lower when Tier 1
-    is unfinished (a verified email and phone come first)."""
+    is unfinished (a verified phone and BVN or NIN come first)."""
     with db_transaction.atomic():
         locked = User.objects.select_for_update().get(pk=user.pk)
         locked.tier_cap = max(locked.tier_cap, tier)
@@ -1665,7 +1693,7 @@ def apply_confirmed_tier(user, tier: int) -> int:
     return user.tier
 
 
-NEEDS_TIER1 = "Finish Tier 1 first: verify your phone number and email address."
+NEEDS_TIER1 = "Finish Tier 1 first: verify your phone number and BVN."
 
 
 def tier2_claim_state(user) -> str:

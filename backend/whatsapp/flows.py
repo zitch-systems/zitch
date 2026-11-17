@@ -1401,24 +1401,20 @@ def _submit_signup_phone(ob, data: dict) -> dict:
     if error:
         return _signup_phone_screen(error=error)
     ob.payload["phone"] = digits
-    from .router import _local_phone, _onboard_to, send_onboarding_phone_code
+    from .router import _onboard_to, send_onboarding_phone_code
 
-    if digits != _local_phone(ob.msisdn):
-        # A number OTHER than the one they are chatting from is not proved by
-        # the WhatsApp session. It must complete the SMS round-trip; otherwise
-        # an attacker could reserve somebody else's phone as an account and
-        # block the real owner from registering or recovering it.
-        if send_onboarding_phone_code(ob):
-            if verify_password_live():
-                # Release 2: the code and the app password on one page.
-                from .release2 import open_verify_password
+    # Every sign-up proves the phone by SMS code (17 Nov 2026), including the
+    # number they are chatting from.
+    if send_onboarding_phone_code(ob):
+        if verify_password_live():
+            # Release 2: the code and the app password on one page.
+            from .release2 import open_verify_password
 
-                return open_verify_password(ob)
-            _onboard_to(ob, FLOW_PHONE_CODE_STATE)
-            return _signup_phone_code_screen(ob)
-        return _signup_phone_screen(
-            error="We couldn't send an SMS to that number. Try again, or use this WhatsApp number.")
-    return _signup_to_pin(ob)
+            return open_verify_password(ob)
+        _onboard_to(ob, FLOW_PHONE_CODE_STATE)
+        return _signup_phone_code_screen(ob)
+    return _signup_phone_screen(
+        error="We couldn't send an SMS to that number. Check it and try again.")
 
 
 def signup_password_live() -> bool:
@@ -1618,14 +1614,10 @@ def _submit_signup_phone_code(ob, data: dict) -> dict:
     from .router import check_onboarding_phone_code
 
     status, message = check_onboarding_phone_code(ob, str(data.get("phone_code", "")))
-    if status == "retry":
-        return _signup_phone_code_screen(ob, error=message)
     if status != "ok":
-        from .router import _clear_onboarding
-        _clear_onboarding(ob.msisdn)
-        return _success_screen(
-            "We couldn't verify that phone number. Start Create account again for a new code.",
-            status="failed")
+        # A wrong, expired or locked code keeps the sign-up; the message says
+        # what to do (wait 10 minutes, or ask for a new code).
+        return _signup_phone_code_screen(ob, error=message)
     return _signup_to_pin(ob)
 
 

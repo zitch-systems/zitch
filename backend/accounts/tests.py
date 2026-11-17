@@ -526,7 +526,7 @@ class KycTierTests(TestCase):
         self.user.save(update_fields=["phone_verified"])
         self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
         body = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})[1]
-        self.assertEqual(body["tier"], 0)
+        self.assertEqual(body["tier"], 1)
         self.assertFalse(body["phone_verified"])
         # Re-read: BVN/NIN were set server-side, so the local copy is stale.
         self.user.refresh_from_db()

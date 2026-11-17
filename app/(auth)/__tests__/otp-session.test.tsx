@@ -67,26 +67,35 @@ async function startVerification() {
     tree.root.findByProps({ autoComplete: 'sms-otp' }).props.onChangeText('654321');
   });
   await act(async () => { jest.advanceTimersByTime(0); });
+  // The code is only CHECKED first: nothing is created until the password is set.
   expect(mockPost).toHaveBeenCalledWith('/api/verify_otp/', {
-    otp: '654321', phone: '08012345678', first_name: 'Ada', last_name: 'Test',
+    otp: '654321', phone: '08012345678', check_only: true,
   });
   return { tree, finish };
 }
 
-it('keeps verified signup bound to the session in which the SMS code was submitted', async () => {
+const CHECKED = { ok: true, json: async () => ({ success: true, verified: true }) };
+
+async function fillPassword(tree: renderer.ReactTestRenderer, value = 'Zitch-pass1') {
+  const field = (label: string) => tree.root.findByProps({ accessibilityLabel: label });
+  await act(async () => { field('Password').props.onChangeText(value); });
+  await act(async () => { field('Confirm password').props.onChangeText(value); });
+  return tree.root.findAll((n) => n.props.accessibilityLabel === 'Continue' && typeof n.props.onPress === 'function')[0];
+}
+
+it('a confirmed code opens the password fields but creates no account yet', async () => {
   const { tree, finish } = await startVerification();
-  await act(async () => { finish({ ok: true, json: async () => ({ access_token: 'signup-access' }) }); });
-  expect(mockStoreSession).toHaveBeenCalledWith({ access_token: 'signup-access' }, 0);
-  expect(mockUnlock).toHaveBeenCalledTimes(1);
-  // The account exists now; the password is set on this same page.
+  await act(async () => { finish(CHECKED); });
+  expect(mockStoreSession).not.toHaveBeenCalled();
+  expect(mockUnlock).not.toHaveBeenCalled();
   expect(mockReplace).not.toHaveBeenCalled();
   expect(tree.root.findByProps({ accessibilityLabel: 'Password' }).props.editable).toBe(true);
   act(() => tree.unmount());
 });
 
-it('sets the password on the same page, then goes to BVN and address', async () => {
+it('creates the account when the password is set, then goes to BVN and address', async () => {
   const { tree, finish } = await startVerification();
-  await act(async () => { finish({ ok: true, json: async () => ({ access_token: 'signup-access' }) }); });
+  await act(async () => { finish(CHECKED); });
   const field = (label: string) => tree.root.findByProps({ accessibilityLabel: label });
   const cont = () => tree.root.findAll((n) => n.props.accessibilityLabel === 'Continue' && typeof n.props.onPress === 'function')[0];
   await act(async () => { field('Password').props.onChangeText('Zitch-pass1'); });
@@ -94,39 +103,58 @@ it('sets the password on the same page, then goes to BVN and address', async () 
   expect(cont().props.disabled).toBe(true);
   await act(async () => { field('Confirm password').props.onChangeText('Zitch-pass1'); });
   expect(cont().props.disabled).toBe(false);
-  mockApiPost.mockResolvedValue({ ok: true, json: async () => ({ refresh_token: 'fresh-refresh' }) });
+  mockPost.mockResolvedValue({ ok: true, json: async () => ({ access_token: 'signup-access' }) });
   await act(async () => { await cont().props.onPress(); });
-  expect(mockApiPost).toHaveBeenCalledWith('/api/set-password/', { password: 'Zitch-pass1' });
-  expect(mockSaveRefresh).toHaveBeenCalledWith('fresh-refresh');
+  expect(mockPost).toHaveBeenLastCalledWith('/api/verify_otp/', {
+    otp: '654321', phone: '08012345678', first_name: 'Ada', last_name: 'Test', password: 'Zitch-pass1',
+  });
+  expect(mockApiPost).not.toHaveBeenCalled();
+  expect(mockStoreSession).toHaveBeenCalledWith({ access_token: 'signup-access' }, 0);
+  expect(mockUnlock).toHaveBeenCalledTimes(1);
   expect(mockReplace).toHaveBeenCalledWith({ pathname: '/kyc', params: { onboarding: '1' } });
+  act(() => tree.unmount());
+});
+
+it('a weak password is reported and the code stays usable', async () => {
+  const { tree, finish } = await startVerification();
+  await act(async () => { finish(CHECKED); });
+  const cont = await fillPassword(tree);
+  mockPost.mockResolvedValue({ ok: false, json: async () => ({ code: 'weak_password', message: 'Too common' }) });
+  await act(async () => { await cont.props.onPress(); });
+  expect(mockNotify).toHaveBeenCalledWith('Password', 'Too common');
+  expect(mockStoreSession).not.toHaveBeenCalled();
+  expect(tree.root.findByProps({ accessibilityLabel: 'Password' }).props.editable).toBe(true);
   act(() => tree.unmount());
 });
 
 it('keeps the server rules: a password without a symbol cannot be sent', async () => {
   const { tree, finish } = await startVerification();
-  await act(async () => { finish({ ok: true, json: async () => ({ access_token: 'signup-access' }) }); });
-  const field = (label: string) => tree.root.findByProps({ accessibilityLabel: label });
-  await act(async () => { field('Password').props.onChangeText('Zitchpass1'); });
-  await act(async () => { field('Confirm password').props.onChangeText('Zitchpass1'); });
-  const cont = tree.root.findAll((n) => n.props.accessibilityLabel === 'Continue' && typeof n.props.onPress === 'function')[0];
+  await act(async () => { finish(CHECKED); });
+  const cont = await fillPassword(tree, 'Zitchpass1');
   expect(cont.props.disabled).toBe(true);
   act(() => tree.unmount());
 });
 
-it('ignores a late signup OTP result after another account signs in', async () => {
+it('ignores a late account result after another account signs in', async () => {
   const { tree, finish } = await startVerification();
+  await act(async () => { finish(CHECKED); });
+  const cont = await fillPassword(tree);
+  let created!: (value: unknown) => void;
+  mockPost.mockReturnValue(new Promise(resolve => { created = resolve; }));
+  let saving!: Promise<void>;
+  act(() => { saving = cont.props.onPress(); });
   mockGeneration += 1;
-  await act(async () => { finish({ ok: true, json: async () => ({ access_token: 'old-access' }) }); });
+  await act(async () => { created({ ok: true, json: async () => ({ access_token: 'old-access' }) }); await saving; });
   expect(mockStoreSession).not.toHaveBeenCalled();
   expect(mockUnlock).not.toHaveBeenCalled();
   expect(mockReplace).not.toHaveBeenCalled();
   act(() => tree.unmount());
 });
 
-it('ignores a late signup OTP result after the verification screen closes', async () => {
+it('ignores a late code result after the verification screen closes', async () => {
   const { tree, finish } = await startVerification();
   act(() => tree.unmount());
-  await act(async () => { finish({ ok: true, json: async () => ({ access_token: 'old-access' }) }); });
+  await act(async () => { finish(CHECKED); });
   expect(mockStoreSession).not.toHaveBeenCalled();
   expect(mockUnlock).not.toHaveBeenCalled();
   expect(mockReplace).not.toHaveBeenCalled();

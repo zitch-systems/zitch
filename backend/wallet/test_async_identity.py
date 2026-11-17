@@ -31,7 +31,7 @@ class AsyncIdentityTests(TestCase):
     def setUp(self):
         cache.clear()
         self.user, self.token = make_user("08030000031", "async@example.test",
-                                          pin="123456", balance="500", tier=0,
+                                          pin="123456", balance="500", tier=1,
                                           identity_verified=False)
         self.wallet = get_or_create_wallet(self.user)
         self.attempt = WemaProvisioningAttempt.objects.create(

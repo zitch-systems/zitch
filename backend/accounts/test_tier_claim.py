@@ -140,13 +140,13 @@ class TierClaimTests(TestCase):
         self.assertFalse(status["tier2_face_pending"], "the Tier 2 page must ask again, not wait")
 
     def test_a_confirmed_check_never_reads_as_tier_2_while_tier_1_is_unfinished(self):
-        User.objects.filter(pk=self.user.pk).update(phone_verified=False, tier=0)
+        User.objects.filter(pk=self.user.pk).update(phone_verified=False, tier=1)
         self._signup_send({"success": True, "raw": {"message": "ok"}}, BANK_TIER_2)
         r = self._claim(bank_state=BANK_TIER_2)
         self.assertEqual(r.json()["state"], "needs_tier1")
-        self.assertEqual(r.json()["tier"], 0)
+        self.assertEqual(r.json()["tier"], 1)
         self.user.refresh_from_db()
-        self.assertEqual(self.user.tier, 0)
+        self.assertEqual(self.user.tier, 1)
 
     def test_a_check_the_bank_refused_asks_for_the_nin_and_face_again(self):
         r = self._signup_send({"success": False, "message": "Face does not match"}, BANK_TIER_1)
@@ -316,4 +316,4 @@ class TierCapTests(TestCase):
         self.assertEqual(user.tier, 1)
         user.bvn_verified = user.nin_verified = False
         user.recompute_tier()
-        self.assertEqual(user.tier, 0)
+        self.assertEqual(user.tier, 1)

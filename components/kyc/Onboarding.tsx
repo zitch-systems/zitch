@@ -118,15 +118,6 @@ export const FaceCheckRow = ({ done, waiting, busy, onStart }: {
   );
 };
 
-export const LaterLink = ({ onPress }: { onPress: () => void }) => {
-  const { c } = useTheme();
-  return (
-    <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel="I'll do this later" style={{ alignItems: 'center', paddingVertical: 14 }}>
-      <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.brand }}>I&apos;ll do this later</Text>
-    </Pressable>
-  );
-};
-
 const Divider = () => {
   const { c } = useTheme();
   return <View style={{ height: 1, backgroundColor: c.line, marginVertical: 18 }} />;
@@ -397,7 +388,6 @@ export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face
           Add your NIN and take the face check, or leave both for later.
         </Text>
       ) : null}
-      <LaterLink onPress={onDone} />
     </View>
   );
 };

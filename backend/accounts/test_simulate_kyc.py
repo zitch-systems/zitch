@@ -40,7 +40,7 @@ class SimulateKycTests(TestCase):
         res, _ = self._post({"token": _TOKEN, "phone": _PHONE})
         self.assertEqual(res.status_code, 404)
         self.user.refresh_from_db()
-        self.assertEqual(self.user.tier, 0)
+        self.assertEqual(self.user.tier, 1)
 
     @override_settings(WEMA=_SIM_ON, SIMULATE_DEPOSIT_TOKEN="")
     def test_forbidden_when_token_unset(self):

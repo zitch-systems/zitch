@@ -1335,8 +1335,8 @@ def wema_address_callback(request):
       * the bank's own partner-account-kyc-status read-back shows Tier 3.
     Zitch's own limiter (17 Nov 2026): a verified address is recorded, but the
     account moves to Tier 3 only when the customer taps Tier 3 (kyc_claim_tier).
-    A refusal stops the wait; the customer sees "details need review" when they
-    tap. Nothing is sent to the customer from here. Always answers 200.
+    A refusal stops the wait and is reported to the customer in WhatsApp; a
+    pass is never announced. Always answers 200.
     """
     body = request.wema_body
     outcome = address_callback_outcome(body)
@@ -1373,6 +1373,10 @@ def settle_address_verification(account: str, outcome: str) -> str:
         User.objects.filter(pk=user.pk).update(
             address_verification_pending=False, tier3_review="rejected",
             tier3_review_at=timezone.now())
+        # A refusal is the one result the customer is told about; a pass is
+        # silent and Tier 3 applies when they tap it (17 Nov 2026).
+        from whatsapp.verification_web import notify_tier3_refused
+        notify_tier3_refused(user)
         return "rejected"
     if outcome != "verified":
         return "unclear"
