@@ -873,7 +873,7 @@ class ProviderDocumentEnvelopeTests(SimpleTestCase):
 class IdentityTierModelTests(SimpleTestCase):
     def test_either_identity_plus_liveness_earns_tier_two(self):
         for bvn, nin, face, address, expected in (
-                (False, False, False, False, 0),
+                (False, False, False, False, 1),
                 (True, False, False, False, 1),
                 (False, True, False, False, 1),
                 (True, False, True, False, 2),
@@ -894,7 +894,7 @@ class IdentityTierModelTests(SimpleTestCase):
                 self.assertEqual(user.tier, expected)
                 user.phone_verified = False
                 user.recompute_tier()
-                self.assertEqual(user.tier, 0)
+                self.assertEqual(user.tier, 1)
 
 
 class TrustedIdentityRehydrationTests(TestCase):
@@ -919,7 +919,7 @@ class TrustedIdentityRehydrationTests(TestCase):
         self.user.refresh_from_db()
         self.assertFalse(state["bvn_verified"] or state["nin_verified"])
         self.assertFalse(self.user.bvn_verified or self.user.nin_verified)
-        self.assertEqual(self.user.tier, 0)
+        self.assertEqual(self.user.tier, 1)
         self.assertEqual(self.user.bvn_hash, "")
         self.assertEqual(self.user.nin_hash, "")
 
@@ -989,6 +989,6 @@ class TrustedIdentityRehydrationTests(TestCase):
         self.assertEqual(rehydrate_verified_identity_flags(self.user), [])
         self.assertFalse(self.user.nin_verified)
         self.assertEqual(self.user.nin_hash, "")
-        self.assertEqual(self.user.tier, 0)
+        self.assertEqual(self.user.tier, 1)
         self.user.refresh_from_db()
         self.assertFalse(self.user.nin_verified)

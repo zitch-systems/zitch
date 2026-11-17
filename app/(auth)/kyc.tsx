@@ -13,7 +13,7 @@ import { extractCode } from '@/lib/code';
 import AuthGuard from '@/components/AuthGuard';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Tap } from '@/components/design/ui';
-import { EMPTY_ADDRESS as EMPTY_SIGNUP_ADDRESS, IdentityWaits, LaterLink, OnboardingHeading, OnboardingIdentity, StepTitle, ViaOption, type AddressValue, type SignupFace } from '@/components/kyc/Onboarding';
+import { EMPTY_ADDRESS as EMPTY_SIGNUP_ADDRESS, IdentityWaits, OnboardingHeading, OnboardingIdentity, StepTitle, ViaOption, type AddressValue, type SignupFace } from '@/components/kyc/Onboarding';
 import { useTheme, font } from '@/lib/theme';
 import { tierLadder, type LadderTier } from '@/lib/tierLadder';
 import { useTierClaim } from '@/components/kyc/TierClaim';
@@ -775,7 +775,6 @@ const Kyc = () => {
       <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 18, marginBottom: 12 }}>Verification processing</Text>
       <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21 }}>{status.message || 'Your verification is being confirmed. You do not need to start again.'}</Text>
       <View style={{ marginTop: 20 }}><Btn label="Check again" onPress={() => void load()} /></View>
-      {onboarding && <LaterLink onPress={toSetup} />}
     </Screen>;
   }
 
@@ -957,7 +956,6 @@ const Kyc = () => {
           <IdentityWaits nin={signupNin} onNin={setSignupNin} editable={!busy}
             face={signupFace} onStartFace={captureSignupFace} faceBusy={busy}
             address={signupAddress} onAddress={setSignupAddress} />
-          <LaterLink onPress={toSetup} />
         </View>
       )}
 

@@ -150,7 +150,7 @@ class WhatsAppSimulationCommandTests(TestCase):
             self.assertFalse(self.user.nin_verified)
             self.assertFalse(self.user.bvn_hash)
             self.assertFalse(self.user.nin_hash)
-            self.assertEqual(self.user.tier, 0)
+            self.assertEqual(self.user.tier, 1)
             sms.assert_called_once()
             self.assertEqual(sms.call_args.args[0], PHONE)
             pa = PendingAction.objects.get(msisdn=MSISDN)
@@ -192,7 +192,7 @@ class WhatsAppSimulationCommandTests(TestCase):
     def test_second_switch_is_required_on_production_host(self):
         self.command("simulate setup")
         self.user.refresh_from_db()
-        self.assertEqual(self.user.tier, 0)
+        self.assertEqual(self.user.tier, 1)
         self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("0"))
         self.assertIn("disabled", self.last_reply().lower())
 

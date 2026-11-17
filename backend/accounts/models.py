@@ -112,21 +112,20 @@ class User(AbstractUser):
     """
 
     # KYC tiers (CBN-style; adjust to your licence). Tier requirements ascend:
-    #   Tier 0 — Unverified: email + phone only (sign-up).
-    #   Tier 1 — Verified:   + either BVN or NIN verified.
+    #   There is no Tier 0 (17 Nov 2026): every account starts at Tier 1.
+    #   Sign-up cannot finish without a verified phone and BVN, and money still
+    #   cannot leave until both are verified (common.http._FIRST_SPEND_CHECKS).
+    #   Tier 1 — Verified:   phone + BVN or NIN.
     #   Tier 2 — Enhanced:   + provider-verified interactive liveness.
     #   Tier 3 — Premium:    + residential address verified.
     # See recompute_tier(). The per-tier caps below live on the user, so they apply
     # identically in the app and on WhatsApp.
-    TIER_LIMITS = {0: Decimal("20000"), 1: Decimal("50000"),
-                   2: Decimal("200000"), 3: Decimal("5000000")}
+    TIER_LIMITS = {1: Decimal("50000"), 2: Decimal("200000"), 3: Decimal("5000000")}
     # Per-day aggregate caps by tier, on top of the per-transaction limit.
-    DAILY_TRANSFER_LIMITS = {0: Decimal("20000"), 1: Decimal("50000"),
-                             2: Decimal("1000000"), 3: Decimal("5000000")}
-    DAILY_BILL_LIMITS = {0: Decimal("10000"), 1: Decimal("20000"),
-                         2: Decimal("100000"), 3: Decimal("500000")}
+    DAILY_TRANSFER_LIMITS = {1: Decimal("50000"), 2: Decimal("1000000"), 3: Decimal("5000000")}
+    DAILY_BILL_LIMITS = {1: Decimal("20000"), 2: Decimal("100000"), 3: Decimal("500000")}
     # Single transfers at/above this require step-up (face) verification, which is
-    # a Tier 2 attribute — so a Tier 0/1 customer cannot move >= this in one go.
+    # a Tier 2 attribute — so a Tier 1 customer cannot move >= this in one go.
     LARGE_TXN_THRESHOLD = Decimal("100000")
 
     # Transaction-PIN brute-force policy: after this many wrong PINs in a row,
@@ -179,7 +178,7 @@ class User(AbstractUser):
     pin_lockout_strikes = models.PositiveSmallIntegerField(default=0)
 
     # --- KYC ---
-    tier = models.PositiveSmallIntegerField(default=0)
+    tier = models.PositiveSmallIntegerField(default=1)
     # BVN/NIN are never read back by the app (the provider re-checks the value at
     # submit time; only the *_verified flags are ever returned), so the raw number
     # is NOT kept at rest — a DB leak then can't expose it. Instead store a keyed
@@ -327,7 +326,7 @@ class User(AbstractUser):
     def tier_transaction_limit(self) -> Decimal:
         """The ceiling KYC allows at this tier. The compliance bound, and the one
         a customer can never raise."""
-        return self.TIER_LIMITS.get(self.tier, self.TIER_LIMITS[0])
+        return self.TIER_LIMITS.get(self.tier, self.TIER_LIMITS[1])
 
     @property
     def transaction_limit(self) -> Decimal:
@@ -349,11 +348,11 @@ class User(AbstractUser):
 
     @property
     def daily_transfer_limit(self) -> Decimal:
-        return self.DAILY_TRANSFER_LIMITS.get(self.tier, self.DAILY_TRANSFER_LIMITS[0])
+        return self.DAILY_TRANSFER_LIMITS.get(self.tier, self.DAILY_TRANSFER_LIMITS[1])
 
     @property
     def daily_bill_limit(self) -> Decimal:
-        return self.DAILY_BILL_LIMITS.get(self.tier, self.DAILY_BILL_LIMITS[0])
+        return self.DAILY_BILL_LIMITS.get(self.tier, self.DAILY_BILL_LIMITS[1])
 
     @property
     def tier1_identity_verified(self) -> bool:
@@ -362,31 +361,24 @@ class User(AbstractUser):
 
     def recompute_tier(self) -> None:
         """Derive the KYC tier from the verifications completed (ascending):
-        Tier 1 needs a verified phone number and either BVN or NIN; Tier 2
-        needs a verified identity and the bank-confirmed face check; Tier 3 adds address verification.
-
-        The phone requirement applies to every account, however it signed up.
-        Both sign-ups prove it before the account exists: the app by its SMS
-        code, WhatsApp by the chat number itself or an SMS code for a different
-        number. Email is collected but no tier requires it."""
+        Every account is at least Tier 1: there is no Tier 0 (17 Nov 2026).
+        Both sign-ups verify the phone by SMS code and the BVN before they
+        finish, and money cannot leave before both are verified
+        (common.http._FIRST_SPEND_CHECKS). Tier 2 adds the bank-confirmed face
+        check; Tier 3 the verified address. Email is never required."""
         has_identity = self.tier1_identity_verified
 
-        # The verified phone is the contact proof every tier needs. Email is
-        # collected but never required for a tier (17 Nov 2026).
-        if not self.phone_verified:
-            earned = 0
-        elif (has_identity and self.face_verified
-                and self.address_verified):
-            earned = 3
-        elif has_identity and self.face_verified:
-            earned = 2
-        elif self.tier1_identity_verified:
+        if not self.phone_verified or not has_identity:
             earned = 1
+        elif self.face_verified and self.address_verified:
+            earned = 3
+        elif self.face_verified:
+            earned = 2
         else:
-            earned = 0
+            earned = 1
         # A tier the bank confirmed applies once the customer asks for it
         # (tier_cap). The cap never takes away Tier 1.
-        self.tier = min(earned, max(1, self.tier_cap)) if earned else 0
+        self.tier = min(earned, max(1, self.tier_cap))
 
     def set_address(self, raw: str) -> None:
         self.address = (raw or "").strip()[:255]

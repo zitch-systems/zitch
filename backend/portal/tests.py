@@ -257,17 +257,14 @@ class MutationTests(PortalTestCase):
         self.assertFalse(any(r["id"] == self.user.id for r in rows))
         self.assertTrue(AuditLog.objects.filter(action="kyc.reject").exists())
 
-    def test_kyc_queue_skips_fresh_signup_lists_stale_tier(self):
-        # A tier-0 user with NOTHING submitted is not reviewable — approve
-        # provably no-ops on them — so they must not clog the queue…
-        fresh = User.objects.create(username="fresh", phone="08010000010", tier=0)
+    def test_kyc_queue_skips_a_fresh_signup(self):
+        # A new account with NOTHING submitted is not reviewable - approve
+        # provably no-ops on them - so they must not clog the queue. There is no
+        # Tier 0 any more (17 Nov 2026), so no "stale Tier 0" row exists either.
+        fresh = User.objects.create(username="fresh", phone="08010000010")
+        self.assertEqual(fresh.tier, 1)
         rows = self.post("kyc-queue", token=self.admin).json()["rows"]
         self.assertFalse(any(r["id"] == fresh.id for r in rows))
-        # …but a tier-0 user whose checks already support Tier 1 IS actionable.
-        fresh.bvn_verified = fresh.nin_verified = True
-        fresh.save(update_fields=["bvn_verified", "nin_verified"])
-        rows = self.post("kyc-queue", token=self.admin).json()["rows"]
-        self.assertTrue(any(r["id"] == fresh.id for r in rows))
 
     def test_users_total_reflects_search_filter(self):
         User.objects.create(username="zuri", phone="08010000011", first_name="Zuri")

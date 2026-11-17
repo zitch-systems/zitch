@@ -75,7 +75,7 @@ class FaceStepLadderTests(TestCase):
             flow.assert_called_once_with(pa, "bvn", fallback_state=router.FACE_ID_STATE)
         u.refresh_from_db()
         self.assertFalse(u.bvn_verified)
-        self.assertEqual(u.tier, 0)
+        self.assertEqual(u.tier, 1)
 
     @override_settings(WEMA=FACE_OFF)
     def test_funded_account_without_face_rail_does_not_offer_tier2(self):

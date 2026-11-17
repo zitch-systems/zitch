@@ -156,11 +156,11 @@ class BankSpendErrorTests(TestCase):
 
     def test_our_own_tier_limit_still_applies_first(self):
         # The bank ceiling is additional, never a replacement.
-        user, _ = make_user("08031110002", "bt2@zitch.app", tier=0)
+        user, _ = make_user("08031110002", "bt2@zitch.app", tier=1)
         Wallet.objects.filter(user=user).update(bank_tier=3)   # bank says unlimited
-        msg = send_limit_error(user, Decimal("50000"))         # our tier 0 cap is 20,000
+        msg = send_limit_error(user, Decimal("60000"))         # our tier 1 cap is 50,000
         self.assertIsNotNone(msg)
-        self.assertIn("Tier 0", msg)
+        self.assertIn("Tier 1", msg)
 
 
 class SyncBankTierTests(TestCase):

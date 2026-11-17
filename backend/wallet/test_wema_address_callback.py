@@ -133,8 +133,11 @@ class AddressCallbackTests(TestCase):
         read.assert_not_called()
         self.assertFalse(self.user.address_verified)
 
-    def test_nothing_is_sent_to_the_customer_either_way(self):
+    def test_a_pass_is_silent_and_only_a_refusal_is_reported(self):
+        """17 Nov 2026: the customer is never told the bank verified the address
+        (Tier 3 applies when they tap it), but a refusal is sent to WhatsApp."""
         from whatsapp.models import WhatsAppLink
+        from whatsapp.verification_web import TIER3_REFUSED_TEXT
 
         WhatsAppLink.objects.create(user=self.user, wa_msisdn="2348030001111",
                                     status=WhatsAppLink.ACTIVE)
@@ -145,7 +148,18 @@ class AddressCallbackTests(TestCase):
         _r, _read, reply = self._post(wema_body(
             title="Address verification failed",
             message="Address verification failed for customer with details below"))
+        reply.assert_called_once_with("2348030001111", TIER3_REFUSED_TEXT)
+
+    def test_a_refusal_without_a_whatsapp_link_sends_nothing_and_still_answers(self):
+        User.objects.filter(pk=self.user.pk).update(
+            address_verified=False, address_verification_pending=True, tier3_review="pending")
+        r, _read, reply = self._post(wema_body(
+            title="Address verification failed",
+            message="Address verification failed for customer with details below"))
+        self.assertEqual(r.status_code, 200)
         reply.assert_not_called()
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.tier3_review, "rejected")
 
 
 @override_settings(WEMA=WEMA_CB, PAYMENT_PROVIDER="wema")

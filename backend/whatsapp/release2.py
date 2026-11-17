@@ -65,11 +65,10 @@ def submit_signup_details_page(ob, data: dict) -> dict:
 
     The same validators as the two-page path (SIGNUP_SCREEN then SIGNUP_PHONE),
     applied in the same order, so the one-page and two-page forms cannot
-    disagree about what a valid signup is. Then on exactly as the phone page
-    goes on: the SMS proof for a number other than this WhatsApp number, else the
-    password / PIN.
+    disagree about what a valid signup is. Then the SMS code to the typed
+    number - always, even when it is this WhatsApp number (17 Nov 2026).
     """
-    from .router import _local_phone, _onboard_to, send_onboarding_phone_code
+    from .router import _onboard_to, send_onboarding_phone_code
 
     here = F._flow_screen(ob, F.SIGNUP_DETAILS)
     error, fields = F.signup_details_error(data)
@@ -80,21 +79,16 @@ def submit_signup_details_page(ob, data: dict) -> dict:
         return F._signup_screen(error=error, screen=here)
     ob.payload.update(fields)
     ob.payload["phone"] = digits
-    if digits != _local_phone(ob.msisdn):
-        # Not proved by the WhatsApp session: it must complete the SMS round
-        # trip, or anyone could reserve somebody else's number as an account.
-        if not send_onboarding_phone_code(ob):
-            return F._signup_screen(
-                error="We couldn't send an SMS to that number. Try again, or use this WhatsApp number.",
-                screen=here)
-        if F.verify_password_live():
-            return open_verify_password(ob)
-        _onboard_to(ob, F.FLOW_PHONE_CODE_STATE)
-        return F._signup_phone_code_screen(ob)
-    # _signup_to_pin persists only the step on its password branch; the
-    # details collected on THIS page must not be lost with it.
-    ob.save(update_fields=["payload"])
-    return F._signup_to_pin(ob)
+    # Every sign-up proves the phone by SMS code before it can go on, whether
+    # or not it is the number they are chatting from.
+    if not send_onboarding_phone_code(ob):
+        return F._signup_screen(
+            error="We couldn't send an SMS to that number. Check it and try again.",
+            screen=here)
+    if F.verify_password_live():
+        return open_verify_password(ob)
+    _onboard_to(ob, F.FLOW_PHONE_CODE_STATE)
+    return F._signup_phone_code_screen(ob)
 
 
 # --------------------------------------------------------------------------- #
@@ -129,7 +123,13 @@ def _resend_code(ob) -> dict:
     both in number and in rate so the link cannot be used to spam a phone."""
     from .router import _onboard_to, send_onboarding_phone_code
 
+    from .router import PHONE_CODE_LOCKED_TEXT, phone_code_locked
+
+    if phone_code_locked(ob):
+        return verify_password_screen(ob, error=PHONE_CODE_LOCKED_TEXT)
     count = int(ob.payload.get("verify_resends") or 0)
+    if ob.payload.pop("phone_code_lock_cleared", None):
+        count = 0   # a lock that has run out starts the resends afresh
     if count >= _MAX_RESENDS:
         return verify_password_screen(
             ob, error="You've asked for 3 new codes. If it still hasn't arrived, close this "
@@ -161,7 +161,7 @@ def submit_verify_password(ob, data: dict) -> dict:
     """
     from django.contrib.auth.hashers import make_password
 
-    from .router import _clear_onboarding, check_onboarding_phone_code
+    from .router import check_onboarding_phone_code
 
     if data.get("resend"):
         return _resend_code(ob)
@@ -170,13 +170,12 @@ def submit_verify_password(ob, data: dict) -> dict:
         return verify_password_screen(ob, error=rejection)
     if not ob.payload.get("phone_verified_flow"):
         status, message = check_onboarding_phone_code(ob, str(data.get("phone_code", "")))
-        if status == "retry":
-            return verify_password_screen(ob, error=message)
+        if status == "locked":
+            # Kept, not ended: after 10 minutes "Resend code" works again.
+            ob.payload["phone_code_lock_cleared"] = True
+            ob.save(update_fields=["payload"])
         if status != "ok":
-            _clear_onboarding(ob.msisdn)
-            return F._success_screen(
-                "We couldn't verify that phone number. Start Create account again for a new code.",
-                status="failed")
+            return verify_password_screen(ob, error=message)
     # Only the hash is ever written - see flows._submit_signup_password.
     ob.payload["flow_pw_hash"] = make_password(str(data.get("password", "")))
     from .release4 import signup_after_password

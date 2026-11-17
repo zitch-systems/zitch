@@ -395,7 +395,7 @@ class ChannelTests(TestCase):
         self.inbound("135790", "o4", msisdn=m)   # set PIN
         self.inbound("135790", "o5", msisdn=m)   # confirm PIN
         u = User.objects.get(phone="09090000002")
-        self.assertEqual(u.tier, 0)            # unverified chat signup (no BVN/NIN) -> Tier 0
+        self.assertEqual(u.tier, 1)            # unverified chat signup (no BVN/NIN) -> Tier 1
         self.assertTrue(u.check_transaction_pin("135790"))
         self.assertEqual(u.email, "tunde.bello@example.com")  # stored lowercased
         self.assertTrue(u.onboarded_via_whatsapp)
@@ -2747,9 +2747,17 @@ class SignupPinPrivacyTests(TestCase):
                 "data": {"first_name": "Chidi", "last_name": "Obi",
                          "email": f"chidi{m[-4:]}@zitch.test"},
             })
+            # Every sign-up confirms its number by SMS, the chat's own included.
+            with patch("whatsapp.router.sms_live", return_value=True), \
+                 patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
+                handle_flow_request({"action": "data_exchange",
+                                     "flow_token": sign_onboarding_token(ob),
+                                     "data": {"phone": _local_phone(m)}})
+                code = sms.call_args[0][1].split("Zitch: ")[1][:6]
+            ob.refresh_from_db()
             handle_flow_request({"action": "data_exchange",
                                  "flow_token": sign_onboarding_token(ob),
-                                 "data": {"phone": _local_phone(m)}})
+                                 "data": {"phone_code": code}})
         else:
             self.inbound("Chidi", f"p2-{m}", msisdn=m)
             self.inbound("Obi", f"p3-{m}", msisdn=m)

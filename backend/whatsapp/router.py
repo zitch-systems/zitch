@@ -2266,7 +2266,9 @@ def _start_onboarding(msisdn: str) -> None:
             cta="Review and continue" if gated else "Create account",
         )
         if res.get("success"):
-            return reply(msisdn, "🎉 Tap *Create account* on the secure form above to get started.")
+            # Name the button the customer actually sees on the card above.
+            button = "Review and continue" if gated else "Create account"
+            return reply(msisdn, f"🎉 Tap *{button}* on the secure form above to get started.")
         log.warning("wa_signup_flow_send_failed msisdn=%s detail=%r",
                     mask_pii(msisdn), res.get("error_detail", ""))
     # The chat fallback cannot collect an app password safely. In production it
@@ -2485,20 +2487,17 @@ def _create_onboarded_user(ob: WaOnboarding, msisdn: str, pin: str):
     ln = (ob.payload.get("last_name") or "").strip()
     if User.objects.filter(phone=local).exists():
         return None
-    # WhatsApp onboarding creates an UNVERIFIED account at Tier 0, identically to
+    # WhatsApp onboarding creates the account at Tier 1 (there is no Tier 0), identically to
     # the app. Tier 1 requires verified contacts and BVN or NIN; the customer completes
     # those checks securely from WhatsApp.
     user = User.objects.create(
-        username=local, phone=local, first_name=fn, last_name=ln, tier=0,
+        username=local, phone=local, first_name=fn, last_name=ln, tier=1,
         email=(ob.payload.get("email") or "").strip().lower(),
         onboarded_via_whatsapp=True,
-        # Verified when the code round-trip happened INSIDE the signup flow;
-        # otherwise unverified until the KYC ladder's OTP.
         email_verified=bool(ob.payload.get("email_verified_flow")),
-        # Typing the number you are chatting from proves possession - the chat
-        # session IS the phone. A different number is stored unverified and
-        # gets the SMS round-trip in the ladder.
-        phone_verified=(local == wa_local) or bool(ob.payload.get("phone_verified_flow")),
+        # Proved only by the SMS code in the sign-up form (17 Nov 2026), even
+        # for the number they are chatting from.
+        phone_verified=bool(ob.payload.get("phone_verified_flow")),
     )
     # The app password, when the signup collected one. It arrives ALREADY HASHED
     # from the Flow (see _submit_signup_password) - assigned, not re-hashed,
@@ -2578,11 +2577,26 @@ def _send_signup_welcome_text(user, msisdn: str, fn: str, pin: str, pw_hash: str
         _start_add_account(user, msisdn, after_signup=True)
 
 
+PHONE_CODE_LOCK = timedelta(minutes=10)
+PHONE_CODE_LOCKED_TEXT = ("That's 3 incorrect codes. Please wait 10 minutes, then tap "
+                          "Resend code for a new one.")
+
+
+def phone_code_locked(ob: WaOnboarding) -> bool:
+    """Three wrong codes lock this sign-up's phone step for 10 minutes."""
+    until = ob.payload.get("phone_code_locked_until") or ""
+    try:
+        return bool(until) and timezone.now() < timezone.datetime.fromisoformat(until)
+    except (TypeError, ValueError):
+        return False
+
+
 def send_onboarding_phone_code(ob: WaOnboarding) -> bool:
-    """Mint, arm and SMS the phone confirmation code - for a typed number that
-    is NOT the one they are chatting from (that one is proven by the session).
-    False when this deploy cannot deliver an SMS, so the ladder skips rather
-    than dead-ends; the KYC ladder re-verifies later."""
+    """Mint, arm and SMS the phone confirmation code to the typed number -
+    every sign-up, including the number they are chatting from. False when
+    this deploy cannot deliver an SMS, or while the 10-minute lock is on."""
+    if phone_code_locked(ob):
+        return False
     typed = ob.payload.get("phone", "")
     test_code = (settings.TEST_OTP_CODE
                  if getattr(settings, "TEST_OTP_PHONE", "") == typed else "")
@@ -2598,25 +2612,32 @@ def send_onboarding_phone_code(ob: WaOnboarding) -> bool:
     ob.payload.update({"phone_code_hash": make_password(code),
                        "phone_code_exp": (timezone.now() + timedelta(minutes=15)).isoformat(),
                        "phone_code_attempts": 0})
+    ob.payload.pop("phone_code_locked_until", None)
     return True
 
 
 def check_onboarding_phone_code(ob: WaOnboarding, code: str):
-    """("ok", "") verified · ("retry", why) · ("unverified", note) move on."""
+    """("ok", "") verified, ("retry", why) try again, or ("locked", why) for
+    10 minutes after 3 wrong codes. The sign-up is never ended here: the phone
+    must be verified to go on, so the customer waits and asks for a new code."""
+    if phone_code_locked(ob):
+        return "locked", PHONE_CODE_LOCKED_TEXT
     digits = "".join(ch for ch in str(code) if ch.isdigit())
     if len(digits) != 6:
         return "retry", "The code is exactly 6 digits - check the SMS and try again."
     exp = ob.payload.get("phone_code_exp", "")
     if not ob.payload.get("phone_code_hash") or (
             exp and timezone.now() > timezone.datetime.fromisoformat(exp)):
-        return "unverified", "That code expired - we'll verify your number later (reply 8)."
+        return "retry", "That code expired. Tap Resend code for a new one."
     if not check_password(digits, ob.payload["phone_code_hash"]):
         attempts = int(ob.payload.get("phone_code_attempts") or 0) + 1
         ob.payload["phone_code_attempts"] = attempts
-        ob.save(update_fields=["payload"])
         if attempts >= 3:
-            return "unverified", ("That's 3 incorrect codes - we'll verify your number "
-                                  "later (reply 8).")
+            ob.payload["phone_code_locked_until"] = (timezone.now() + PHONE_CODE_LOCK).isoformat()
+            ob.payload.pop("phone_code_hash", None)
+            ob.save(update_fields=["payload"])
+            return "locked", PHONE_CODE_LOCKED_TEXT
+        ob.save(update_fields=["payload"])
         return "retry", f"That code isn't right. {3 - attempts} attempt(s) left."
     ob.payload["phone_verified_flow"] = True
     for key in ("phone_code_hash", "phone_code_exp", "phone_code_attempts"):
@@ -3569,9 +3590,8 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
     return reply_buttons(
         msisdn,
         status + "\n\n*Upgrade to Tier 3*\n"
-        f"We'll send the home address you gave at sign-up (in {lga}, {state}) to your bank. "
-        "Tier 3 then shows Processing until the bank's check can be confirmed.",
-        [("tier3", "Send for Tier 3"), ("later", "Later")],
+        f"Your bank checks the home address you gave at sign-up (in {lga}, {state}).",
+        [("tier3", "Upgrade to Tier 3"), ("later", "Later")],
     )
 
 
@@ -4093,7 +4113,7 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
             if user.tier < 2:
                 return reply(msisdn, "Tier 3 starts after Tier 2. Reply *tier2* to review your identity and live face checks.")
             return _send_tier3_from_chat(user, msisdn)
-        choice = ("tier3", "Send for Tier 3") if user.tier >= 2 else ("tier2", "Upgrade to Tier 2")
+        choice = ("tier3", "Upgrade to Tier 3") if user.tier >= 2 else ("tier2", "Upgrade to Tier 2")
         return reply_buttons(msisdn, "Choose the upgrade you want:", [choice, ("later", "Later")])
 
     if state == BVN_METHOD_STATE:

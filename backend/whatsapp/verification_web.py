@@ -745,7 +745,8 @@ def _ack_face_pending(pa):
 
 
 def _finish_face(pa, outcome):
-    """Record the outcome on the link and tell the customer in WhatsApp, once."""
+    """Record the outcome on the link and tell the customer in WhatsApp, once.
+    A confirmed Tier 2 also sends the sign-up address for Tier 3, quietly."""
     from .router import reply
 
     with transaction.atomic():
@@ -756,7 +757,56 @@ def _finish_face(pa, outcome):
         current.state = COMPLETE if outcome == "verified" else FACE_FAILED
         current.save(update_fields=["payload", "state"])
     reply(pa.msisdn, FACE_DONE_TEXT if outcome == "verified" else FACE_FAILED_TEXT)
+    if outcome == "verified":
+        send_address_with_tier2(pa.user, pa.msisdn)
     return True
+
+
+def send_address_with_tier2(user, msisdn) -> str:
+    """Tier 2 is done on WhatsApp: send the address saved at sign-up as the
+    Tier 3 request (17 Nov 2026). Nothing is said to the customer about it -
+    not that it was sent, nor when the bank verifies it. Only a refusal is
+    reported, so they can correct it. Tier 3 applies when they tap it.
+    Never raises: Tier 2 is already complete."""
+    from accounts.views import saved_address_parts, send_tier3_address
+
+    try:
+        user.refresh_from_db()
+        parts = saved_address_parts(user.address)
+        if not parts or user.address_verified:
+            return "skipped"
+        house, street, lga, state = parts
+        _sent, state3, _address = send_tier3_address(user, house, street, state, lga)
+        if state3 == "not_confirmed":
+            notify_tier3_refused(user, msisdn)
+        return state3
+    except Exception:  # noqa: BLE001 - never undo or misreport Tier 2
+        log.warning("wa_tier3_with_tier2_failed user=%s", getattr(user, "pk", None))
+        return "error"
+
+
+TIER3_REFUSED_TEXT = ("⚠️ *Your address couldn't be verified.*\n\n"
+                      "Your bank couldn't confirm the home address you gave. Add it again in the "
+                      "Zitch app: Account limits, then Verify Tier 3.")
+
+
+def notify_tier3_refused(user, msisdn: str = "") -> bool:
+    """Tell the customer in WhatsApp that the bank refused their address. The
+    only Tier 3 message sent unasked. Never raises."""
+    from .models import WhatsAppLink
+    from .router import reply
+
+    try:
+        if not msisdn:
+            link = WhatsAppLink.objects.filter(user=user, status=WhatsAppLink.ACTIVE).first()
+            msisdn = link.wa_msisdn if link else ""
+        if not msisdn:
+            return False
+        reply(msisdn, TIER3_REFUSED_TEXT)
+        return True
+    except Exception:  # noqa: BLE001
+        log.warning("wa_tier3_refused_notice_failed user=%s", getattr(user, "pk", None))
+        return False
 
 
 @csrf_protect

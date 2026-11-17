@@ -213,7 +213,7 @@ class PartnershipJourneyTests(TestCase):
              patch("whatsapp.verification_web.start_verification") as portal:
             router._offer_tier_upgrade(self.user, MSISDN)
         text, choices = buttons.call_args.args[1], buttons.call_args.args[2]
-        self.assertIn(("tier3", "Send for Tier 3"), choices)
+        self.assertIn(("tier3", "Upgrade to Tier 3"), choices)
         self.assertIn("in Ikeja, Lagos", text)
         # the street and house number stay out of the chat
         self.assertNotIn("Allen Avenue", text)

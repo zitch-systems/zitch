@@ -3,10 +3,9 @@ import { View, Text, Pressable } from 'react-native';
 import { notify } from '@/components/design/Notify';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { publicPost, apiPost } from '@/lib/api';
-import { EP } from '@/lib/endpoints';
+import { publicPost } from '@/lib/api';
 import { unlockSession } from '@/lib/session';
-import { getSessionGeneration, storeSession, saveRefreshToken } from '@/lib/secureStore';
+import { getSessionGeneration, storeSession } from '@/lib/secureStore';
 import { usePinScreenProtection } from '@/lib/screenCapture';
 import ZIcon from '@/components/design/ZIcon';
 import { Loading } from '@/components/design/Loading';
@@ -92,28 +91,14 @@ const OTPVerification = () => {
     setIsCheckingOtp(true);
     const generation = getSessionGeneration();
     try {
-      // Read the name (captured at register) at submit time rather than from
-      // async-loaded state, so an instant SMS autofill can't race the load and
-      // send an unnamed verify — the account is created here, and it's opened in
-      // this name.
-      const [first, last] = await Promise.all([
-        AsyncStorage.getItem('UserFirstName'),
-        AsyncStorage.getItem('UserLastName'),
-      ]);
-      if (!mounted.current || generation !== getSessionGeneration()) return;
+      // The code is only CHECKED here. The account is created when the
+      // password is set, with this same code (17 Nov 2026).
       const response = await publicPost('/api/verify_otp/', {
-        otp, phone: userPhone, first_name: first || '', last_name: last || '',
+        otp, phone: userPhone, check_only: true,
       });
       const result = await response.json();
       if (!mounted.current || generation !== getSessionGeneration()) return;
-      if (response.ok && result.access_token) {
-        await storeSession(result, generation);
-        const authenticatedGeneration = getSessionGeneration();
-        if (!mounted.current) return;
-        await unlockSession();
-        if (!mounted.current || authenticatedGeneration !== getSessionGeneration()) return;
-        await AsyncStorage.removeItem('otpPending'); // verification done
-        if (!mounted.current || authenticatedGeneration !== getSessionGeneration()) return;
+      if (response.ok && result.verified) {
         setVerified(true);
       } else {
         notify('Error', result.message || 'Failed to verify OTP');
@@ -185,16 +170,35 @@ const OTPVerification = () => {
     const generation = getSessionGeneration();
     const current = () => mounted.current && generation === getSessionGeneration();
     try {
-      const response = await apiPost(EP.auth.setPassword, { password: pw.one });
+      // The account is created now, with the password and the verified phone.
+      // Read the name (captured at register) here: the account is opened in it.
+      const [first, last] = await Promise.all([
+        AsyncStorage.getItem('UserFirstName'),
+        AsyncStorage.getItem('UserLastName'),
+      ]);
+      if (!current()) return;
+      const response = await publicPost('/api/verify_otp/', {
+        otp, phone: userPhone, first_name: first || '', last_name: last || '', password: pw.one,
+      });
       const result = await response.json().catch(() => ({}));
       if (!current()) return;
-      if (response.ok) {
-        // Setting a password revokes the old refresh chain, ours included.
-        await saveRefreshToken(result.refresh_token || '');
-        if (!current()) return;
+      if (response.ok && result.access_token) {
+        await storeSession(result, generation);
+        const authenticatedGeneration = getSessionGeneration();
+        if (!mounted.current) return;
+        await unlockSession();
+        if (!mounted.current || authenticatedGeneration !== getSessionGeneration()) return;
+        await AsyncStorage.removeItem('otpPending'); // sign-up account created
+        if (!mounted.current || authenticatedGeneration !== getSessionGeneration()) return;
         router.replace({ pathname: '/kyc', params: { onboarding: '1' } } as any);
+      } else if (result.code === 'weak_password') {
+        notify('Password', result.message || 'Choose a stronger password');
       } else {
-        notify('Password', result.message || 'Could not set your password');
+        // The code expired or was used up while the password was typed.
+        notify('Error', result.message || 'Could not create your account');
+        setVerified(false);
+        setOtp('');
+        submittedRef.current = '';
       }
     } catch {
       if (current()) notify('Error', 'Something went wrong. Please try again.');
