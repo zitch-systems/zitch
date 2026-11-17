@@ -239,6 +239,17 @@ it('moves to Tier 2 at once when the bank already confirmed the sign-up check', 
   act(() => tree.unmount());
 });
 
+it('never says Tier 2 when Tier 1 is unfinished, even with the bank check confirmed', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? { ...state, tier_ladder: ladder }
+    : path === '/api/kyc/claim/' ? { success: true, state: 'needs_tier1', tier: 0, message: 'Finish Tier 1 first: verify your phone number and email address.' } : ready);
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Verify Tier 2' }).props.onPress(); });
+  expect(JSON.stringify(tree.toJSON())).not.toContain('now Tier 2');
+  expect(notify).toHaveBeenLastCalledWith('Finish Tier 1 first', 'Finish Tier 1 first: verify your phone number and email address.');
+  act(() => tree.unmount());
+});
+
 it('shows Tier 2 as processing while the bank is still checking the sign-up check', async () => {
   mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? { ...state, tier_ladder: ladder }
     : path === '/api/kyc/claim/' ? { success: true, state: 'processing', tier: 1 } : ready);
@@ -248,6 +259,8 @@ it('shows Tier 2 as processing while the bank is still checking the sign-up chec
   const output = JSON.stringify(tree.toJSON());
   expect(output).toContain('Tier 2 is processing');
   expect(output).toContain('From your sign-up');
+  // nothing tells the customer when it finishes, so nothing promises to
+  expect(output).not.toContain('let you know');
   expect(output).not.toContain('now Tier 2');
   // the row turns into a status that asks again when tapped
   expect(tree.root.findAllByProps({ accessibilityLabel: 'Verify Tier 2' })).toHaveLength(0);

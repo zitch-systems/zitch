@@ -7,6 +7,7 @@ confirmed upgrades them at once, one it is still running shows Processing, and
 one it refused (or that was never sent) asks for the NIN and face check again.
 """
 import json
+import time
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ from accounts.models import User, hash_identifier
 from wallet import selfie_fixtures as fx
 from wallet.models import Wallet
 from wallet.tests import make_user
+from wallet.views import _TIER2_PENDING_KEY
 
 BVN, NIN = "22222222222", "12345678901"
 BANK_TIER_1 = {"success": True, "tier": "Tier 1", "name": "ADA EZE"}
@@ -88,6 +90,57 @@ class TierClaimTests(TestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.tier, 2)
         self.assertEqual(self.user.tier2_review, "")
+
+    def test_a_check_the_bank_took_but_has_not_finished_is_processing_and_kept_for_two_days(self):
+        # The usual case: the bank accepts the submission and finishes later.
+        r = self._signup_send({"success": True, "raw": {"message": "ok"}}, BANK_TIER_1)
+        self.assertEqual(r.json()["tier2_state"], "pending")
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.tier2_review, "pending", "Verify Tier 2 must say Processing, not ask again")
+        marker = cache.get(_TIER2_PENDING_KEY.format(self.user.pk))
+        self.assertTrue(marker["signup"])
+        self.assertGreater(marker["until"] - time.time(), 47 * 3600)
+        # Verify reads the bank back; the read-back keeps the sign-up marker and its NIN
+        self.assertEqual(self._claim(bank_state=BANK_TIER_1).json()["state"], "processing")
+        again = cache.get(_TIER2_PENDING_KEY.format(self.user.pk))
+        self.assertTrue(again["signup"])
+        self.assertEqual(again["until"], marker["until"])
+        self.assertEqual(again["nin"], marker["nin"])
+        # the bank finishes: the NIN sent at sign-up is recorded and Tier 2 applies
+        r = self._claim(bank_state=BANK_TIER_2)
+        self.assertEqual(r.json()["state"], "upgraded")
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.tier, 2)
+        self.assertTrue(self.user.nin_verified)
+        self.assertEqual(self.user.nin_hash, hash_identifier(NIN))
+
+    def test_the_status_reads_a_sign_up_check_back_at_most_every_two_minutes(self):
+        self._signup_send({"success": False, "pending": True}, BANK_TIER_1)
+        with patch("utility.wema.get_kyc_status", return_value=BANK_TIER_1) as read:
+            for _ in range(5):
+                self._post("/api/kyc/status/")
+        self.assertEqual(read.call_count, 1)
+        # Verify Tier 2 always reads the bank
+        with patch("utility.wema.get_kyc_status", return_value=BANK_TIER_1) as read:
+            self._post("/api/kyc/claim/", {"tier": 2})
+        self.assertEqual(read.call_count, 1)
+
+    def test_a_check_past_its_two_days_stops_showing_as_with_the_bank(self):
+        self._signup_send({"success": False, "pending": True}, BANK_TIER_1)
+        User.objects.filter(pk=self.user.pk).update(tier2_review_at=timezone.now() - timedelta(hours=49))
+        with patch("utility.wema.get_kyc_status", return_value=BANK_TIER_1):
+            status = self._post("/api/kyc/status/").json()
+        self.assertEqual(status["tier2_state"], "not_confirmed")
+        self.assertFalse(status["tier2_face_pending"], "the Tier 2 page must ask again, not wait")
+
+    def test_a_confirmed_check_never_reads_as_tier_2_while_tier_1_is_unfinished(self):
+        User.objects.filter(pk=self.user.pk).update(email_verified=False, tier=0)
+        self._signup_send({"success": True, "raw": {"message": "ok"}}, BANK_TIER_2)
+        r = self._claim(bank_state=BANK_TIER_2)
+        self.assertEqual(r.json()["state"], "needs_tier1")
+        self.assertEqual(r.json()["tier"], 0)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.tier, 0)
 
     def test_a_check_the_bank_refused_asks_for_the_nin_and_face_again(self):
         r = self._signup_send({"success": False, "message": "Face does not match"}, BANK_TIER_1)

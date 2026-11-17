@@ -61,7 +61,7 @@ export type KycStatus = ApiResult<{
   tier3_state?: 'done' | 'ready' | 'processing' | 'not_confirmed' | 'not_sent';
 }>;
 
-export type TierClaim = KycStatus & { state?: 'upgraded' | 'processing' | 'not_confirmed' | 'needs_tier2' | 'unavailable' };
+export type TierClaim = KycStatus & { state?: 'upgraded' | 'processing' | 'not_confirmed' | 'needs_tier1' | 'needs_tier2' | 'unavailable' };
 
 export type ResidentialAddress = {
   buildingNumber: string;

@@ -96,12 +96,13 @@ class LoginSmsTests(login_tests.WhatsAppLoginTests):
 
 class TierCardTests(TestCase):
 
-    def test_the_card_names_the_saved_address_for_tier_3(self):
+    def test_the_card_names_the_area_of_the_saved_address_for_tier_3(self):
         user, _ = make_user()
         user.address = "12 Palm Street, Ikeja, Lagos"
         user.tier = 1
         lines = router._tier_ladder_lines(user)  # noqa: SLF001
-        self.assertIn("⬜ Tier 3 · Address (saved: 12 Palm Street, Ikeja)", lines)
+        self.assertIn("⬜ Tier 3 · Address (saved: Ikeja, Lagos)", lines)
+        self.assertNotIn("Palm Street", lines)
         user.address = ""
         self.assertIn("⬜ Tier 3 · Address\n", router._tier_ladder_lines(user) + "\n")  # noqa: SLF001
 

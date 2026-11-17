@@ -79,6 +79,7 @@ beforeEach(() => {
   mockGetToken.mockReset().mockResolvedValue('test-token');
   mockSessionLocked.mockReset().mockResolvedValue(false);
   mockRedirect.mockClear();
+  mockPush.mockClear();
 });
 
 it.each(['bvn', 'nin'])('finishes a %s Prembly SMS challenge without bank tracking or account creation', async (kind) => {
@@ -149,14 +150,15 @@ it.each([
   await act(async () => tree.unmount());
 });
 
-it('preserves the server-required address step for legacy accounts', async () => {
+it('shows Tier 3 (the home address) to a Tier 2 account and opens its own page', async () => {
   mockParams.verify_identity = '';
   mockApiJson.mockResolvedValue({ ...state, tier: 2, bvn_verified: true, nin_verified: true,
     face_verified: true, email_verified: true, account_provider: 'partnership',
-    address_verification_required: true, address_rail: 'wema' });
+    address_verification_required: true, address_rail: 'wema', tier3_state: 'not_sent' });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  expect(JSON.stringify(tree.toJSON())).toContain('Address verification');
+  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Home address, Tier 3' }).props.onPress(); });
+  expect(mockPush).toHaveBeenCalledWith('/tier3');
   await act(async () => tree.unmount());
 });
 
@@ -308,56 +310,62 @@ it('does not collect Tier 2 identity details or a selfie when live verification 
   act(() => tree.unmount());
 });
 
-it('shows submitted address verification with refresh instead of a repeated address form', async () => {
+it('shows a sent address as Tier 3 processing, with Check again, never the form', async () => {
   mockParams.verify_identity = '';
   mockApiJson.mockResolvedValue({ ...state, bvn_verified: true, nin_verified: true, face_verified: true,
     tier: 2, email_verified: true, account_provider: 'partnership', address_rail: 'wema',
-    address_verification_pending: true, address_verification_state: 'pending' });
+    address_verification_pending: true, address_verification_state: 'pending', tier3_state: 'processing',
+    tier3_address_available: false, tier3_address_unavailable_reason: 'Contact support for address verification review.' });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  expect(JSON.stringify(tree.toJSON())).toContain('Address verification in progress');
+  const output = JSON.stringify(tree.toJSON());
+  expect(output).toContain('Tier 3 is processing');
+  expect(output).toContain('Your address is with the bank. Tier 3 opens once the bank’s check can be confirmed. You don’t need to send it again.');
+  // never sent to Support, never asked for the address again
+  expect(output).not.toMatch(/Contact support|needs review|temporarily unavailable/);
   expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
-  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Check address status' }).props.onPress(); });
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Check again' }).props.onPress(); });
   expect(mockApiJson).toHaveBeenCalledTimes(2);
   act(() => tree.unmount());
 });
 
-it('does not collect a new address when Tier 3 verification is unavailable', async () => {
+it('sends Tier 3 to its own page whatever the old address flag says, never to Support', async () => {
   mockParams.verify_identity = '';
   mockApiJson.mockResolvedValue({ ...state, bvn_verified: true, nin_verified: true, face_verified: true,
-    tier: 2, email_verified: true, account_provider: 'partnership', address_rail: 'wema',
+    tier: 2, email_verified: true, account_provider: 'partnership', address_rail: 'wema', tier3_state: 'not_confirmed',
     tier3_address_available: false, tier3_address_unavailable_reason: 'Contact support to complete your address review.' });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
   const output = JSON.stringify(tree.toJSON());
-  expect(output).toContain('Address verification is temporarily unavailable');
-  expect(output).toContain('Contact support to complete your address review.');
+  expect(output).not.toMatch(/temporarily unavailable|Contact support/);
   expect(output).not.toContain('Building number');
   expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
-  expect(tree.root.findByProps({ accessibilityLabel: 'Contact support' })).toBeTruthy();
+  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Home address, Tier 3' }).props.onPress(); });
+  expect(mockPush).toHaveBeenCalledWith('/tier3');
   act(() => tree.unmount());
 });
 
-it.each(['verified', 'pending'])('preserves an existing %s address when new Tier 3 verification is unavailable', async (addressState) => {
+it('shows Tier 2 done only once the account is on Tier 2, and a bank-confirmed check as ready to move up', async () => {
   mockParams.verify_identity = '';
   mockApiJson.mockResolvedValue({ ...state, bvn_verified: true, nin_verified: true, face_verified: true,
-    tier: addressState === 'verified' ? 3 : 2, email_verified: true, account_provider: 'partnership', address_rail: 'wema',
-    tier3_address_available: false, tier3_address_unavailable_reason: 'Contact support for address verification review.', address_verified: addressState === 'verified',
-    address_verification_pending: addressState === 'pending', address_verification_state: addressState });
+    tier: 1, email_verified: true, account_provider: 'partnership', tier2_state: 'ready' });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  const output = JSON.stringify(tree.toJSON());
-  expect(output).not.toContain('Address verification is temporarily unavailable');
-  expect(output).toContain(addressState === 'verified' ? 'Address verification' : 'Address verification needs review');
-  expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
-  if (addressState === 'verified') {
-    expect(tree.root.findAllByType(Text).filter((node) => node.props.children === 'Verified')).toHaveLength(4);
-  } else {
-    expect(output).toContain('Contact support for address verification review.');
-    expect(output).not.toContain('Tier 3 becomes available after confirmation');
-    expect(output).not.toContain('Address verification in progress');
-    expect(tree.root.findByProps({ accessibilityLabel: 'Contact support' })).toBeTruthy();
-  }
+  const card = tree.root.findByProps({ accessibilityLabel: 'Face verification, Confirmed by your bank · move up to Tier 2' });
+  await act(async () => { card.props.onPress(); });
+  expect(mockPush).toHaveBeenCalledWith('/tier2');
+  act(() => tree.unmount());
+});
+
+it('shows an address verified on Tier 3 as done', async () => {
+  mockParams.verify_identity = '';
+  mockApiJson.mockResolvedValue({ ...state, bvn_verified: true, nin_verified: true, face_verified: true,
+    tier: 3, email_verified: true, account_provider: 'partnership', address_rail: 'wema', tier3_state: 'done',
+    address_verified: true, address_verification_state: 'verified' });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Kyc />); });
+  expect(tree.root.findByProps({ accessibilityLabel: 'Home address, Verified' })).toBeTruthy();
+  expect(tree.root.findByProps({ accessibilityLabel: 'Face verification, Verified' })).toBeTruthy();
   act(() => tree.unmount());
 });
 
@@ -380,23 +388,6 @@ it('does not resume an abandoned identity flow when its challenge arrives late',
   expect(JSON.stringify(tree.toJSON())).not.toContain('Confirm your BVN');
   expect(JSON.stringify(tree.toJSON())).not.toContain('old destination');
   expect(mockNotify).not.toHaveBeenCalled();
-  act(() => tree.unmount());
-});
-
-it('does not attach a delayed address image to a replacement session', async () => {
-  mockParams.verify_identity = '';
-  mockApiJson.mockResolvedValue({ ...state, tier: 2, email_verified: true, bvn_verified: true,
-    face_verified: true, address_rail: 'wema', tier3_address_available: true });
-  let finish!: (value: unknown) => void;
-  mockPick.mockReturnValue(new Promise(resolve => { finish = resolve; }));
-  let tree!: renderer.ReactTestRenderer;
-  await act(async () => { tree = renderer.create(<Kyc />); });
-  act(() => { tree.root.findByProps({ accessibilityLabel: 'Address verification, Tier 3' }).props.onPress(); });
-  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Add proof of address' }).props.onPress(); });
-  mockGeneration += 1;
-  await act(async () => { finish({ canceled: false, assets: [{ base64: 'old-customer-document' }] }); });
-  expect(JSON.stringify(tree.toJSON())).not.toContain('Proof of address selected');
-  expect(mockApiJson).toHaveBeenCalledTimes(1);
   act(() => tree.unmount());
 });
 

@@ -230,10 +230,9 @@ def _bank_address_unavailable():
 
 
 def _pending_page(request):
-    from wallet.address_verification import tier3_address_capability
-
-    return _page(request, "pending", status=202, can_refresh=True,
-                 needs_review=tier3_address_capability()["tier3_address_available"] is False)
+    # A sent address is Processing, as in the app and the chat: never a
+    # support review (review, Nov 2026).
+    return _page(request, "pending", status=202, can_refresh=True, needs_review=False)
 
 
 def _form(request, pa, user, *, message="", status=200, values=None, refresh_status=True):
@@ -642,6 +641,12 @@ def _face_link_closed(pa, user):
         return _json(410, status="closed", message="This link has closed. Reply 8 in WhatsApp for a new one.")
     if pa.state in (FACE_PROCESSING, FACE_PENDING):
         return _json(202, status="pending", message=FACE_PENDING_TEXT)
+    if user.face_verified and user.tier < 2:
+        # The bank already confirmed the check sent at sign-up; the customer
+        # asking here is the same as tapping Verify Tier 2. No second photo.
+        from accounts.views import apply_confirmed_tier
+
+        apply_confirmed_tier(user, 2)
     if pa.state == COMPLETE or (user.face_verified and user.tier >= 2):
         return _json(200, status="verified", message="Tier 2 is already complete.")
     return None

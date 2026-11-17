@@ -417,12 +417,21 @@ class Tier2FaceCheckEndpointTests(TestCase):
                 self.assertEqual(self.post(**data).status_code, 400)
         anonymous = self.client.post(self.path, {}, content_type="application/json")
         self.assertEqual(anonymous.status_code, 401)
-        self.wallet.account_number = ""
-        self.wallet.save(update_fields=["account_number"])
-        self.assertEqual(self.post(frames=["x"], turns=["x"]).status_code, 400)
         self.user.face_verified, self.user.tier = True, 2
         self.user.save(update_fields=["face_verified", "tier"])
         self.assertEqual(self.post(frames=["x"], turns=["x"]).json()["code"], "tier2_complete")
+
+    def test_sign_up_takes_the_face_check_before_the_bvn_opens_the_account(self):
+        # Sign-up's one page: the face check is taken while the BVN is verified.
+        # Measuring needs no account; the upgrade (which does) comes after.
+        self.wallet.account_number = ""
+        self.wallet.save(update_fields=["account_number"])
+        frames = [fx.selfie_b64(tag=3)]
+        with fx.detector(TURNED), patch("utility.wema.upgrade_tier2") as bank:
+            response = self.post(frames=frames, turns=turns(1, 2))
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.json()["liveness_token"])
+        bank.assert_not_called()
 
     def test_unavailable_detector_or_bank_is_a_503(self):
         with fx.detector(TURNED), patch.object(selfie, "face_checks_available", return_value=False):

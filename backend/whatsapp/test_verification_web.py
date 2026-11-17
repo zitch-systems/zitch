@@ -322,7 +322,7 @@ class VerificationWebTests(TestCase):
                    side_effect=accepted_before_archive) as provider:
             response = self.post(self.address())
         self.assertEqual(response.status_code, 202)
-        self.assertContains(response, "Your address is being checked", status_code=202)
+        self.assertContains(response, "Tier 3 is processing", status_code=202)
         self.pa.refresh_from_db()
         self.assertEqual(self.pa.state, REVIEW)
         self.assertEqual(self.get().status_code, 410)
@@ -469,15 +469,14 @@ class VerificationWebTests(TestCase):
         self.assertFalse(PendingAction.objects.filter(pk=chat.pk).exists())
         self.assertTrue(PendingAction.objects.filter(pk=self.pa.pk).exists())
 
-    def test_router_tier3_button_opens_bound_portal_without_provider_call_before_pin(self):
-        from .router import _offer_tier_upgrade, handle_inbound
+    def test_tier3_portal_link_is_bound_and_makes_no_provider_call_before_pin(self):
+        # The chat's Tier 3 button now sends the saved address (as the app does);
+        # the PIN-gated address page stays bound and safe for links already sent.
+        from .router import _send_web_verification
 
-        with patch("whatsapp.router.reply_buttons") as buttons:
-            _offer_tier_upgrade(self.user, MSISDN)
-        self.assertIn(("tier3", "Upgrade to Tier 3"), buttons.call_args.args[2])
         with patch("whatsapp.router.send_cta_url", return_value={"success": True}) as cta, \
                 patch("accounts.views.verify_kyc_address") as service:
-            handle_inbound(MSISDN, "tier3")
+            _send_web_verification(self.user, MSISDN, 3)
             cta.assert_called_once()
             self.assertEqual(cta.call_args.args[0], MSISDN)
             url = cta.call_args.args[2]
@@ -1004,7 +1003,7 @@ class VerificationWebTests(TestCase):
                 patch("accounts.views.wema.address_verify_live", return_value=True):
             response = self.post(self.address())
         self.assertEqual(response.status_code, 202)
-        self.assertContains(response, "Your address is being checked", status_code=202)
+        self.assertContains(response, "Tier 3 is processing", status_code=202)
         self.user.refresh_from_db()
         self.assertFalse(self.user.address_verified)
         self.assertEqual(self.user.tier, 2)
@@ -1064,9 +1063,10 @@ class VerificationWebTests(TestCase):
             "tier3_address_available": False, "tier3_address_unavailable_reason": "Contact support."}
         User.objects.filter(pk=self.user.pk).update(address_verification_pending=True)
         page = self.get()
-        self.assertContains(page, "Your address request needs review", status_code=202)
-        self.assertContains(page, "Zitch Support", status_code=202)
-        self.assertNotContains(page, "being checked", status_code=202)
+        # A sent address reads Processing, as in the app and the chat: never a support review.
+        self.assertContains(page, "Tier 3 is processing", status_code=202)
+        self.assertNotContains(page, "needs review", status_code=202)
+        self.assertNotContains(page, "Zitch Support", status_code=202)
         self.assertEqual(self.post(self.address()).status_code, 202)
         self.user.refresh_from_db()
         self.assertFalse(self.user.address_verified)

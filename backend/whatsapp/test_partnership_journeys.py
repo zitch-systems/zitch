@@ -185,35 +185,99 @@ class PartnershipJourneyTests(TestCase):
         self.assertIn("complete or processing", result["data"]["message"])
         self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
 
-    def test_tier3_pending_refresh_does_not_offer_another_submission(self):
+    def _tier2_user(self, address="12 Allen Avenue, Ikeja, Lagos"):
         self.user.bvn_verified = self.user.nin_verified = self.user.face_verified = True
+        self.user.address = address
         self.user.recompute_tier()
         self.user.save()
+        wallet = get_or_create_wallet(self.user)
+        wallet.account_number = "0123456789"
+        wallet.save(update_fields=["account_number"])
+
+    def test_tier3_pending_refresh_does_not_offer_another_submission(self):
+        self._tier2_user()
         with patch("accounts.views._kyc_state", return_value={"address_verification_pending": True}), \
              patch.object(router, "reply") as reply, \
              patch.object(router, "reply_buttons") as buttons:
             router._offer_tier_upgrade(self.user, MSISDN)
-        self.assertIn("Your address request needs review", reply.call_args.args[1])
+        text = reply.call_args.args[1]
+        self.assertIn("Tier 3 is processing", text)
+        self.assertIn("You don't need to send it again", text)
+        self.assertNotIn("Support", text)
         buttons.assert_not_called()
         self.assertFalse(PendingAction.objects.filter(user=self.user).exists())
 
-    def test_tier3_unavailable_is_shown_before_creating_a_portal_or_collecting_address(self):
-        self.user.bvn_verified = self.user.nin_verified = self.user.face_verified = True
-        self.user.recompute_tier()
-        self.user.save()
-        capability = {"tier3_address_available": False,
-                      "tier3_address_unavailable_reason": "Address verification is unavailable. Contact Zitch support."}
-        with patch("wallet.address_verification.tier3_address_capability", return_value=capability), \
-             patch.object(router, "reply") as reply, \
-             patch.object(router, "reply_buttons") as buttons, \
+    def test_tier3_from_chat_offers_the_saved_address_by_area_only_and_sends_it(self):
+        self._tier2_user()
+        with patch.object(router, "reply_buttons") as buttons, \
              patch("whatsapp.verification_web.start_verification") as portal:
             router._offer_tier_upgrade(self.user, MSISDN)
-            self.assertIn("Contact Zitch support", reply.call_args.args[1])
-            router._send_web_verification(self.user, MSISDN, 3)
-            self.assertEqual(reply.call_args.args[1], capability["tier3_address_unavailable_reason"])
+        text, choices = buttons.call_args.args[1], buttons.call_args.args[2]
+        self.assertIn(("tier3", "Send for Tier 3"), choices)
+        self.assertIn("in Ikeja, Lagos", text)
+        # the street and house number stay out of the chat
+        self.assertNotIn("Allen Avenue", text)
+        self.assertNotIn("12 ", text.split("Upgrade to Tier 3")[-1])
         portal.assert_not_called()
-        buttons.assert_not_called()
-        self.assertFalse(PendingAction.objects.filter(user=self.user).exists())
+        with patch("utility.wema.upgrade_tier3", return_value={"success": False, "pending": True}) as sent, \
+             patch.object(router, "reply") as reply:
+            router.handle_inbound(MSISDN, "tier3")
+        sent.assert_called_once()
+        account, address = sent.call_args.args
+        self.assertEqual(account, "0123456789")
+        self.assertEqual((address["buildingNumber"], address["street"], address["lga"], address["state"]),
+                         ("12", "Allen Avenue", "Ikeja", "Lagos"))
+        self.assertIn("Tier 3 is processing", reply.call_args.args[1])
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.address_verification_pending)
+        self.assertFalse(self.user.address_verified, "the bank's answer never raises Tier 3")
+        self.assertEqual(self.user.tier, 2)
+
+    def test_tier3_from_chat_without_a_usable_address_or_after_a_refusal_points_to_the_app(self):
+        for address, review in (("", ""), ("Somewhere", ""), ("12 Allen Avenue, Ikeja, Lagos", "rejected")):
+            with self.subTest(address=address, review=review):
+                self._tier2_user(address)
+                type(self.user).objects.filter(pk=self.user.pk).update(tier3_review=review)
+                self.user.refresh_from_db()
+                with patch.object(router, "reply") as reply, \
+                     patch.object(router, "reply_buttons") as buttons, \
+                     patch("utility.wema.upgrade_tier3") as sent:
+                    router._offer_tier_upgrade(self.user, MSISDN)
+                buttons.assert_not_called()
+                sent.assert_not_called()
+                self.assertIn("Account limits, then Verify Tier 3", reply.call_args.args[1])
+                self.assertEqual("rejected" in review, "couldn't confirm the address" in reply.call_args.args[1])
+
+    def test_tier2_from_chat_applies_a_bank_confirmed_sign_up_check_without_a_new_photo(self):
+        self._tier2_user()
+        type(self.user).objects.filter(pk=self.user.pk).update(tier_cap=1, tier=1)
+        self.user.refresh_from_db()
+        router.PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="kyc", state=router.KYC_UPGRADE_STATE,
+            payload={}, expires_at=router._flow_deadline("idle"))
+        with patch.object(router, "reply") as reply, \
+             patch("whatsapp.verification_web.face_link") as link:
+            router.handle_inbound(MSISDN, "tier2")
+        link.assert_not_called()
+        self.assertIn("You're now Tier 2", reply.call_args.args[1])
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.tier, 2)
+
+    def test_tier2_from_chat_says_processing_for_a_sign_up_check_the_bank_still_has(self):
+        self._tier2_user()
+        type(self.user).objects.filter(pk=self.user.pk).update(
+            face_verified=False, tier=1, tier2_review="pending", tier2_review_at=timezone.now())
+        self.user.refresh_from_db()
+        router.PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="kyc", state=router.KYC_UPGRADE_STATE,
+            payload={}, expires_at=router._flow_deadline("idle"))
+        with patch.object(router, "reply") as reply, \
+             patch("whatsapp.verification_web.face_link") as link:
+            router.handle_inbound(MSISDN, "tier2")
+        link.assert_not_called()
+        self.assertIn("Tier 2 is processing", reply.call_args.args[1])
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.tier, 1)
 
     def test_disabled_new_tier3_checks_do_not_downgrade_previously_verified_customer(self):
         self.user.bvn_verified = self.user.nin_verified = self.user.face_verified = True
