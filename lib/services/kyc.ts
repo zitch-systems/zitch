@@ -175,12 +175,13 @@ export const kycService = {
   // nothing else will move the customer forward.
   upgradeTier2: (bvn: string, nin: string, liveImage: string, livenessToken?: string) =>
     walletService.upgradeTier2(bvn, nin, liveImage, livenessToken),
-  /** Sign-up: send the NIN and face check with the BVN to the bank now. The
-   *  customer stays on Tier 1 until they tap Verify Tier 2 (claimTier). */
+  /** Sign-up: send the NIN and face check with the BVN to the bank now. Tier 2
+   *  applies as soon as the bank confirms it (`tier` in the answer). */
   sendTier2AtSignup: (bvn: string, nin: string, liveImage: string, livenessToken?: string) =>
     walletService.upgradeTier2(bvn, nin, liveImage, livenessToken, true),
   /** The address as its own Tier 3 request to the bank. Saves it too; with no
-   *  account number yet it is only saved. Zitch never shows Tier 3 from this. */
+   *  account number yet it is only saved. Tier 3 applies when the bank's address
+   *  result arrives, never from this answer. */
   sendTier3: (address: { house_number: string; street: string; state: string; lga: string }) =>
     apiJson<ApiResult<{ sent?: boolean; tier3_state?: string; address?: string }>>(EP.kyc.tier3Send, address),
   /** Verify Tier 2/3 on Account limits. Never sends anything new to the bank. */

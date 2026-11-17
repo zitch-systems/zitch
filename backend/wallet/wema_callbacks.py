@@ -1304,7 +1304,6 @@ def settle_address_verification(account: str, outcome: str) -> str:
     """Apply an address-verification result to the customer behind `account`.
     Returns what happened, for the webhook record."""
     from accounts.models import User
-    from wallet.address_verification import bank_tier_number
 
     from .models import Wallet
 
@@ -1329,32 +1328,66 @@ def settle_address_verification(account: str, outcome: str) -> str:
         return "rejected"
     if outcome != "verified":
         return "unclear"
-    status = wema_provider.get_kyc_status(account)
+    # The webhook ties this result to this account and the one address we sent.
+    # Remember it before reading the bank back: Wema sends a webhook once and does
+    # not retry, so if its own record lags, the reconcile job (every five minutes)
+    # finishes Tier 3 from this note once the record shows it.
+    User.objects.filter(pk=user.pk).update(tier3_review=TIER3_BANK_OK,
+                                           tier3_review_at=timezone.now())
+    return grant_tier3_once_bank_shows_it(user, wallet)
+
+
+def grant_tier3_once_bank_shows_it(user, wallet, status=None) -> str:
+    """Wema's webhook said the address passed (``tier3_review`` is TIER3_BANK_OK).
+    Grant Tier 3 once the bank's own record shows it: "verified", or
+    "unconfirmed" while the record still lags. ``status`` is a read-back the
+    caller already has; otherwise the bank is read here."""
+    from accounts.models import User
+    from wallet.address_verification import bank_tier_number
+
+    from .models import Wallet
+
+    if status is None:
+        status = wema_provider.get_kyc_status(wallet.account_number)
     if (not isinstance(status, dict) or status.get("success") is not True or status.get("mock")
             or bank_tier_number(status.get("tier")) < 3):
-        # The callback says done but the bank's own record does not show Tier 3
-        # yet. Keep waiting; the next callback, or the customer's Verify, reads it again.
-        log.warning("wema_address_cb_unconfirmed user=%s tier=%r", user.pk,
+        log.warning("wema_address_unconfirmed user=%s tier=%r", user.pk,
                     status.get("tier") if isinstance(status, dict) else None)
         return "unconfirmed"
     with db_transaction.atomic():
         locked = User.objects.select_for_update().get(pk=user.pk)
         if locked.address_verified:
             return "already_verified"
+        if (locked.tier3_review != TIER3_BANK_OK
+                or locked.address_verification_account_number not in ("", wallet.account_number)):
+            # A new address was sent meanwhile, or this note is not ours to settle.
+            return "no_pending_request"
         locked.address_verified = True
         locked.address_verification_pending = False
         locked.tier3_review, locked.tier3_review_at = "", None
+        # The bank confirmed Tier 3: no sign-up hold applies to it.
+        locked.tier_cap = max(locked.tier_cap, 3)
         locked.recompute_tier()
         locked.save(update_fields=["address_verified", "address_verification_pending",
-                                   "tier3_review", "tier3_review_at", "tier"])
+                                   "tier3_review", "tier3_review_at", "tier_cap", "tier"])
         Wallet.objects.filter(pk=wallet.pk).update(bank_tier=3)
     log.info("wema_address_verified user=%s tier=%s", user.pk, locked.tier)
-    _tell_whatsapp(user, ADDRESS_DONE_TEXT)
+    # Say "upgraded" only when it is: an address can pass before Tier 1 or
+    # Tier 2 is finished (sign-up sends both at once).
+    _tell_whatsapp(user, ADDRESS_DONE_TEXT if locked.tier >= 3 else ADDRESS_DONE_EARLY_TEXT)
     return "verified"
+
+
+#: ``tier3_review`` when Wema's webhook said the address passed but the bank's
+#: own record did not show Tier 3 yet. It does not expire: the bank answered.
+TIER3_BANK_OK = "bank_ok"
 
 
 ADDRESS_DONE_TEXT = ("✅ *Address verified.*\n\nYour bank has verified your address and "
                      "upgraded your account. Reply *menu* to see your new limits.")
+ADDRESS_DONE_EARLY_TEXT = ("✅ *Address verified.*\n\nYour bank has verified your address. "
+                           "Tier 3 applies once the earlier steps are finished. "
+                           "Reply *menu* to see what's left.")
 ADDRESS_FAILED_TEXT = ("❌ *Your address wasn't verified.*\n\nNothing changed on your account. "
                        "Reply *menu* to send your address again.")
 

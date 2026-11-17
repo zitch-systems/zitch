@@ -1680,9 +1680,9 @@ def tier2_claim_state(user) -> str:
 
 
 def tier3_claim_state(user) -> str:
-    """Where Tier 3 stands. The bank's answer never makes it "ready": an address
-    the bank answered for cannot be tied to its request, so Zitch does not raise
-    Tier 3 from it. Only an address verified some other way is "ready"."""
+    """Where Tier 3 stands. Tier 3 is raised by Wema's address webhook, which ties
+    the result to this account and request (wallet.wema_callbacks); the bank's
+    account status alone never makes it "ready"."""
     if user.tier >= 3:
         return "done"
     if user.address_verified:
@@ -1697,7 +1697,13 @@ def tier3_claim_state(user) -> str:
 
 
 def _tier3_review_expired(user) -> bool:
-    """A Tier 3 address check the bank has not answered within five days."""
+    """A Tier 3 address check the bank has not answered within five days. One
+    the bank's webhook already passed never expires: it is waiting only for the
+    bank's own record to show Tier 3, and sending the address again would be wrong."""
+    from wallet.wema_callbacks import TIER3_BANK_OK
+
+    if user.tier3_review == TIER3_BANK_OK:
+        return False
     at = user.tier3_review_at or user.address_verification_requested_at
     return bool(at and timezone.now() - at > TIER3_REVIEW_PATIENCE)
 
@@ -1753,6 +1759,9 @@ def kyc_claim_tier(request):
         confirm_wema_tier2(user, hashed=hashed)
         user.refresh_from_db()
         state = tier2_claim_state(user)
+        if state == "done":
+            # The read-back found it confirmed, and a confirmed check applies at once.
+            return ok(success=True, state="upgraded", **_kyc_state(user))
     if state == "ready":
         if apply_confirmed_tier(user, 2) < 2:
             # Confirmed by the bank, but Tier 1 is unfinished: never report an
@@ -2694,8 +2703,8 @@ def saved_address_parts(saved: str):
 def send_tier3_address(user, house, street, state, lga):
     """Save the address and send it to the bank as its own Tier 3 request.
     Returns ``(sent, tier3_state, address)``. Used by the app (sign-up and the
-    Tier 3 page) and the WhatsApp chat. Never raises Tier 3: the bank's answer
-    cannot be tied to this address, so a sent address shows Processing."""
+    Tier 3 page) and the WhatsApp chat. Never raises Tier 3 itself: a sent
+    address shows Processing until Wema's address webhook answers for it."""
     with db_transaction.atomic():
         user = User.objects.select_for_update().get(pk=user.pk)
         if user.address_verified or (user.address_verification_pending

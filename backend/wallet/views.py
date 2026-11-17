@@ -954,14 +954,10 @@ def upgrade_wema_identity(user, data, *, checked=None):
     if _identity_owned_by_another_user(user, WemaProvisioningAttempt.NIN, nin):
         return fail("This NIN is already linked to another Zitch account", status=409)
 
-    # Sign-up sends the Tier 2 details with the rest of the identity step, but
-    # the customer stays on Tier 1 until they tap Verify Tier 2 (kyc_claim_tier).
-    # Any other upgrade is the customer asking for Tier 2 now: no cap.
+    # Sign-up sends the Tier 2 details with the rest of the identity step. Tier 2
+    # applies as soon as the bank confirms it, at once or on a later read-back
+    # (confirm_wema_tier2): nothing holds a sign-up on Tier 1 any more.
     at_signup = data.get("at_signup") is True
-    cap = 1 if (at_signup and user.tier < 2) else 3
-    if user.tier_cap != cap:
-        User.objects.filter(pk=user.pk).update(tier_cap=cap)
-        user.tier_cap = cap
     res = wema_provider.upgrade_tier2(wallet.account_number, bvn=bvn, nin=nin,
                                      live_image=photo.bank_base64())
     if res.get("pending"):
@@ -1020,8 +1016,8 @@ def _keep_signup_marker(user):
 
 
 def _signup_tier2_sent(user, state):
-    """Sign-up's answer: the details went to the bank. The customer is still on
-    Tier 1 whatever the bank said; Verify Tier 2 shows the outcome later."""
+    """Sign-up's answer: the details went to the bank. ``tier`` is the account's
+    tier now: 2 when the bank confirmed at once and Tier 1 is finished."""
     return JsonResponse({"success": True, "sent": True, "tier2_state": state, "tier": user.tier},
                         status=200)
 
@@ -1129,9 +1125,11 @@ def confirm_wema_tier2(user, *, bvn="", nin="", ref="wema_tier2", account_number
                 return fail("Verify your BVN or NIN (Tier 1) before the Tier 2 face check.",
                             status=409, code="tier1_required")
             user.face_verified = True
-            # The bank confirmed it: nothing is left to review.
+            # The bank confirmed it: nothing is left to review, and Tier 2 applies
+            # now, with no tap on Verify (lifts a hold left from an older sign-up).
             user.tier2_review, user.tier2_review_at = "", None
-            fields += ["tier2_review", "tier2_review_at"]
+            user.tier_cap = 3
+            fields += ["tier2_review", "tier2_review_at", "tier_cap"]
             user.recompute_tier()
             user.save(update_fields=fields)
             for kind, (identity_hash, last4) in identities.items():

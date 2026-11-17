@@ -172,7 +172,8 @@ class CommandTests(TestCase):
         # The cron did not run between 06:00 and 09:00 (an outage, a deploy).
         ran, _alert, _out = self.run_schedule(utc(2026, 11, 15, 9, 0))
         self.assertEqual([name for name, _ in ran],
-                         ["reconcile_wema", "reconcile_balances", "settlement_report"])
+                         ["reconcile_wema", "reconcile_balances", "settlement_report",
+                          "address_webhook_watch"])
 
     def test_a_crashed_daily_job_is_retried_and_the_cron_stays_green(self):
         self.run_schedule(utc(2026, 11, 15, 6, 0))
