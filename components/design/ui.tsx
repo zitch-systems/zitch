@@ -82,11 +82,13 @@ const cardShadow = {
 
 // A screen that can be refreshed pulls down to the Zitch coil (17 Nov 2026);
 // any other scrolls as a plain ScrollView.
-const ScrollOrPull = ({ onRefresh, refreshing, children, ...scroll }: ScrollViewProps & {
-  onRefresh?: () => void; refreshing: boolean; children: React.ReactNode;
+// With onRefresh the still part at the top goes inside the pull's area, so a
+// downward drag on it refreshes too (17 Nov 2026); it still never scrolls.
+const ScrollOrPull = ({ onRefresh, refreshing, children, top, ...scroll }: ScrollViewProps & {
+  onRefresh?: () => void; refreshing: boolean; children: React.ReactNode; top?: React.ReactNode;
 }) => (onRefresh
-  ? <CoilRefreshScrollView {...scroll} refreshing={refreshing} onRefresh={onRefresh}>{children}</CoilRefreshScrollView>
-  : <ScrollView {...scroll}>{children}</ScrollView>);
+  ? <CoilRefreshScrollView {...scroll} top={top} refreshing={refreshing} onRefresh={onRefresh}>{children}</CoilRefreshScrollView>
+  : <>{top}<ScrollView {...scroll}>{children}</ScrollView></>);
 
 // ---- Layout shell ----
 // `tab` prevents a second safe-area inset being added beneath tab scenes. Expo
@@ -146,9 +148,10 @@ export const Screen = ({
             button is never hidden behind it (Android handles this via the OS
             softInputMode). */}
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        {headerBlock}
+        {scroll ? null : headerBlock}
         {scroll ? (
           <ScrollOrPull
+            top={headerBlock}
             onRefresh={onRefresh}
             refreshing={refreshing}
             showsVerticalScrollIndicator={false}
