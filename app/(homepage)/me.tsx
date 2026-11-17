@@ -6,7 +6,7 @@ import { EP } from '@/lib/endpoints';
 import { kycService } from '@/lib/services/kyc';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
-import { Screen, Card, ZItem, money, NText } from '@/components/design/ui';
+import { Screen, Card, ZItem, money, NText, BARE_TILE } from '@/components/design/ui';
 import { Hero } from '@/components/design/widgets';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { notify } from '@/components/design/Notify';
@@ -16,9 +16,11 @@ import { clearSession, getSessionGeneration, getToken } from '@/lib/secureStore'
 import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
 
 const Toggle = ({ on, onChange, label, disabled = false }: { on: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) => {
-  const { c } = useTheme();
+  const { c, theme } = useTheme();
+  // Off, the track is a shade darker than the mint page it now sits on.
+  const off = theme === 'dark' ? c.surface3 : '#CEE0DB';
   return (
-    <Pressable accessibilityRole="switch" accessibilityLabel={label} accessibilityState={{ checked: on, disabled }} disabled={disabled} hitSlop={10} onPress={disabled ? undefined : () => onChange(!on)} style={{ width: 46, height: 28, borderRadius: 999, padding: 3, backgroundColor: on ? c.brand : c.surface3, justifyContent: 'center', opacity: disabled ? 0.5 : 1 }}>
+    <Pressable accessibilityRole="switch" accessibilityLabel={label} accessibilityState={{ checked: on, disabled }} disabled={disabled} hitSlop={10} onPress={disabled ? undefined : () => onChange(!on)} style={{ width: 46, height: 28, borderRadius: 999, padding: 3, backgroundColor: on ? c.brand : off, justifyContent: 'center', opacity: disabled ? 0.5 : 1 }}>
       <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', transform: [{ translateX: on ? 18 : 0 }] }} />
     </Pressable>
   );
@@ -149,8 +151,11 @@ const Me = () => {
     { icon: 'gift', title: 'Invitation', sub: 'Invite friends to Zitch', go: () => router.push('/invite') },
   ];
 
+  // The menu sits straight on the page, without white cards (review, 17 Nov
+  // 2026); the groups stay apart by their spacing. The WhatsApp card and the
+  // safety tips banner keep their cards: they are calls to action, not lists.
   const Group = ({ items }: { items: any[] }) => (
-    <Card style={{ marginHorizontal: 16, marginTop: 14, paddingVertical: 2 }} pad={0}>
+    <View style={{ marginHorizontal: 16, marginTop: 14, paddingVertical: 2 }}>
       <View style={{ paddingHorizontal: 16 }}>
         {items.map((r, i) => (
           <ZItem
@@ -160,6 +165,7 @@ const Me = () => {
             sub={r.sub}
             onPress={r.go}
             last={i === items.length - 1}
+            bare
             right={
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 {r.badge && <RowBadge label={r.badge} hot={r.hot} />}
@@ -169,7 +175,7 @@ const Me = () => {
           />
         ))}
       </View>
-    </Card>
+    </View>
   );
 
   return (
@@ -235,8 +241,8 @@ const Me = () => {
       <Group items={grp2} />
 
       {/* biometrics */}
-      <Card style={{ marginHorizontal: 16, marginTop: 14, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 }}>
-        <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>
+      <View style={{ marginHorizontal: 16, marginTop: 14, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 15 }}>
+        <View style={[{ width: 40, height: 40, borderRadius: 12, backgroundColor: c.surface, alignItems: 'center', justifyContent: 'center' }, BARE_TILE]}>
           <ZIcon name="fingerprint" size={20} color={c.brand} />
         </View>
         <View style={{ flex: 1 }}>
@@ -244,16 +250,16 @@ const Me = () => {
           <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Use biometrics to sign in</Text>
         </View>
         <Toggle label="Biometric sign-in" on={biometrics} onChange={toggleBio} disabled={biometricBusy || loggingOut} />
-      </Card>
+      </View>
 
       {/* dark mode */}
-      <Card style={{ marginHorizontal: 16, marginTop: 14, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 }}>
-        <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>
+      <View style={{ marginHorizontal: 16, marginTop: 14, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 15 }}>
+        <View style={[{ width: 40, height: 40, borderRadius: 12, backgroundColor: c.surface, alignItems: 'center', justifyContent: 'center' }, BARE_TILE]}>
           <ZIcon name="spark" size={20} color={c.brand} />
         </View>
         <Text style={{ flex: 1, fontFamily: font.semibold, color: c.ink1 }}>Dark mode</Text>
         <Toggle label="Dark mode" on={theme === 'dark'} onChange={(v) => setTheme(v ? 'dark' : 'light')} />
-      </Card>
+      </View>
 
       {/* logout */}
       <View style={{ paddingHorizontal: 16, paddingTop: 16 }}>
