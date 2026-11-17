@@ -1,5 +1,5 @@
 import React, { forwardRef, useRef, useImperativeHandle } from 'react';
-import { View, Text, TextInput, Pressable } from 'react-native';
+import { View, Text, TextInput, Pressable, Platform } from 'react-native';
 import { useTheme, font } from '@/lib/theme';
 import { extractCode } from '@/lib/code';
 
@@ -72,7 +72,7 @@ export const CodeBoxes = forwardRef<CodeBoxesHandle, Props>(({
         // Cover the boxes so taps focus it; invisible so only the boxes show.
         // Keep the native field visually hidden without opacity:0. Some Android
         // autofill services ignore a fully transparent OTP target after resend.
-        style={{ position: 'absolute', top: marginTop, left: 0, right: 0, height: 58, color: 'transparent', backgroundColor: 'transparent' }}
+        style={[{ position: 'absolute', top: marginTop, left: 0, right: 0, height: 58, color: 'transparent', backgroundColor: 'transparent' }, Platform.OS === 'web' ? ({ outlineStyle: 'none', outlineWidth: 0 } as any) : null]}
       />
     </Pressable>
   );
