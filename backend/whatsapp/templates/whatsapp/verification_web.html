@@ -57,7 +57,7 @@
     {% if proof_required %}
       <p>Enter your residential address and upload a clear utility bill or bank statement showing your name and address.</p>
     {% else %}
-      <p>Enter your residential address for your bank to verify. No document upload is needed for this step.</p>
+      <p>Enter your home address to verify it. No document upload is needed for this step.</p>
     {% endif %}
     <p class="note">This link expires at {{ expires_at|date:"H:i T" }}. Fields marked “optional” can be left blank.</p>
     {% if message %}<p class="message" role="alert">{{ message }}</p>{% endif %}
@@ -84,7 +84,7 @@
         <input id="document" name="document" type="file" accept="image/jpeg,image/png" aria-describedby="document-help" required>
         <p class="note" id="document-help">JPEG or PNG, under 2 MB. Include the whole document with readable text. After an unsuccessful submission, choose the photo again.</p>
       {% endif %}
-      <button type="submit" disabled>Submit address for verification</button>
+      <button type="submit" disabled>Submit address</button>
       <p class="note" id="progress" role="status" aria-live="polite"></p>
     </form>
   {% elif screen == 'unavailable' %}
@@ -100,8 +100,8 @@
       <h1>Your address request needs review</h1>
       <p>Please contact Zitch Support about your submitted Tier 3 request. Your current verification stays saved. Do not submit your address again.</p>
     {% else %}
-      <h1>Tier 3 is processing</h1>
-      <p>Your address is with your bank. Tier 3 opens once the bank’s check can be confirmed. You don’t need to send it again.</p>
+      <h1>Tier 3 is pending</h1>
+      <p>Your address is still being verified. You don’t need to send it again.</p>
     {% endif %}
     {% if can_refresh %}
       <form method="post" autocomplete="off">

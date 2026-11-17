@@ -335,9 +335,9 @@ def _run_address_operation(request, user, data):
     prerequisites, identity proof and provider checks. No headers, cookies or
     client-supplied authentication are passed to it.
     """
-    from accounts.views import verify_kyc_address
+    from accounts.views import submit_tier3_address
 
-    return verify_kyc_address(user, data)
+    return submit_tier3_address(user, data)
 
 
 @sensitive_variables()
@@ -786,14 +786,32 @@ def send_address_with_tier2(user, msisdn) -> str:
 
 
 TIER3_REFUSED_TEXT = ("⚠️ *Your address could not be verified.*\n\n"
-                      "Please try again in the Zitch app.")
+                      "Tap *Enter address* to enter it again.")
+#: When the address page cannot be opened right now.
+ADDRESS_PAGE_DOWN_TEXT = "Please try again later: reply *8*, then tap *Upgrade to Tier 3*."
+
+
+def send_address_page(user, msisdn, body: str) -> bool:
+    """Send `body` with an "Enter address" button that opens the Tier 3 page,
+    where a refused address is entered again (17 Nov 2026). Never raises."""
+    from .providers import send_cta_url
+    from .router import reply
+
+    try:
+        url = start_verification(user, msisdn, 3)
+    except Exception:  # noqa: BLE001 - account not eligible or origin misconfigured
+        log.warning("wa_tier3_address_page_unavailable user=%s", getattr(user, "pk", None))
+        reply(msisdn, body.split("\n\n")[0] + "\n\n" + ADDRESS_PAGE_DOWN_TEXT)
+        return False
+    sent = send_cta_url(msisdn, body, url, cta="Enter address",
+                        footer="The link expires in 15 minutes")
+    return bool(sent.get("success"))
 
 
 def notify_tier3_refused(user, msisdn: str = "") -> bool:
     """Tell the customer in WhatsApp that the bank refused their address. The
     only Tier 3 message sent unasked. Never raises."""
     from .models import WhatsAppLink
-    from .router import reply
 
     try:
         if not msisdn:
@@ -801,8 +819,7 @@ def notify_tier3_refused(user, msisdn: str = "") -> bool:
             msisdn = link.wa_msisdn if link else ""
         if not msisdn:
             return False
-        reply(msisdn, TIER3_REFUSED_TEXT)
-        return True
+        return send_address_page(user, msisdn, TIER3_REFUSED_TEXT)
     except Exception:  # noqa: BLE001
         log.warning("wa_tier3_refused_notice_failed user=%s", getattr(user, "pk", None))
         return False

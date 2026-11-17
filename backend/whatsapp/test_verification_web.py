@@ -88,10 +88,10 @@ class VerificationWebTests(TestCase):
         # correlated bank evidence exists. Simulate a completed service result
         # only for these transport/security tests; production-gate tests below
         # explicitly verify that no service is invoked.
-        from accounts.views import verify_kyc_address
-        self.production_address_service = verify_kyc_address
+        from accounts.views import submit_tier3_address
+        self.production_address_service = submit_tier3_address
         self.service = self.enterContext(patch(
-            "accounts.views.verify_kyc_address", side_effect=self.complete_address))
+            "accounts.views.submit_tier3_address", side_effect=self.complete_address))
         self.path = self.start()
 
     @staticmethod
@@ -322,7 +322,7 @@ class VerificationWebTests(TestCase):
                    side_effect=accepted_before_archive) as provider:
             response = self.post(self.address())
         self.assertEqual(response.status_code, 202)
-        self.assertContains(response, "Tier 3 is processing", status_code=202)
+        self.assertContains(response, "Tier 3 is pending", status_code=202)
         self.pa.refresh_from_db()
         self.assertEqual(self.pa.state, REVIEW)
         self.assertEqual(self.get().status_code, 410)
@@ -475,7 +475,7 @@ class VerificationWebTests(TestCase):
         from .router import _send_web_verification
 
         with patch("whatsapp.router.send_cta_url", return_value={"success": True}) as cta, \
-                patch("accounts.views.verify_kyc_address") as service:
+                patch("accounts.views.submit_tier3_address") as service:
             _send_web_verification(self.user, MSISDN, 3)
             cta.assert_called_once()
             self.assertEqual(cta.call_args.args[0], MSISDN)
@@ -829,7 +829,7 @@ class VerificationWebTests(TestCase):
             User.objects.filter(pk=self.user.pk).update(address_verified=True)
             return JsonResponse({"success": True})
 
-        with patch("accounts.views.verify_kyc_address", side_effect=backend):
+        with patch("accounts.views.submit_tier3_address", side_effect=backend):
             response = self.post(self.address(), HTTP_AUTHORIZATION="Bearer attacker-token")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(observed["buildingNumber"], "12")
@@ -897,11 +897,14 @@ class VerificationWebTests(TestCase):
         self.assertEqual(self.pa.state, REVIEW)
         self.assertNotContains(response, "<h1>Address verified</h1>", status_code=503)
 
-    def test_backend_email_gate_is_preserved(self):
+    def test_no_tier_needs_a_verified_email(self):
+        """17 Nov 2026: phone, never email. The address goes even when the email
+        is unconfirmed."""
         self.unlock()
         self.service.side_effect = self.production_address_service
-        with patch("accounts.views._email_gate", return_value=JsonResponse({"message": "Verify email"}, status=403)):
-            self.assertEqual(self.post(self.address()).status_code, 403)
+        type(self.user).objects.filter(pk=self.user.pk).update(email_verified=False)
+        self.assertEqual(self.post(self.address()).status_code, 202)
+        self.bank_address.assert_called_once()
         self.provider.assert_not_called()
 
     def test_bank_address_form_forwards_structured_fields_without_client_account(self):
@@ -972,13 +975,13 @@ class VerificationWebTests(TestCase):
         self.bank_address.assert_not_called()
 
     def test_document_to_bank_rail_change_does_not_forward_unnecessary_upload(self):
-        from accounts.views import verify_kyc_address
+        from accounts.views import submit_tier3_address
 
         self.unlock()
         self.assertContains(self.get(), 'name="document"')
         with patch("accounts.views.kyc_provider", return_value="wema"), \
                 patch("accounts.views.wema.address_verify_live", return_value=True), \
-                patch("accounts.views.verify_kyc_address", wraps=verify_kyc_address) as service:
+                patch("accounts.views.submit_tier3_address", wraps=submit_tier3_address) as service:
             response = self.post(self.address(document=document(b"unneeded private photo")))
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("document", service.call_args.args[1])
@@ -1003,7 +1006,7 @@ class VerificationWebTests(TestCase):
                 patch("accounts.views.wema.address_verify_live", return_value=True):
             response = self.post(self.address())
         self.assertEqual(response.status_code, 202)
-        self.assertContains(response, "Tier 3 is processing", status_code=202)
+        self.assertContains(response, "Tier 3 is pending", status_code=202)
         self.user.refresh_from_db()
         self.assertFalse(self.user.address_verified)
         self.assertEqual(self.user.tier, 2)
@@ -1041,21 +1044,37 @@ class VerificationWebTests(TestCase):
         self.assertFalse(self.user.address_verified)
         self.assertFalse(self.user.address_verification_pending)
 
-    def test_production_service_cannot_be_enabled_by_a_capability_claim_or_bank_account_status(self):
+    def test_the_page_sends_the_address_and_never_marks_it_verified_itself(self):
+        """17 Nov 2026: a refused address is entered again on this page and sent
+        as its own Tier 3 request, as in the app and the chat. Only the bank's
+        address webhook can verify it - never the send, nor an account status."""
         self.unlock()
         self.service.side_effect = self.production_address_service
         self.bank_status.return_value = {
             "success": True, "tier": 3, "address_verification": "Completed"}
+        type(self.user).objects.filter(pk=self.user.pk).update(tier3_review="rejected")
         with patch("accounts.views.kyc_provider", return_value="wema"), \
                 patch("accounts.views.wema.address_verify_live", return_value=True):
-            self.assertEqual(self.post(self.address()).status_code, 503)
+            response = self.post(self.address())
+        self.assertContains(response, "Tier 3 is pending", status_code=202)
         self.user.refresh_from_db()
         self.assertFalse(self.user.address_verified)
-        self.assertFalse(self.user.address_verification_pending)
+        self.assertTrue(self.user.address_verification_pending)
+        self.assertEqual(self.user.tier3_review, "pending")
         self.assertEqual(self.user.tier, 2)
+        self.assertEqual(self.user.address, "12 Palm Street, Ikeja, Lagos")
         self.provider.assert_not_called()
+        self.bank_address.assert_called_once()
+        account, sent = self.bank_address.call_args.args
+        self.assertEqual((account, sent["buildingNumber"], sent["state"], sent["lga"]),
+                         ("1234567890", "12", "Lagos", "Ikeja"))
+
+    def test_the_page_refuses_a_state_that_is_not_in_nigeria(self):
+        self.unlock()
+        self.service.side_effect = self.production_address_service
+        response = self.post(self.address(state="Atlantis"))
+        self.assertContains(response, "Check every address field", status_code=400)
         self.bank_address.assert_not_called()
-        self.bank_status.assert_not_called()
 
     def test_disabled_new_address_checks_preserve_existing_verified_and_pending_status(self):
         self.unlock()
@@ -1064,7 +1083,7 @@ class VerificationWebTests(TestCase):
         User.objects.filter(pk=self.user.pk).update(address_verification_pending=True)
         page = self.get()
         # A sent address reads Processing, as in the app and the chat: never a support review.
-        self.assertContains(page, "Tier 3 is processing", status_code=202)
+        self.assertContains(page, "Tier 3 is pending", status_code=202)
         self.assertNotContains(page, "needs review", status_code=202)
         self.assertNotContains(page, "Zitch Support", status_code=202)
         self.assertEqual(self.post(self.address()).status_code, 202)

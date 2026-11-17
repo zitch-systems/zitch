@@ -32,9 +32,12 @@ class Tier3WithTier2Tests(TestCase):
 
     def finish(self, outcome, result=(True, "processing", "")):
         with patch("accounts.views.send_tier3_address", return_value=result) as sent, \
+             patch("whatsapp.verification_web.start_verification", return_value="https://x/v/t"), \
+             patch("whatsapp.providers.send_cta_url", return_value={"success": True}) as cta, \
              patch("whatsapp.router.reply") as reply:
             _finish_face(self.pa, outcome)
-        return sent, [c.args[1] for c in reply.call_args_list]
+        self.cta = cta
+        return sent, [c.args[1] for c in reply.call_args_list] + [c.args[1] for c in cta.call_args_list]
 
     def test_a_confirmed_tier_2_sends_the_saved_address_without_a_word(self):
         sent, messages = self.finish("verified")
@@ -47,6 +50,17 @@ class Tier3WithTier2Tests(TestCase):
     def test_a_refusal_on_sending_is_the_one_thing_reported(self):
         _sent, messages = self.finish("verified", result=(True, "not_confirmed", ""))
         self.assertEqual(messages, [FACE_DONE_TEXT, TIER3_REFUSED_TEXT])
+        # ...with the button that opens the Tier 3 page.
+        self.assertEqual(self.cta.call_args.kwargs["cta"], "Enter address")
+
+    def test_no_address_page_falls_back_to_a_plain_message(self):
+        with patch("whatsapp.verification_web.start_verification", side_effect=ValueError("x")), \
+             patch("whatsapp.router.reply") as reply:
+            from .verification_web import notify_tier3_refused
+            notify_tier3_refused(self.user, MSISDN)
+        text = reply.call_args.args[1]
+        self.assertIn("could not be verified", text)
+        self.assertIn("reply *8*", text)
 
     def test_a_failed_face_check_sends_no_address(self):
         sent, messages = self.finish("failed")
