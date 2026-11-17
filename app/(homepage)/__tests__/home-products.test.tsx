@@ -142,6 +142,9 @@ it('opens More as a pop-up of Transfer, History, Statement and every bill paymen
   expect(inSheet.slice(0, 3)).toEqual(['Transfer', 'History', 'Statement']);
   expect(inSheet).toEqual(expect.arrayContaining(['Airtime', 'Data', 'Cable TV', 'Electricity', 'Betting', 'Exams', 'Water, Soon', 'Remita', 'Movies', 'Insurance']));
   expect(JSON.stringify(sheets[0].findAllByType(RNText).map((n) => n.props.children))).toContain('Pay a bill');
+  // the headings are in the ink (pure black in light), not a grey (17 Nov 2026)
+  const heading = sheets[0].findAllByType(RNText).find((n) => n.props.children === 'Pay a bill')!;
+  expect(heading.props.style.color).toBe('#111');
   // a tap closes the pop-up, then opens the service
   await act(async () => { sheets[0].findAll((n) => n.props.accessibilityLabel === 'Transfer' && typeof n.props.onPress === 'function')[0].props.onPress(); });
   expect(tree.root.findAll((n) => n.props.testID === 'sheet')).toHaveLength(0);

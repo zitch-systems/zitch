@@ -375,7 +375,7 @@ const Home = () => {
       <Sheet open={more} onClose={() => setMore(false)} title="All services">
         {([['Money', MORE_MONEY], ['Pay a bill', MORE_BILLS]] as const).map(([heading, items], g) => (
           <View key={heading} style={{ marginTop: g ? 6 : 0 }}>
-            <Text style={{ fontSize: 12, fontFamily: fontA.bodyBold, color: c.ink3, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>{heading}</Text>
+            <Text style={{ fontSize: 12, fontFamily: fontA.bodyBold, color: c.ink1, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>{heading}</Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
               {items.map((s) => (
                 <View key={s.label} style={{ width: '25%', alignItems: 'center', marginBottom: 16 }}>
