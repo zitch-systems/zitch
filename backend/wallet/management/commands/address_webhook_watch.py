@@ -5,7 +5,7 @@ one is sent again only when Zitch asks (Temi, Wema, 17 Nov 2026). So once a day
 the operator (``utility.alerts`` → ``OPS_ALERT_EMAILS``) gets the list to raise
 with Wema:
 
-- address checks waiting more than two days with no webhook at all;
+- address checks waiting more than two hours with no webhook at all;
 - checks the webhook passed whose bank record still doesn't show Tier 3 a day
   later (the reconcile job finishes those by itself once the record catches up).
 
@@ -19,7 +19,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 #: An address check with no webhook after this long is listed.
-NO_WEBHOOK_AFTER = timedelta(days=2)
+NO_WEBHOOK_AFTER = timedelta(hours=2)
 #: A webhook-passed check whose bank record still lags after this long is listed.
 RECORD_LAG_AFTER = timedelta(days=1)
 #: Customers named per list in the email; the count covers the rest.
@@ -30,9 +30,10 @@ def _entries(users, since_field, now):
     rows = []
     for user in users.order_by(since_field)[:LIST_LIMIT]:
         since = getattr(user, since_field)
-        days = (now - since).days if since else 0
+        hours = int((now - since).total_seconds() // 3600) if since else 0
+        waited = f"{hours}h" if hours < 48 else f"{hours // 24}d"
         last4 = (user.address_verification_account_number or "")[-4:] or "----"
-        rows.append(f"user {user.pk} (account ******{last4}, {days}d)")
+        rows.append(f"user {user.pk} (account ******{last4}, {waited})")
     return rows
 
 
