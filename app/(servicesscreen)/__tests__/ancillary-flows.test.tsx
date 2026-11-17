@@ -319,31 +319,19 @@ it('opens support email directly on Android despite package-visibility canOpenUR
 });
 
 
-it('does not silently enable biometric sign-in when saving the preference fails', async () => {
-  (setBiometricEnabled as jest.Mock).mockRejectedValueOnce(new Error('Storage unavailable'));
+it('lists each setting once: password, PIN and biometrics live in Security Center', async () => {
   await render(<Settings />);
-  const toggle = () => tree!.root.findAllByType(Pressable).find((p) => p.props.accessibilityRole === 'switch' && p.props.accessibilityLabel === 'Biometric login')!;
-  await act(async () => { toggle().props.onPress(); });
-  expect(authenticate).toHaveBeenCalledWith('Enable biometric sign-in');
-  expect(notify).toHaveBeenCalledWith('Could not save preference', 'Please try again.');
-  expect(toggle().props.accessibilityState.checked).toBe(false);
-  expect(toggle().props.disabled).toBe(false);
-});
-
-it.each(['availability', 'authentication'])('ignores an old biometric %s response after an account switch', async (phase) => {
-  let finish!: (value: boolean) => void;
-  const pending = new Promise<boolean>((resolve) => { finish = resolve; });
-  (phase === 'availability' ? isBiometricAvailable as jest.Mock : authenticate as jest.Mock).mockReturnValueOnce(pending);
-  await render(<Settings />);
-  const toggle = () => tree!.root.findAllByType(Pressable).find((p) => p.props.accessibilityRole === 'switch' && p.props.accessibilityLabel === 'Biometric login')!;
-  expect(toggle().props['aria-checked']).toBe(false);
-  await act(async () => { toggle().props.onPress(); });
-  mockSessionGeneration += 1;
-  await act(async () => { finish(true); });
-  expect(setBiometricEnabled).not.toHaveBeenCalled();
-  expect(toggle().props['aria-checked']).toBe(false);
-  expect(notify).not.toHaveBeenCalled();
-  if (phase === 'availability') expect(authenticate).not.toHaveBeenCalled();
+  // every row's title (switches carry their row's title too, so they're left out)
+  const titles = tree!.root.findAll((n) => typeof n.type === 'string' && typeof n.props.accessibilityLabel === 'string' && n.props.accessibilityRole !== 'switch')
+    .map((n) => n.props.accessibilityLabel as string);
+  expect(new Set(titles).size).toBe(titles.length);
+  expect(titles).toContain('Security Center');
+  expect(output()).toContain('Password, transaction PIN and biometrics');
+  expect(titles).not.toContain('Change Transaction PIN');
+  expect(tree!.root.findAll((n) => n.props.accessibilityRole === 'switch' && /biometric/i.test(n.props.accessibilityLabel || ''))).toHaveLength(0);
+  expect(titles).toContain('Dark mode');
+  await act(async () => { tree!.root.findAll((n) => n.props.accessibilityLabel === 'Security Center' && typeof n.props.onPress === 'function')[0].props.onPress(); });
+  expect(router.push).toHaveBeenCalledWith('/securitysetup');
 });
 
 it('suppresses a stale notification permission result after an account switch', async () => {

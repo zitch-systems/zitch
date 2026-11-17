@@ -145,8 +145,9 @@ const Me = () => {
     { icon: 'loan', title: 'Buy Now, Pay Later', sub: 'Check availability', go: () => router.push('/bnpl') },
   ];
   const grp2: any[] = [
-    { icon: 'insurance', title: 'Security Center', sub: 'Protect your funds', go: () => router.push('/securitysetup') },
-    { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 6-digit PIN', go: () => router.push('/resetpin') },
+    // Transaction PIN lives in Security Center (with the password and biometrics),
+    // so it isn't listed again here (17 Nov 2026).
+    { icon: 'insurance', title: 'Security Center', sub: 'Password, transaction PIN and biometrics', go: () => router.push('/securitysetup') },
     { icon: 'help', title: 'Customer Service Center', go: () => router.push('/support') },
     { icon: 'gift', title: 'Invitation', sub: 'Invite friends to Zitch', go: () => router.push('/invite') },
   ];
