@@ -42,7 +42,7 @@ export const addressParts = (saved: string): AddressValue => {
  */
 const Tier3 = () => {
   const { c } = useTheme();
-  const params = useLocalSearchParams<{ from?: string }>();
+  const params = useLocalSearchParams<{ from?: string; review?: string }>();
   const [status, setStatus] = useState<Status | null>(null);
   const [loadError, setLoadError] = useState('');
   const [address, setAddress] = useState<AddressValue>(EMPTY_ADDRESS);
@@ -87,7 +87,7 @@ const Tier3 = () => {
         notify(res.tier3_state === 'not_confirmed' ? 'Not confirmed' : 'Sent for Tier 3',
           res.tier3_state === 'not_confirmed'
             ? 'Your bank could not confirm this address. Check it and send it again.'
-            : 'Tier 3 shows Processing until the check is done.',
+            : 'Your bank is checking your address. Tap Verify Tier 3 on Account limits to check on it.',
           res.tier3_state === 'not_confirmed' ? 'info' : 'success');
         if (res.tier3_state !== 'not_confirmed') {
           if (params.from === 'limits' && router.canGoBack()) router.back();
@@ -120,7 +120,8 @@ const Tier3 = () => {
 
   const tier3 = tierLadder(status.tier_ladder).find((t) => t.tier === 3);
   const tier = Number(status.tier) || 0;
-  const refused = status.tier3_state === 'not_confirmed';
+  // Refused by the bank (the "Details need review" pop-up sends the customer here).
+  const refused = status.tier3_state === 'not_confirmed' && (params.review === '1' || status.tier3_review === 'rejected');
   const processing = status.tier3_state === 'processing';
   const done = status.tier3_state === 'done' || tier >= 3;
 
@@ -142,9 +143,9 @@ const Tier3 = () => {
         <Card style={{ marginTop: 14 }}><Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>You’re on Tier 3</Text></Card>
       ) : processing ? (
         <Card style={{ marginTop: 14, gap: 8 }}>
-          <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>Tier 3 is processing</Text>
+          <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>Still checking your address</Text>
           <Text style={{ fontSize: 13.5, fontFamily: font.regular, color: c.ink3, lineHeight: 20 }}>
-            Your address is with the bank. Tier 3 opens once the bank’s check can be confirmed. You don’t need to send it again.
+            Your bank is still checking your address. You don’t need to send it again. Tap Verify Tier 3 on Account limits to check on it.
           </Text>
         </Card>
       ) : tier < 2 ? (
@@ -160,7 +161,7 @@ const Tier3 = () => {
               borderRadius: 16, backgroundColor: 'rgba(220,38,38,0.07)', borderWidth: 1, borderColor: 'rgba(220,38,38,0.25)' }}>
               <View style={{ marginTop: 1 }}><ZIcon name="help" size={17} color={c.red} stroke={2.2} /></View>
               <Text style={{ flex: 1, fontSize: 13, fontFamily: font.semibold, color: c.red, lineHeight: 19 }}>
-                We couldn’t confirm the address from your sign-up. Check it, correct anything that’s wrong, and send it again.
+                Your details need review. Your bank couldn’t verify this address. Check it, correct anything that’s wrong, and send it again.
               </Text>
             </View>
           ) : null}
@@ -175,7 +176,7 @@ const Tier3 = () => {
             <Btn label={busy ? 'Sending…' : 'Submit for Tier 3'} disabled={!payload || busy} onPress={() => void send()} />
           </View>
           <Text style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3, marginTop: 10, textAlign: 'center' }}>
-            Tier 3 shows Processing until the check is done.
+            Once your bank has checked it, tap Verify Tier 3 on Account limits to move up.
           </Text>
         </>
       )}

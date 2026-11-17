@@ -27,6 +27,8 @@ export type KycStatus = ApiResult<{
   account_setup_state?: 'ready' | 'otp_pending' | 'processing' | 'identity_verified' | 'identity_required' | 'recovery_ready' | 'legacy_funding_review' | 'bank_history_review';
   upgrade_required?: boolean;
   next_step?: string;
+  /** The address as the customer gave it. */
+  address?: string;
   address_verified?: boolean;
   address_verification_pending?: boolean;
   address_verification_state?: 'pending' | 'verified' | 'not_verified';
@@ -57,11 +59,14 @@ export type KycStatus = ApiResult<{
   tier2_state?: 'done' | 'ready' | 'processing' | 'not_confirmed';
   /** The bank's answer to the Tier 2 details sent at sign-up, while not confirmed. */
   tier2_review?: '' | 'pending' | 'rejected';
+  tier3_review?: '' | 'rejected';
+  /** Tiers whose details the bank refused: the "Details need review" pop-up. */
+  details_review?: { tier: 2 | 3; at: string }[];
   /** Verify Tier 3: done, processing (with the bank), not_confirmed (enter the address again), not_sent. */
   tier3_state?: 'done' | 'ready' | 'processing' | 'not_confirmed' | 'not_sent';
 }>;
 
-export type TierClaim = KycStatus & { state?: 'upgraded' | 'processing' | 'not_confirmed' | 'needs_tier1' | 'needs_tier2' | 'unavailable' };
+export type TierClaim = KycStatus & { state?: 'upgraded' | 'processing' | 'needs_review' | 'not_confirmed' | 'needs_tier1' | 'needs_tier2' | 'unavailable' };
 
 export type ResidentialAddress = {
   buildingNumber: string;
@@ -175,13 +180,14 @@ export const kycService = {
   // nothing else will move the customer forward.
   upgradeTier2: (bvn: string, nin: string, liveImage: string, livenessToken?: string) =>
     walletService.upgradeTier2(bvn, nin, liveImage, livenessToken),
-  /** Sign-up: send the NIN and face check with the BVN to the bank now. Tier 2
-   *  applies as soon as the bank confirms it (`tier` in the answer). */
+  /** Sign-up: send the NIN and face check with the BVN to the bank, in the
+   *  background. The account stays on Tier 1 until the customer taps Tier 2
+   *  (claimTier), however soon the bank confirms (Zitch's own limiter). */
   sendTier2AtSignup: (bvn: string, nin: string, liveImage: string, livenessToken?: string) =>
     walletService.upgradeTier2(bvn, nin, liveImage, livenessToken, true),
   /** The address as its own Tier 3 request to the bank. Saves it too; with no
-   *  account number yet it is only saved. Tier 3 applies when the bank's address
-   *  result arrives, never from this answer. */
+   *  account number yet it is only saved (`sent: false`). Tier 3 applies when
+   *  the customer taps it after the bank verified the address, never from this. */
   sendTier3: (address: { house_number: string; street: string; state: string; lga: string }) =>
     apiJson<ApiResult<{ sent?: boolean; tier3_state?: string; address?: string }>>(EP.kyc.tier3Send, address),
   /** Verify Tier 2/3 on Account limits. Never sends anything new to the bank. */

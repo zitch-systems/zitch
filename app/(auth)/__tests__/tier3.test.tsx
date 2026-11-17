@@ -82,24 +82,24 @@ describe('addressParts', () => {
   });
 });
 
-it('shows the refused address prefilled, and sends it again as its own Tier 3 request', async () => {
+it('shows a refused address prefilled as needing review, and sends it again as its own Tier 3 request', async () => {
   mockParams.from = 'limits';
   mockApiJson.mockImplementation(async (path: string) => {
-    if (path === EP.kyc.status) return tier2;
+    if (path === EP.kyc.status) return { ...tier2, tier3_review: 'rejected' };
     if (path === EP.kyc.tier3Send) return { success: true, sent: true, tier3_state: 'processing' };
     throw new Error(`Unexpected API call: ${path}`);
   });
   const tree = await render();
   const out = text(tree);
-  expect(out).toContain('We couldn’t confirm the address from your sign-up.');
+  expect(out).toContain('Your details need review. Your bank couldn’t verify this address.');
   expect(out).not.toMatch(/Prembly|Wema/);
   expect(field(tree, 'House number').props.value).toBe('12');
   expect(field(tree, 'Street address').props.value).toBe('Allen Avenue');
   act(() => { field(tree, 'Street address').props.onChangeText('Allen Avenue, Opebi'); });
   await act(async () => { await submit(tree).props.onPress(); });
   expect(mockApiJson).toHaveBeenCalledWith(EP.kyc.tier3Send, { house_number: '12', street: 'Allen Avenue, Opebi', state: 'Lagos', lga: 'Ikeja' });
-  // Tier 3 is never raised from the bank's answer: it shows Processing
-  expect(mockNotify).toHaveBeenCalledWith('Sent for Tier 3', 'Tier 3 shows Processing until the check is done.', 'success');
+  // Tier 3 is never raised from this answer: the customer's tap applies it once the bank verified it
+  expect(mockNotify).toHaveBeenCalledWith('Sent for Tier 3', 'Your bank is checking your address. Tap Verify Tier 3 on Account limits to check on it.', 'success');
   expect(mockRouter.back).toHaveBeenCalled();
   act(() => tree.unmount());
 });
@@ -117,7 +117,7 @@ it('keeps the customer on the page when the bank refuses the address again', asy
 
 it('shows Processing, Tier 2 first, or done instead of the form', async () => {
   for (const [state, copy] of [
-    [{ tier3_state: 'processing' }, 'Tier 3 is processing'],
+    [{ tier3_state: 'processing' }, 'Still checking your address'],
     [{ tier: 1, face_verified: false, tier3_state: 'not_sent' }, 'Verify Tier 2 first'],
     [{ tier: 3, tier3_state: 'done' }, 'You’re on Tier 3'],
   ] as const) {

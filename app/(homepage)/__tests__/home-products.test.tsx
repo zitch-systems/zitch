@@ -12,6 +12,8 @@ const mockWallet = {
   hydrated: true, balanceLoaded: true, balanceError: '', historyError: '', loading: false,
 };
 
+// The refusal pop-up has its own tests (components/kyc/__tests__/detailsReviewPrompt.test.tsx).
+jest.mock('@/components/kyc/DetailsReviewPrompt', () => ({ DetailsReviewPrompt: () => null }));
 jest.mock('@/lib/wallet', () => ({ useWallet: () => mockWallet, transactionParams: jest.fn() }));
 const mockApiJson = jest.fn();
 jest.mock('@/lib/api', () => ({ apiJson: (...args: unknown[]) => mockApiJson(...args) }));

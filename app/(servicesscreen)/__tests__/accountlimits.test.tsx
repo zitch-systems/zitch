@@ -33,7 +33,9 @@ jest.mock('@/components/design/ui', () => {
   const { Text, View, Pressable } = jest.requireActual<typeof import('react-native')>('react-native');
   const Container = ({ children }: { children: ReactNode }) => ReactActual.createElement(View, null, children);
   const Sheet = ({ open, children }: { open: boolean; children: ReactNode }) => (open ? ReactActual.createElement(View, null, children) : null);
-  return { Screen: Container, Card: Container, Sheet, NText: Text, Header: ({ title }: { title: string }) => ReactActual.createElement(Text, null, `header:${title}`), Progress: () => null, money: (value: number) => `₦${value}`,
+  const Tap = ({ children, onPress, accessibilityLabel }: { children: ReactNode; onPress: () => void; accessibilityLabel?: string }) =>
+    ReactActual.createElement(Pressable, { onPress, accessibilityLabel }, children);
+  return { Screen: Container, Card: Container, Sheet, Tap, NText: Text, Header: ({ title }: { title: string }) => ReactActual.createElement(Text, null, `header:${title}`), Progress: () => null, money: (value: number) => `₦${value}`,
     Btn: ({ label, onPress }: { label: string; onPress: () => void }) => ReactActual.createElement(Pressable, { accessibilityLabel: label, onPress }, ReactActual.createElement(Text, null, label)) };
 });
 
@@ -186,7 +188,7 @@ it('shows the tier ladder from the server and answers Verify Tier 3 with what th
   output = JSON.stringify(tree.toJSON());
   // never claims an upgrade the server did not make
   expect(output).not.toContain('now Tier 3');
-  expect(output).toContain('Tier 3 is processing');
+  expect(output).toContain('Still checking your address');
   expect(output).toContain('12 Allen Avenue, Ikeja, Lagos');
   expect(mockApiJson.mock.calls.map(([p]) => p)).not.toContain('/api/kyc/address/');
   act(() => tree.unmount());
@@ -250,34 +252,53 @@ it('never says Tier 2 when Tier 1 is unfinished, even with the bank check confir
   act(() => tree.unmount());
 });
 
-it('shows Tier 2 as processing while the bank is still checking the sign-up check', async () => {
-  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? { ...state, tier_ladder: ladder }
+it('says it is still checking only after the customer taps Tier 2, and keeps the button', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? { ...state, tier_ladder: ladder, tier2_state: 'processing' }
     : path === '/api/kyc/claim/' ? { success: true, state: 'processing', tier: 1 } : ready);
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
+  // Zitch's own limiter: nothing sign-up sent is shown before the tap
+  let output = JSON.stringify(tree.toJSON());
+  expect(output).not.toContain('Processing');
+  expect(output).not.toContain('Still checking');
   await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Verify Tier 2' }).props.onPress(); });
-  const output = JSON.stringify(tree.toJSON());
-  expect(output).toContain('Tier 2 is processing');
-  expect(output).toContain('From your sign-up');
-  // nothing tells the customer when it finishes, so nothing promises to
+  output = JSON.stringify(tree.toJSON());
+  expect(output).toContain('Still checking your details');
+  expect(output).not.toContain('From your sign-up');
   expect(output).not.toContain('let you know');
   expect(output).not.toContain('now Tier 2');
-  // the row turns into a status that asks again when tapped
-  expect(tree.root.findAllByProps({ accessibilityLabel: 'Verify Tier 2' })).toHaveLength(0);
-  expect(tree.root.findAllByProps({ accessibilityLabel: 'Tier 2 processing. Check again' }).length).toBeGreaterThan(0);
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Verify Tier 2' }).length).toBeGreaterThan(0);
   act(() => tree.unmount());
 });
 
-it('shows Tier 3 in progress as a status, not a button, and drops the Checking pill', async () => {
+it('shows nothing about an address sent at sign-up before the customer taps Tier 3', async () => {
   mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/'
-    ? { ...state, tier: 2, nin_verified: true, address_verification_pending: true } : ready);
+    ? { ...state, tier: 2, nin_verified: true, address_verification_pending: true, tier3_state: 'processing' } : ready);
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<AccountLimits />); });
   const output = JSON.stringify(tree.toJSON());
-  expect(output).toContain('Processing');
-  expect(output).not.toContain('Checking');
-  expect(tree.root.findAllByProps({ accessibilityLabel: 'Verify Tier 3' })).toHaveLength(0);
-  expect(tree.root.findAllByProps({ accessibilityLabel: 'Tier 3 processing. Check again' }).length).toBeGreaterThan(0);
+  expect(output).not.toContain('Processing');
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Verify Tier 3' }).length).toBeGreaterThan(0);
+  act(() => tree.unmount());
+});
+
+it.each([
+  [2, '/tier2?from=limits&recheck=1', 'NIN and face check'],
+  [3, '/tier3?from=limits&review=1', 'Home address'],
+])('opens the Details need review pop-up when the bank refused Tier %i, and Review details fixes them', async (tier, route, what) => {
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/'
+    ? { ...state, tier: tier - 1, nin_verified: true, tier_ladder: ladder, address: '12 Allen Avenue, Ikeja, Lagos' }
+    : path === '/api/kyc/claim/' ? { success: true, state: 'needs_review', tier: tier - 1 } : ready);
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: `Verify Tier ${tier}` }).props.onPress(); });
+  const output = JSON.stringify(tree.toJSON());
+  expect(output).toContain('Your details need review');
+  expect(output).toContain(what);
+  expect(output).toContain('Needs review');
+  expect(router.push).not.toHaveBeenCalled();
+  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Review details' }).props.onPress(); });
+  expect(router.push).toHaveBeenCalledWith(route);
   act(() => tree.unmount());
 });
 
@@ -290,7 +311,7 @@ it('shows the Tier 3 limits when the address check had already come through', as
   await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Verify Tier 3' }).props.onPress(); });
   const output = JSON.stringify(tree.toJSON());
   expect(output).toContain('You’re now Tier 3');
-  expect(output).toContain('Your address check had already come through, so your new limits apply right away.');
+  expect(output).toContain('Your details are confirmed. Your new limits apply now.');
   expect(output.match(/₦5000000/g)?.length).toBeGreaterThanOrEqual(4);
   act(() => tree.unmount());
 });

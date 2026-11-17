@@ -17,6 +17,7 @@ import { notify } from '@/components/design/Notify';
 import { walletCapabilityMessage } from '@/lib/services/wallet';
 import { savingsService } from '@/lib/services/savings';
 import { loansService } from '@/lib/services/loans';
+import { DetailsReviewPrompt } from '@/components/kyc/DetailsReviewPrompt';
 
 /**
  * Home, design A from the Live UI review: Sora for headings and figures, DM Sans
@@ -221,6 +222,8 @@ const Home = () => {
 
   return (
     <Screen pad={false} tab onRefresh={onRefresh} refreshing={refreshing}>
+      {/* Only a refusal of the details sign-up sent shows on its own (17 Nov 2026). */}
+      <DetailsReviewPrompt />
       {/* header */}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 20, paddingTop: 8 }}>
         <Pressable accessibilityRole="button" accessibilityLabel="Your profile" onPress={() => router.push('/me')}

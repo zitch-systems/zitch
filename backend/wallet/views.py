@@ -933,7 +933,9 @@ def upgrade_wema_identity(user, data, *, checked=None):
         return fail("Bank account upgrade is not available right now")
     wallet = get_or_create_wallet(user)
     if not wallet.account_number:
-        return fail("Set up your partner-bank account first", status=400)
+        # Sign-up waits for this code and sends again once the account number is in
+        # (the bank's face route can verify the BVN a moment before it is).
+        return fail("Set up your partner-bank account first", status=400, code="account_not_ready")
     bvn, nin = data.get("bvn") or "", data.get("nin") or ""
     if not isinstance(bvn, str) or not isinstance(nin, str):
         return fail("Enter your 11-digit BVN and NIN", code="identity_required")
@@ -954,10 +956,16 @@ def upgrade_wema_identity(user, data, *, checked=None):
     if _identity_owned_by_another_user(user, WemaProvisioningAttempt.NIN, nin):
         return fail("This NIN is already linked to another Zitch account", status=409)
 
-    # Sign-up sends the Tier 2 details with the rest of the identity step. Tier 2
-    # applies as soon as the bank confirms it, at once or on a later read-back
-    # (confirm_wema_tier2): nothing holds a sign-up on Tier 1 any more.
+    # Zitch's own limiter (17 Nov 2026): sign-up sends the Tier 2 details in the
+    # background, and the customer stays on Tier 1 limits until they tap Tier 2
+    # (kyc_claim_tier), however soon the bank confirms. An upgrade the customer
+    # submits from the Tier 2 page is that tap, so it applies at once; it never
+    # releases Tier 3, which waits for its own tap.
     at_signup = data.get("at_signup") is True
+    cap = 1 if (at_signup and user.tier < 2) else max(user.tier_cap, 2)
+    if user.tier_cap != cap:
+        User.objects.filter(pk=user.pk).update(tier_cap=cap)
+        user.tier_cap = cap
     res = wema_provider.upgrade_tier2(wallet.account_number, bvn=bvn, nin=nin,
                                      live_image=photo.bank_base64())
     if res.get("pending"):
@@ -1016,8 +1024,9 @@ def _keep_signup_marker(user):
 
 
 def _signup_tier2_sent(user, state):
-    """Sign-up's answer: the details went to the bank. ``tier`` is the account's
-    tier now: 2 when the bank confirmed at once and Tier 1 is finished."""
+    """Sign-up's answer: the details went to the bank. The customer stays on
+    Tier 1 limits whatever the bank said, until they tap Tier 2. The app shows
+    nothing about it during sign-up."""
     return JsonResponse({"success": True, "sent": True, "tier2_state": state, "tier": user.tier},
                         status=200)
 
@@ -1125,11 +1134,10 @@ def confirm_wema_tier2(user, *, bvn="", nin="", ref="wema_tier2", account_number
                 return fail("Verify your BVN or NIN (Tier 1) before the Tier 2 face check.",
                             status=409, code="tier1_required")
             user.face_verified = True
-            # The bank confirmed it: nothing is left to review, and Tier 2 applies
-            # now, with no tap on Verify (lifts a hold left from an older sign-up).
+            # The bank confirmed it: nothing is left to review. The tier itself
+            # follows tier_cap: a sign-up check waits for the customer's tap.
             user.tier2_review, user.tier2_review_at = "", None
-            user.tier_cap = 3
-            fields += ["tier2_review", "tier2_review_at", "tier_cap"]
+            fields += ["tier2_review", "tier2_review_at"]
             user.recompute_tier()
             user.save(update_fields=fields)
             for kind, (identity_hash, last4) in identities.items():

@@ -98,7 +98,8 @@ const Tier2 = () => {
   const notConfirmed = params.recheck === '1' && !!status && status.tier2_state === 'not_confirmed'
     && (status.tier2_review === 'rejected' || status.tier2_review === 'pending');
 
-  // The bank already confirmed the details sent at sign-up: moving up needs no new check.
+  // The bank already confirmed the details sent at sign-up: moving up needs no new
+  // check, only this tap (Zitch's own limiter).
   const claim = async () => {
     if (!begin()) return;
     try {
@@ -132,12 +133,16 @@ const Tier2 = () => {
     finally { end(); }
   };
 
+  // A check the bank is still running: the tap reads it back, and applies it if confirmed.
   const checkAgain = async () => {
     if (!begin()) return;
     try {
-      const fresh = await load();
-      if (live() && fresh?.face_verified && Number(fresh.tier) >= 2) finished();
-    } finally { end(); }
+      const res = await kycService.claimTier(2);
+      if (!live()) return;
+      await load();
+      if (res.success && res.state === 'upgraded') finished();
+    } catch { if (live()) notify('Error', 'Check your connection and try again.'); }
+    finally { end(); }
   };
 
   if (!status) {
@@ -210,8 +215,8 @@ const Tier2 = () => {
             body="The NIN and face check from your sign-up are confirmed. Move up now and your new limits apply right away."
             action={<Btn label={busy ? 'Moving up…' : 'Move to Tier 2'} disabled={busy} onPress={() => void claim()} />} />
         ) : pending ? (
-          <Notice title="Your bank is checking your face"
-            body="You don’t need to do anything. We’ll update your tier as soon as your bank confirms."
+          <Notice title="Your bank is still checking your details"
+            body="You don’t need to send anything. Check again in a little while."
             action={<OutlineBtn label={busy ? 'Checking…' : 'Check again'} icon="scan" disabled={busy} onPress={() => void checkAgain()} />} />
         ) : unavailable ? (
           <Notice title="Tier 2 is temporarily unavailable"
@@ -227,7 +232,7 @@ const Tier2 = () => {
                 borderRadius: 16, backgroundColor: 'rgba(220,38,38,0.07)', borderWidth: 1, borderColor: 'rgba(220,38,38,0.25)' }}>
                 <View style={{ marginTop: 1 }}><ZIcon name="help" size={17} color={c.red} stroke={2.2} /></View>
                 <Text style={{ flex: 1, fontSize: 13, fontFamily: font.semibold, color: c.red, lineHeight: 19 }}>
-                  We couldn’t confirm the NIN or face check from your sign-up. Check your NIN and take the face check again.
+                  Your details need review. Your bank couldn’t confirm your NIN or face check. Check your NIN and take the face check again.
                 </Text>
               </View>
             ) : null}

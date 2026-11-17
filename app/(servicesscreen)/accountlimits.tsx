@@ -3,7 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useFocusEffect } from 'expo-router';
-import { Screen, Header, Card, money, NText, Btn, Sheet } from '@/components/design/ui';
+import { Screen, Header, Card, money, NText, Btn } from '@/components/design/ui';
 import { Loading } from '@/components/design/Loading';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
@@ -13,7 +13,7 @@ import { apiJson } from '@/lib/api';
 import { tierLadder, type LadderTier } from '@/lib/tierLadder';
 import { TierBadge, TierDetails, TierPill } from '@/components/design/TierRow';
 import { isFundingAccountReady, walletCapabilities, walletCapabilityMessage, walletService, type FundingAccount } from '@/lib/services/wallet';
-import { kycService } from '@/lib/services/kyc';
+import { useTierClaim } from '@/components/kyc/TierClaim';
 
 type Status = {
   tier: number;
@@ -35,12 +35,6 @@ type Status = {
   tier_ladder?: LadderTier[];
 };
 
-/** The amber of the Tier 3 "in progress" pill and sheet (design, Nov 2026). */
-const AMBER = '#B45309';
-
-type Tier3Sheet = null | { kind: 'progress' | 'done' };
-type Tier2Sheet = null | { kind: 'progress' | 'done' };
-
 const amountLabel = (value: unknown) => (typeof value === 'string' || typeof value === 'number')
   && String(value).trim() !== '' && Number.isFinite(Number(value)) && Number(value) >= 0
   ? money(Number(value)) : 'Not confirmed';
@@ -55,10 +49,6 @@ const AccountLimits = () => {
   const [loadError, setLoadError] = useState('');
   const [loading, setLoading] = useState(true);
   const loadGeneration = useRef(0);
-  const [tier3, setTier3] = useState<Tier3Sheet>(null);
-  const [tier3Busy, setTier3Busy] = useState(false);
-  const [tier2, setTier2] = useState<Tier2Sheet>(null);
-  const [tier2Busy, setTier2Busy] = useState(false);
 
   const loadAccount = useCallback(async () => {
     const generation = ++loadGeneration.current;
@@ -111,67 +101,16 @@ const AccountLimits = () => {
     } catch { notify('Could not copy', 'Please try again.'); }
   };
 
-  // Tier 2: sign-up already sent the NIN and face check to the bank. Verify
-  // Tier 2 asks the server where that stands (it only reads the bank back):
-  // confirmed applies at once, still checking says Processing, and refused (or
-  // never sent) opens the page to enter the NIN and face check again.
-  const verifyTier2 = async () => {
-    if (tier2Busy) return;
-    setTier2Busy(true);
-    try {
-      const r = await kycService.claimTier(2);
-      if (r?.success && r.state === 'upgraded') {
-        setStatus((s) => (s ? { ...s, ...(r as Partial<Status>) } : s));
-        setTier2({ kind: 'done' });
-      } else if (r?.success && r.state === 'processing') {
-        setStatus((s) => (s ? { ...s, tier2_state: 'processing' } : s));
-        setTier2({ kind: 'progress' });
-      } else if (r?.success && r.state === 'not_confirmed') {
-        router.push('/tier2?from=limits&recheck=1');
-      } else if (r?.success && r.state === 'needs_tier1') {
-        notify('Finish Tier 1 first', r?.message || 'Verify your phone number and email address.');
-      } else {
-        notify('Could not check', r?.message || 'Please try again.');
-      }
-    } catch {
-      notify('Could not check', 'Check your connection and try again.');
-    } finally {
-      setTier2Busy(false);
-    }
-  };
-
-  // Tier 3 is the address sent to the bank as its own request at sign-up. The
-  // server never raises Tier 3 from the bank's answer (it cannot tie it to this
-  // address), so the answer here is: done, Processing, or enter the address
-  // again when the bank refused it. Nothing is assumed.
-  const verifyTier3 = async () => {
-    if (tier3Busy) return;
-    setTier3Busy(true);
-    try {
-      const r = await kycService.claimTier(3);
-      if (r?.success && r.state === 'upgraded') {
-        setStatus((s) => (s ? { ...s, ...(r as Partial<Status>) } : s));
-        setTier3({ kind: 'done' });
-      } else if (r?.success && r.state === 'processing') {
-        setTier3({ kind: 'progress' });
-      } else if (r?.success && r.state === 'not_confirmed') {
-        router.push('/tier3?from=limits');
-      } else if (r?.success && r.state === 'needs_tier2') {
-        notify('Verify Tier 2 first', r?.message || 'Tier 3 opens after Tier 2.');
-      } else {
-        notify('Could not check', r?.message || 'Please try again.');
-      }
-    } catch {
-      notify('Could not check', 'Check your connection and try again.');
-    } finally {
-      setTier3Busy(false);
-    }
-  };
-
   const tint = theme === 'dark' ? 'rgba(234,251,247,0.07)' : 'rgba(6,110,102,0.06)';
   const ladder = tierLadder(status?.tier_ladder);
-  const tier3Limits = ladder.find((t) => t.tier === 3);
-  const tier2Limits = ladder.find((t) => t.tier === 2);
+  // Zitch's own limiter (17 Nov 2026): what sign-up sent the bank is not shown
+  // here until the customer taps the tier; the tap applies it, says it is still
+  // being checked, or opens the "Details need review" pop-up.
+  const { claim, busy, sheets } = useTierClaim({
+    ladder, address: status?.address,
+    onChanged: (r) => { if (r.state === 'upgraded') setStatus((s) => (s ? { ...s, ...(r as Partial<Status>) } : s)); },
+    onClosed: () => { void loadAccount(); },
+  });
 
   const linkedId = status
     ? [status.bvn_verified && 'BVN', status.nin_verified && 'NIN'].filter(Boolean).join(' & ') || 'Not linked'
@@ -306,9 +245,7 @@ const AccountLimits = () => {
           const last = i === ladder.length - 1;
           const isNext = t.tier === tier + 1;
           const locked = !done && t.tier > tier + 1;
-          const pending = !done && ((t.tier === 3 && (status.address_verification_pending || status.tier3_state === 'processing'))
-            || (t.tier === 2 && status.tier2_state === 'processing'));
-          const busyHere = (t.tier === 3 && tier3Busy) || (t.tier === 2 && tier2Busy);
+          const busyHere = busy === t.tier;
           return (
             <View key={t.tier} style={{ flexDirection: 'row', gap: 14 }}>
               <View style={{ alignItems: 'center', width: 36 }}>
@@ -317,25 +254,14 @@ const AccountLimits = () => {
               </View>
               <View style={{ flex: 1, paddingBottom: last ? 0 : 20 }}>
                 <TierDetails t={t} done={done} pill={done ? <TierPill label={isCur ? 'Your tier' : 'Verified'} tone={isCur ? 'current' : 'verified'} /> : null} />
-                {done ? null : pending ? (
-                  // Already with the bank: a status, not a button. Tapping it asks again.
-                  <Pressable
-                    onPress={() => (t.tier === 2 ? void verifyTier2() : void verifyTier3())}
-                    disabled={busyHere}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Tier ${t.tier} processing. Check again`}
-                    style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 12, minHeight: 40, borderRadius: 999, backgroundColor: 'rgba(217,119,6,0.10)' }}>
-                    <ZIcon name="history" size={15} color={AMBER} stroke={2.2} />
-                    <Text style={{ fontSize: 13, fontFamily: font.bold, color: AMBER }}>{busyHere ? 'Checking…' : 'Processing'}</Text>
-                  </Pressable>
-                ) : locked ? (
+                {done ? null : locked ? (
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 12, minHeight: 40, borderRadius: 999, backgroundColor: c.surface2 }}>
                     <ZIcon name="lock" size={15} color={c.ink3} />
                     <Text style={{ fontSize: 13, fontFamily: font.bold, color: c.ink3 }}>Unlocks after Tier {t.tier - 1}</Text>
                   </View>
                 ) : (
                   <Pressable
-                    onPress={() => (t.tier === 3 ? void verifyTier3() : t.tier === 2 ? void verifyTier2() : router.push('/kyc'))}
+                    onPress={() => (t.tier === 2 || t.tier === 3 ? void claim(t.tier) : router.push('/kyc'))}
                     disabled={busyHere}
                     accessibilityRole="button"
                     accessibilityLabel={`Verify Tier ${t.tier}`}
@@ -351,91 +277,7 @@ const AccountLimits = () => {
         })}
       </Card>
 
-      <Sheet open={tier2 !== null} onClose={() => setTier2(null)}>
-        <View style={{ alignItems: 'center', paddingTop: 4 }}>
-          <View style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: tier2?.kind === 'done' ? 'rgba(0,160,26,0.12)' : 'rgba(217,119,6,0.10)', alignItems: 'center', justifyContent: 'center' }}>
-            {tier2?.kind === 'progress' ? <ZIcon name="history" size={34} color={AMBER} stroke={1.8} /> : <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: '#00A01A', alignItems: 'center', justifyContent: 'center' }}>
-              <ZIcon name="check" size={24} color="#fff" stroke={3} />
-            </View>}
-          </View>
-          <Text style={{ fontSize: 21, fontFamily: font.extrabold, color: c.ink1, marginTop: 18, textAlign: 'center' }}>
-            {tier2?.kind === 'done' ? 'You\u2019re now Tier 2' : 'Tier 2 is processing'}
-          </Text>
-          <Text style={{ fontSize: 14, fontFamily: font.regular, color: c.ink3, marginTop: 8, lineHeight: 21, textAlign: 'center', paddingHorizontal: 4 }}>
-            {tier2?.kind === 'done'
-              ? 'Your NIN and face check from sign-up were already confirmed, so your new limits apply right away.'
-              : 'Your bank is still checking the NIN and face check from your sign-up. Tap Processing on Account limits to check again. There\u2019s nothing else to do.'}
-          </Text>
-          {tier2?.kind === 'done' && tier2Limits ? (
-            <View style={{ alignSelf: 'stretch', flexDirection: 'row', marginTop: 18, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16, backgroundColor: tint }}>
-              {[['Per transfer', tier2Limits.per_transfer], ['Daily', tier2Limits.daily_transfer]].map(([label, value]) => (
-                <View key={label} style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 11.5, fontFamily: font.semibold, color: c.ink3, letterSpacing: 0.2 }}>{label}</Text>
-                  <NText style={{ fontSize: 16, marginTop: 2, fontFamily: font.extrabold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{amountLabel(value)}</NText>
-                </View>
-              ))}
-            </View>
-          ) : null}
-          {tier2?.kind === 'progress' ? (
-            <View style={{ alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 18, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16, backgroundColor: c.surface2 }}>
-              <ZIcon name="scan" size={18} color={c.ink2} />
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 13.5, fontFamily: font.bold, color: c.ink1 }}>NIN and face check</Text>
-                <Text style={{ fontSize: 11.5, marginTop: 2, fontFamily: font.semibold, color: c.ink3 }}>From your sign-up</Text>
-              </View>
-              <View style={{ paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999, backgroundColor: 'rgba(217,119,6,0.10)' }}>
-                <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: AMBER }}>Processing</Text>
-              </View>
-            </View>
-          ) : null}
-          <View style={{ alignSelf: 'stretch', marginTop: 20 }}>
-            <Btn label={tier2?.kind === 'done' ? 'Done' : 'OK, got it'} onPress={() => { setTier2(null); void loadAccount(); }} />
-          </View>
-        </View>
-      </Sheet>
-
-      <Sheet open={tier3 !== null} onClose={() => setTier3(null)}>
-        <View style={{ alignItems: 'center', paddingTop: 4 }}>
-          <View style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: tier3?.kind === 'done' ? 'rgba(0,160,26,0.12)' : 'rgba(217,119,6,0.10)', alignItems: 'center', justifyContent: 'center' }}>
-            {tier3?.kind === 'progress' ? <ZIcon name="history" size={34} color={AMBER} stroke={1.8} /> : <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: '#00A01A', alignItems: 'center', justifyContent: 'center' }}>
-              <ZIcon name="check" size={24} color="#fff" stroke={3} />
-            </View>}
-          </View>
-          <Text style={{ fontSize: 21, fontFamily: font.extrabold, color: c.ink1, marginTop: 18, textAlign: 'center' }}>
-            {tier3?.kind === 'done' ? 'You\u2019re now Tier 3' : 'Tier 3 is processing'}
-          </Text>
-          <Text style={{ fontSize: 14, fontFamily: font.regular, color: c.ink3, marginTop: 8, lineHeight: 21, textAlign: 'center', paddingHorizontal: 4 }}>
-            {tier3?.kind === 'done'
-              ? 'Your address check had already come through, so your new limits apply right away.'
-              : 'Your address is with the bank. Tier 3 opens once the bank\u2019s check can be confirmed. You don\u2019t need to send it again.'}
-          </Text>
-          {tier3?.kind === 'done' && tier3Limits ? (
-            <View style={{ alignSelf: 'stretch', flexDirection: 'row', marginTop: 18, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16, backgroundColor: tint }}>
-              {[['Per transfer', tier3Limits.per_transfer], ['Daily', tier3Limits.daily_transfer]].map(([label, value]) => (
-                <View key={label} style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 11.5, fontFamily: font.semibold, color: c.ink3, letterSpacing: 0.2 }}>{label}</Text>
-                  <NText style={{ fontSize: 16, marginTop: 2, fontFamily: font.extrabold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{amountLabel(value)}</NText>
-                </View>
-              ))}
-            </View>
-          ) : null}
-          {status.address ? (
-            <View style={{ alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: tier3?.kind === 'done' && tier3Limits ? 10 : 18, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16, backgroundColor: c.surface2 }}>
-              <ZIcon name="home" size={18} color={c.ink2} />
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 11.5, fontFamily: font.semibold, color: c.ink3, letterSpacing: 0.2 }}>Address</Text>
-                <Text style={{ fontSize: 13.5, marginTop: 2, fontFamily: font.bold, color: c.ink1 }}>{status.address}</Text>
-              </View>
-              <View style={{ paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999, backgroundColor: tier3?.kind === 'done' ? 'rgba(0,160,26,0.10)' : 'rgba(217,119,6,0.10)' }}>
-                <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: tier3?.kind === 'done' ? '#15803D' : AMBER }}>{tier3?.kind === 'done' ? 'Verified' : 'Processing'}</Text>
-              </View>
-            </View>
-          ) : null}
-          <View style={{ alignSelf: 'stretch', marginTop: 20 }}>
-            <Btn label={tier3?.kind === 'done' ? 'Done' : 'OK, got it'} onPress={() => { setTier3(null); void loadAccount(); }} />
-          </View>
-        </View>
-      </Sheet>
+      {sheets}
       </>}
     </Screen>
   );

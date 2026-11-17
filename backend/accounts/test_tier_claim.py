@@ -1,10 +1,15 @@
-"""Sign-up sends the Tier 2 details to the bank; Tier 2 applies once it confirms.
+"""Sign-up sends the Tier 2 details to the bank; a tap on Tier 2 applies them later.
+
+Zitch's own limiter (17 Nov 2026): the details go in the background with nothing
+shown, and the account stays on Tier 1 limits until the customer taps Tier 2,
+however soon the bank confirms. Tier 3 waits for its own tap the same way. A
+check the bank refused answers "needs_review" on the tap (the app's pop-up).
 
 Review, Nov 2026: the customer gives BVN, NIN, a face check and the address at
-sign-up and everything goes to the bank at once. A check the bank confirms
-applies Tier 2 at once, with no tap on Verify (17 Nov: no more sign-up hold);
-one it is still running shows Processing on Verify Tier 2 and is read back; one
-it refused (or that was never sent) asks for the NIN and face check again.
+sign-up and everything goes to the bank at once, but they stay on Tier 1 until
+they tap Verify Tier 2 on Account limits. Then: a check the bank already
+confirmed upgrades them at once, one it is still running shows Processing, and
+one it refused (or that was never sent) asks for the NIN and face check again.
 """
 import json
 import time
@@ -54,50 +59,24 @@ class TierClaimTests(TestCase):
         with patch("utility.wema.get_kyc_status", return_value=bank_state):
             return self._post("/api/kyc/claim/", {"tier": tier})
 
-    def test_a_check_the_bank_confirmed_at_sign_up_applies_tier_2_at_once(self):
+    def test_a_check_the_bank_confirmed_at_sign_up_waits_for_verify_then_applies_at_once(self):
         r = self._signup_send({"success": True, "raw": {"message": "ok"}}, BANK_TIER_2)
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["tier2_state"], "confirmed")
-        self.assertEqual(r.json()["tier"], 2, "no tap on Verify Tier 2")
         self.user.refresh_from_db()
         self.assertTrue(self.user.face_verified)
         self.assertTrue(self.user.nin_verified)
-        self.assertEqual(self.user.tier, 2)
+        self.assertEqual(self.user.tier, 1, "still Tier 1 until the customer asks")
         with patch("utility.wema.get_kyc_status", return_value=BANK_TIER_2):
             status = self._post("/api/kyc/status/").json()
-        self.assertEqual(status["tier"], 2)
-        self.assertEqual(status["tier2_state"], "done")
-        # Verify Tier 2, if tapped anyway, just says it is done.
-        self.assertEqual(self._claim(bank_state=BANK_TIER_2).json()["state"], "upgraded")
+        self.assertEqual(status["tier"], 1)
+        self.assertEqual(status["tier2_state"], "ready")
 
-    def test_a_check_confirmed_before_tier_1_is_finished_applies_once_it_is(self):
-        User.objects.filter(pk=self.user.pk).update(email_verified=False)
-        r = self._signup_send({"success": True, "raw": {"message": "ok"}}, BANK_TIER_2)
-        self.assertEqual(r.json()["tier2_state"], "confirmed")
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.face_verified)
-        self.assertLess(self.user.tier, 2, "Tier 1 is unfinished: never report Tier 2")
-        self.assertEqual(self._claim(bank_state=BANK_TIER_2).json()["state"], "needs_tier1")
-        # The email is verified: the tier is recomputed with no hold left.
-        self.user.email_verified = True
-        self.user.recompute_tier()
-        self.assertEqual(self.user.tier, 2)
-
-    def test_a_sign_up_check_the_bank_confirms_later_applies_without_verify(self):
-        self._signup_send({"success": False, "pending": True}, BANK_TIER_1)
-        # The app's status call reads the bank back in the background.
-        with patch("utility.wema.get_kyc_status", return_value=BANK_TIER_2):
-            status = self._post("/api/kyc/status/").json()
-        self.assertEqual(status["tier"], 2)
-        self.assertEqual(status["tier2_state"], "done")
-
-    def test_a_customer_held_by_an_older_sign_up_is_lifted_when_the_bank_confirms(self):
-        User.objects.filter(pk=self.user.pk).update(tier_cap=1, tier2_review="pending",
-                                                    tier2_review_at=timezone.now())
         r = self._claim(bank_state=BANK_TIER_2)
         self.assertEqual(r.json()["state"], "upgraded")
+        self.assertEqual(r.json()["tier"], 2)
         self.user.refresh_from_db()
-        self.assertEqual((self.user.tier, self.user.tier_cap), (2, 3))
+        self.assertEqual(self.user.tier, 2)
 
     def test_a_check_still_with_the_bank_is_processing_until_the_bank_confirms_it(self):
         r = self._signup_send({"success": False, "pending": True}, BANK_TIER_1)
@@ -174,9 +153,19 @@ class TierClaimTests(TestCase):
         self.assertEqual(r.status_code, 200, "sign-up carries on; the customer is still on Tier 1")
         self.assertEqual(r.json()["tier2_state"], "rejected")
         r = self._claim()
-        self.assertEqual(r.json()["state"], "not_confirmed")
+        self.assertEqual(r.json()["state"], "needs_review", "the app shows Details need review")
         self.user.refresh_from_db()
         self.assertEqual(self.user.tier, 1)
+        # A refusal is the one thing that shows on its own: the status lists it for the pop-up.
+        status = self._post("/api/kyc/status/").json()
+        self.assertEqual([row["tier"] for row in status["details_review"]], [2])
+        self.assertTrue(status["details_review"][0]["at"])
+
+    def test_nothing_is_listed_for_review_while_the_bank_has_refused_nothing(self):
+        self._signup_send({"success": False, "pending": True}, BANK_TIER_1)
+        with patch("utility.wema.get_kyc_status", return_value=BANK_TIER_1):
+            status = self._post("/api/kyc/status/").json()
+        self.assertEqual(status["details_review"], [])
 
     def test_a_check_with_no_answer_for_two_days_is_offered_again(self):
         User.objects.filter(pk=self.user.pk).update(
@@ -194,7 +183,16 @@ class TierClaimTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.user.refresh_from_db()
         self.assertEqual(self.user.tier, 2)
-        self.assertEqual(self.user.tier_cap, 3)
+        self.assertEqual(self.user.tier_cap, 2, "Tier 3 still waits for its own tap")
+
+    def test_sign_up_before_the_account_number_is_in_gets_a_code_to_wait_on(self):
+        Wallet.objects.filter(user=self.user).update(account_number="")
+        with patch("utility.wema.upgrade_tier2") as sent, fx.detector():
+            r = self._post("/api/wallet/wema/upgrade-tier2/", {
+                "bvn": BVN, "nin": NIN, "live_image": fx.selfie_b64(), "at_signup": True})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["code"], "account_not_ready")
+        sent.assert_not_called()
 
     ADDRESS = {"house_number": "12", "street": "Allen Avenue", "state": "Lagos", "lga": "Ikeja"}
 
@@ -228,7 +226,7 @@ class TierClaimTests(TestCase):
     def test_an_address_the_bank_refused_can_be_entered_and_sent_again(self):
         r, _ = self._send_tier3({"success": False, "message": "Address not verified"})
         self.assertEqual(r.json()["tier3_state"], "not_confirmed")
-        self.assertEqual(self._claim(tier=3).json()["state"], "not_confirmed")
+        self.assertEqual(self._claim(tier=3).json()["state"], "needs_review")
         r, sent = self._send_tier3({"success": False, "pending": True})
         sent.assert_called_once()
         self.assertEqual(r.json()["tier3_state"], "processing")
@@ -262,6 +260,36 @@ class TierClaimTests(TestCase):
         self.assertEqual(r.json()["state"], "needs_tier2")
         self.user.refresh_from_db()
         self.assertEqual(self.user.tier, 1)
+
+    def test_an_address_the_bank_verified_waits_for_the_tier_3_tap(self):
+        """Wema's webhook verifies the address; the account moves only on the tap."""
+        from wallet.wema_callbacks import settle_address_verification
+
+        User.objects.filter(pk=self.user.pk).update(face_verified=True, nin_verified=True, tier=2, tier_cap=3)
+        self._send_tier3({"success": False, "pending": True})
+        with patch("utility.wema.get_kyc_status", return_value={"success": True, "tier": "Tier 3"}):
+            self.assertEqual(settle_address_verification("0123456789", "verified"), "verified")
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.address_verified)
+        self.assertEqual(self.user.tier, 2, "held until the customer taps Tier 3")
+        with patch("utility.wema.get_kyc_status", return_value=BANK_TIER_2):
+            status = self._post("/api/kyc/status/").json()
+        self.assertEqual(status["tier"], 2)
+        r = self._claim(tier=3)
+        self.assertEqual(r.json()["state"], "upgraded")
+        self.assertEqual(r.json()["tier"], 3)
+
+    def test_a_tier_3_tap_finishes_a_webhook_passed_address_once_the_bank_shows_it(self):
+        from wallet.wema_callbacks import settle_address_verification
+
+        User.objects.filter(pk=self.user.pk).update(face_verified=True, nin_verified=True, tier=2, tier_cap=2)
+        self._send_tier3({"success": False, "pending": True})
+        with patch("utility.wema.get_kyc_status", return_value=BANK_TIER_2):
+            self.assertEqual(settle_address_verification("0123456789", "verified"), "unconfirmed")
+        self.assertEqual(self._claim(tier=3, bank_state=BANK_TIER_2).json()["state"], "processing")
+        cache.clear()   # the read-back throttle
+        r = self._claim(tier=3, bank_state={"success": True, "tier": "Tier 3"})
+        self.assertEqual(r.json()["state"], "upgraded")
 
     def test_tier_3_with_nothing_sent_waits_for_tier_2(self):
         self.assertEqual(self._claim(tier=3).json()["state"], "needs_tier2")

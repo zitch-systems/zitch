@@ -61,7 +61,7 @@ class AddressCallbackTests(TestCase):
         self.user.refresh_from_db()
         return r, read, reply
 
-    def test_a_verified_address_lifts_the_customer_to_tier_3_and_answers_as_wema_asked(self):
+    def test_a_verified_address_is_recorded_and_answered_as_wema_asked_but_waits_for_the_tap(self):
         r, read, _reply = self._post(wema_body())
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json(), ADDRESS_CB_RESPONSE)
@@ -69,7 +69,8 @@ class AddressCallbackTests(TestCase):
         self.assertTrue(self.user.address_verified)
         self.assertFalse(self.user.address_verification_pending)
         self.assertEqual(self.user.tier3_review, "")
-        self.assertEqual(self.user.tier, 3)
+        # Zitch's own limiter: Tier 3 applies when the customer taps it.
+        self.assertEqual((self.user.tier, self.user.tier_cap), (2, 2))
         self.assertEqual(Wallet.objects.get(user=self.user).bank_tier, 3)
 
     def test_it_also_works_when_wema_sends_it_to_the_account_opening_url(self):
@@ -132,15 +133,19 @@ class AddressCallbackTests(TestCase):
         read.assert_not_called()
         self.assertFalse(self.user.address_verified)
 
-    def test_the_customer_is_told_in_whatsapp(self):
+    def test_nothing_is_sent_to_the_customer_either_way(self):
         from whatsapp.models import WhatsAppLink
 
         WhatsAppLink.objects.create(user=self.user, wa_msisdn="2348030001111",
                                     status=WhatsAppLink.ACTIVE)
         _r, _read, reply = self._post(wema_body())
-        reply.assert_called_once()
-        self.assertIn("Address verified", reply.call_args.args[1])
-        self.assertIn("upgraded your account", reply.call_args.args[1])
+        reply.assert_not_called()
+        User.objects.filter(pk=self.user.pk).update(
+            address_verified=False, address_verification_pending=True, tier3_review="pending")
+        _r, _read, reply = self._post(wema_body(
+            title="Address verification failed",
+            message="Address verification failed for customer with details below"))
+        reply.assert_not_called()
 
 
 @override_settings(WEMA=WEMA_CB, PAYMENT_PROVIDER="wema")
@@ -177,7 +182,8 @@ class AddressCallbackSentOnceTests(TestCase):
         read, _reply = self._reconcile_refresh(TIER_3)
         read.assert_called_once_with(ACCOUNT)
         self.assertTrue(self.user.address_verified)
-        self.assertEqual((self.user.tier, self.user.tier3_review), (3, ""))
+        self.assertEqual(self.user.tier3_review, "")
+        self.assertEqual(self.user.tier, 2, "the customer's tap applies it")
 
     def test_the_status_read_back_is_throttled_per_customer(self):
         self._post(wema_body(), bank=TIER_2)
@@ -203,22 +209,11 @@ class AddressCallbackSentOnceTests(TestCase):
         self.user.refresh_from_db()
         self.assertEqual(tier3_claim_state(self.user), "processing")
 
-    def test_tier_3_from_the_bank_lifts_a_sign_up_hold(self):
-        User.objects.filter(pk=self.user.pk).update(tier_cap=2)
+    def test_a_tier_2_hold_stays_when_the_address_passes(self):
+        User.objects.filter(pk=self.user.pk).update(tier_cap=1, tier=1)
         self._post(wema_body())
-        self.assertEqual((self.user.tier, self.user.tier_cap), (3, 3))
-
-    def test_an_address_that_passes_before_tier_2_does_not_claim_an_upgrade(self):
-        from whatsapp.models import WhatsAppLink
-
-        User.objects.filter(pk=self.user.pk).update(face_verified=False, tier=1)
-        WhatsAppLink.objects.create(user=self.user, wa_msisdn="2348030001111",
-                                    status=WhatsAppLink.ACTIVE)
-        _r, _read, reply = self._post(wema_body())
         self.assertTrue(self.user.address_verified)
-        self.assertEqual(self.user.tier, 1)
-        self.assertNotIn("upgraded", reply.call_args.args[1])
-        self.assertIn("earlier steps", reply.call_args.args[1])
+        self.assertEqual((self.user.tier, self.user.tier_cap), (1, 1))
 
 
 class AddressWebhookWatchTests(TestCase):
@@ -302,24 +297,3 @@ class AddressWebhookWatchTests(TestCase):
         self.assertNotEqual(first.call_args.kwargs["dedupe"], added.call_args.kwargs["dedupe"])
         self.assertEqual(added.call_args.kwargs["no_webhook"], 2)
 
-
-class LiftSignupHoldMigrationTests(TestCase):
-    def test_held_customers_get_the_tier_their_checks_earn_and_none_is_lowered(self):
-        import importlib
-
-        from django.apps import apps
-
-        lift = importlib.import_module("accounts.migrations.0039_lift_signup_tier_hold").lift_hold
-        held, _ = make_user("08030002222", "held@zitch.app", identity_verified=False)
-        User.objects.filter(pk=held.pk).update(
-            bvn_verified=True, face_verified=True, email_verified=True, phone_verified=True,
-            tier=1, tier_cap=1)
-        unfinished, _ = make_user("08030003333", "unfinished@zitch.app", identity_verified=False)
-        User.objects.filter(pk=unfinished.pk).update(
-            bvn_verified=True, face_verified=True, email_verified=False, phone_verified=True,
-            tier=0, tier_cap=1)
-        lift(apps, None)
-        held.refresh_from_db()
-        unfinished.refresh_from_db()
-        self.assertEqual((held.tier, held.tier_cap), (2, 3))
-        self.assertEqual((unfinished.tier, unfinished.tier_cap), (0, 3))
