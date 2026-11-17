@@ -140,6 +140,8 @@ const Settings = () => {
   const version = Constants.expoConfig?.version ?? '1.0.0';
 
   const security = [
+    // Verify me (17 Nov 2026): the email from sign-up, then BVN, NIN and the face check.
+    { icon: 'user', title: 'Identity verification', sub: 'Your email, BVN, NIN and face check', go: () => router.push('/kyc') },
     { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 6-digit PIN', go: () => router.push('/resetpin') },
     { icon: 'insurance', title: 'Security Center', sub: 'Protect your funds', go: () => router.push('/securitysetup') },
     { icon: 'chart', title: 'Account Limits', sub: 'Your tier and transaction limits', go: () => router.push('/accountlimits') },

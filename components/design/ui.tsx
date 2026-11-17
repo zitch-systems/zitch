@@ -368,6 +368,11 @@ export const Money = ({
 };
 
 // ---- Generic list item ----
+/** A row divider on the page itself: a shade stronger than on a card (light). */
+export const bareLine = (dark: boolean, line: string) => (dark ? line : '#D2E5E0');
+/** An icon tile on the page itself: white, lifted by a faint shadow. */
+export const BARE_TILE = { shadowColor: '#063731', shadowOpacity: 0.06, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 1 } as const;
+
 export const ZItem = ({
   icon,
   iconColor,
@@ -378,10 +383,15 @@ export const ZItem = ({
   right,
   onPress,
   last,
+  bare,
 }: {
   icon?: string;
   iconColor?: string;
   iconBg?: string;
+  /** The row sits straight on the page, not on a white card (Me, 17 Nov 2026):
+   *  the icon gets a white tile and the divider is a shade stronger, so the
+   *  rows still read apart on the mint. */
+  bare?: boolean;
   /** Custom glyph for the icon box (e.g. a brand mark ZIcon doesn't carry).
    *  Rendered in the same 44px box as `icon`, so a row using it stays on the
    *  same alignment grid as every other row in the group. */
@@ -398,7 +408,7 @@ export const ZItem = ({
   // colourful — unless the caller overrides, or the icon isn't mapped.
   const mapped = icon ? ICON_COLORS[icon] : undefined;
   const accent = iconColor || mapped || c.brand;
-  const accentBg = iconBg || (mapped ? iconTint(mapped, theme === 'dark') : c.surface3);
+  const accentBg = iconBg || (bare ? c.surface : mapped ? iconTint(mapped, theme === 'dark') : c.surface3);
   return (
     <Wrap
       onPress={onPress}
@@ -410,11 +420,11 @@ export const ZItem = ({
         gap: 12,
         paddingVertical: 11,
         borderBottomWidth: last ? 0 : 1,
-        borderBottomColor: c.line,
+        borderBottomColor: bare ? bareLine(theme === 'dark', c.line) : c.line,
       }}
     >
       {(icon || leading) && (
-        <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: accentBg, alignItems: 'center', justifyContent: 'center' }}>
+        <View style={[{ width: 38, height: 38, borderRadius: 11, backgroundColor: accentBg, alignItems: 'center', justifyContent: 'center' }, bare ? BARE_TILE : null]}>
           {leading ?? <ZIcon name={icon as string} size={18} color={accent} stroke={2.2} />}
         </View>
       )}

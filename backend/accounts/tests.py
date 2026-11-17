@@ -443,6 +443,8 @@ class CredentialSecurityTests(TestCase):
         deletes the real owner's tokens, so they cannot even get back in.
         """
         user, token = make_user("08030000003", "owner@zitch.test")
+        # Not yet verified: the only state in which the email can change at all.
+        User.objects.filter(pk=user.pk).update(email_verified=False)
         res, body = self.post("/api/update_info/", {
             "access_token": token, "email": "attacker@evil.test"})
         self.assertEqual(res.status_code, 403)
@@ -456,19 +458,50 @@ class CredentialSecurityTests(TestCase):
         self.assertEqual(res.status_code, 403)
         self.assertEqual(User.objects.get(pk=user.pk).phone, "08030000004")
 
-    def test_changing_email_with_the_password_clears_verification(self):
+    def test_changing_an_unverified_email_with_the_password(self):
         user, token = make_user("08030000005", "owner3@zitch.test")
         user.set_password("Passw0rd123!")
-        user.save(update_fields=["password"])
+        user.email_verified = False
+        user.save(update_fields=["password", "email_verified"])
         res, _ = self.post("/api/update_info/", {
             "access_token": token, "email": "new@zitch.test",
             "password": "Passw0rd123!"})
         self.assertEqual(res.status_code, 200)
         u = User.objects.get(pk=user.pk)
         self.assertEqual(u.email, "new@zitch.test")
-        # An address the account has never proven must not stay marked verified —
-        # the KYC ladder reads this flag.
+        # The new address is not proven until its code is entered.
         self.assertFalse(u.email_verified)
+
+    def test_a_verified_email_cannot_be_changed(self):
+        """Editable until verified, fixed after (review, 17 Nov 2026), even with
+        the password: receipts, alerts and password resets go to it."""
+        user, token = make_user("08030000007", "fixed@zitch.test")
+        user.set_password("Passw0rd123!")
+        user.save(update_fields=["password"])
+        self.assertTrue(User.objects.get(pk=user.pk).email_verified)
+        res, body = self.post("/api/update_info/", {
+            "access_token": token, "email": "other@zitch.test", "password": "Passw0rd123!"})
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(body.get("code"), "email_locked")
+        u = User.objects.get(pk=user.pk)
+        self.assertEqual(u.email, "fixed@zitch.test")
+        self.assertTrue(u.email_verified)
+        # The same address (any case) is not a change, and a name still updates.
+        res, _ = self.post("/api/update_info/", {
+            "access_token": token, "email": "FIXED@zitch.test", "first_name": "Renamed"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(User.objects.get(pk=user.pk).first_name, "Renamed")
+
+    def test_email_verify_start_will_not_move_a_verified_email(self):
+        user, token = make_user("08030000008", "kept@zitch.test")
+        res, body = self.post("/api/email/verify/start/", {
+            "access_token": token, "email": "elsewhere@zitch.test", "current_password": "x"})
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(body.get("code"), "email_locked")
+        self.assertEqual(User.objects.get(pk=user.pk).email, "kept@zitch.test")
+        res, body = self.post("/api/email/verify/start/", {"access_token": token})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body.get("message"), "Email already verified")
 
     def test_a_name_only_update_still_needs_no_reauth(self):
         user, token = make_user("08030000006", "owner4@zitch.test")

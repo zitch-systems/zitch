@@ -979,6 +979,12 @@ def _email_change_reauth(user, data):
                 status=403, code="reauth_required")
 
 
+# The customer can edit the email from sign-up until it is verified; once it is,
+# it is fixed (review, 17 Nov 2026). Receipts, alerts and password resets go to
+# it, so a verified inbox is never swapped for another from inside the app.
+EMAIL_LOCKED_MESSAGE = "Your email is verified, so it can't be changed."
+
+
 @api
 @ratelimit("update_info", limit=10, window=300)
 @require_user
@@ -1045,6 +1051,9 @@ def update_info(request):
                 # Keep the proven phone/username and recovery access intact.
                 return fail("To change your phone number, contact Zitch Support so we can verify the replacement safely.",
                             status=403, code="phone_change_unavailable")
+            if changing_email and user.email_verified:
+                # Fixed once verified (review, 17 Nov 2026).
+                return fail(EMAIL_LOCKED_MESSAGE, status=403, code="email_locked")
             if changing_email and User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
                 return fail("That email is already in use")
             if changing_email:
@@ -1333,9 +1342,14 @@ def email_verify_start(request):
         user = User.objects.select_for_update().get(pk=request.user_obj.pk)
         if not user.is_active:
             return fail("Your session has expired. Please sign in again.", status=401)
-        if user.email_verified:
-            return ok(success=True, message="Email already verified", **_kyc_state(user))
         supplied_email = request.data.get("email") or ""
+        if user.email_verified:
+            # A verified email is fixed (review, 17 Nov 2026): it can be edited
+            # until it is verified, never after.
+            if (isinstance(supplied_email, str) and supplied_email.strip()
+                    and supplied_email.strip().lower() != (user.email or "").strip().lower()):
+                return fail(EMAIL_LOCKED_MESSAGE, status=403, code="email_locked")
+            return ok(success=True, message="Email already verified", **_kyc_state(user))
         if not isinstance(supplied_email, str):
             return fail("Enter a valid email address")
         new_email = supplied_email.strip().lower()

@@ -194,7 +194,9 @@ it('refreshes an already verified BVN on the same profile without resetting veri
     expect(menu).toContain('BVN verification');
     expect(menu).toContain('NIN verification');
     expect(menu).toContain('Face verification');
-    expect(tree.root.findAllByType(Text).filter((node) => node.props.children === 'Verified')).toHaveLength(3);
+    // BVN, NIN, the face check, and the email card (verified, no address in this state).
+    expect(menu).toContain('Email address');
+    expect(tree.root.findAllByType(Text).filter((node) => node.props.children === 'Verified')).toHaveLength(4);
     expect(menu).not.toContain('12345678901');
   } finally {
     act(() => tree.unmount());
@@ -565,4 +567,54 @@ it('a refused face check must be taken again, but a wrong NIN keeps it', async (
   expect(JSON.stringify(tree.toJSON())).not.toContain('Face check passed');
   expect(tree.root.findByProps({ accessibilityLabel: 'Finish verification' }).props.disabled).toBe(true);
   await act(async () => tree.unmount());
+});
+
+describe('the email from sign-up (Verify me, 17 Nov 2026)', () => {
+  const emailCard = (tree: renderer.ReactTestRenderer) => tree.root.findAll((n) => typeof n.props.accessibilityLabel === 'string'
+    && n.props.accessibilityLabel.startsWith('Email address,') && typeof n.props.onPress === 'function')[0];
+
+  it('shows the sign-up email to verify, lets it be changed, and sends the code there', async () => {
+    mockParams.verify_identity = '';
+    mockApiJson.mockImplementation(async (path: string) => path === EP.kyc.status
+      ? { ...state, tier: 1, bvn_verified: true, email: 'ada@example.com', email_verified: false }
+      : { success: true, message: 'We sent a code to ada.new@example.com' });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Kyc />); });
+    expect(emailCard(tree).props.accessibilityLabel).toBe('Email address, ada@example.com · Tap to verify');
+    await act(async () => { emailCard(tree).props.onPress(); });
+    const field = tree.root.findByType(TextInput);
+    expect(field.props.value).toBe('ada@example.com');
+    expect(JSON.stringify(tree.toJSON())).toContain('Once it’s verified it can’t be changed');
+    await act(async () => { field.props.onChangeText('ada.new@example.com'); });
+    await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Send email code' }).props.onPress(); });
+    expect(mockApiJson).toHaveBeenCalledWith(EP.auth.emailVerifyStart, { email: 'ada.new@example.com' });
+    act(() => tree.unmount());
+  });
+
+  it('shows a verified email as done, and it cannot be opened to change', async () => {
+    mockParams.verify_identity = '';
+    mockApiJson.mockResolvedValue({ ...state, tier: 1, bvn_verified: true, email: 'ada@example.com', email_verified: true });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Kyc />); });
+    const card = emailCard(tree);
+    expect(card.props.accessibilityLabel).toBe('Email address, ada@example.com · Verified');
+    expect(card.props.disabled).toBe(true);
+    await act(async () => { card.props.onPress(); });
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Send email code' })).toHaveLength(0);
+    act(() => tree.unmount());
+  });
+
+  it('goes back to the menu when the server says the email is already verified and fixed', async () => {
+    mockParams.verify_identity = '';
+    mockApiJson.mockImplementation(async (path: string) => path === EP.kyc.status
+      ? { ...state, tier: 1, bvn_verified: true, email: 'ada@example.com', email_verified: false }
+      : { success: false, code: 'email_locked', message: "Your email is verified, so it can't be changed." });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Kyc />); });
+    await act(async () => { emailCard(tree).props.onPress(); });
+    await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Send email code' }).props.onPress(); });
+    expect(mockNotify).toHaveBeenCalledWith('Could not send code', "Your email is verified, so it can't be changed.");
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Send email code' })).toHaveLength(0);
+    act(() => tree.unmount());
+  });
 });
