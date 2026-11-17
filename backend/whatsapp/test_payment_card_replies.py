@@ -11,6 +11,7 @@
    nothing happened twice. A picture of payment details is the request.
 """
 from datetime import timedelta
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.test import TestCase, SimpleTestCase
@@ -137,3 +138,62 @@ class ScreenshotIsTheRequestTests(SimpleTestCase):
     def test_an_older_reply_without_the_line_is_unchanged(self):
         said, _instead, _scanned = self._interpret("A slip: GTBank 0123456789")
         self.assertEqual(said, "A slip: GTBank 0123456789")
+
+
+class EveryKindOfPaymentScreenshotTests(SimpleTestCase):
+    """Not only transfers: a screenshot can be airtime, data, an electricity
+    token or a TV subscription. Each becomes the message the customer would
+    have typed for it, and that message must reach the right product through
+    the same readers typed text uses."""
+
+    def test_airtime(self):
+        from .router import vas_text_intent
+
+        said, _ = media.payment_request(
+            "PAYMENT: type=airtime phone=+234 803 721 7665 network=MTN amount=500")
+        self.assertEqual(said, "airtime 500 08037217665 MTN")
+        intent = vas_text_intent(said)
+        self.assertEqual(intent["name"], "buy_airtime")
+        self.assertEqual(Decimal(intent["input"]["amount"]), 500)
+        self.assertEqual(intent["input"]["phone"], "08037217665")
+
+    def test_data(self):
+        from .router import vas_text_intent
+
+        said, _ = media.payment_request(
+            "PAYMENT: type=data phone=08037217665 network=Airtel plan=2GB amount=1000")
+        self.assertEqual(said, "2GB data 08037217665 Airtel")
+        self.assertEqual(vas_text_intent(said)["name"], "buy_data")
+
+    def test_electricity_opens_the_disco_bill(self):
+        from .router import bill_text_intent
+
+        said, _ = media.payment_request(
+            "PAYMENT: type=electricity meter=45058723664 disco=Ikeja Electric "
+            "meter_type=prepaid amount=1,050")
+        self.assertEqual(said, "Ikeja Electric prepaid meter 45058723664 1050")
+        intent = bill_text_intent(said)
+        self.assertIsNotNone(intent)
+        self.assertEqual(intent["input"]["customer_id"], "45058723664")
+        self.assertEqual(Decimal(intent["input"]["amount"]), 1050)
+        self.assertEqual(intent["input"]["variation"], "prepaid")
+
+    def test_a_disco_by_its_short_name(self):
+        from .router import bill_text_intent
+
+        said, _ = media.payment_request("PAYMENT: type=electricity meter=0101234567 disco=EKEDC amount=2000")
+        self.assertIsNotNone(bill_text_intent(said))
+
+    def test_cable(self):
+        said, _ = media.payment_request(
+            "PAYMENT: type=cable smartcard=7023 4567 89 provider=DStv plan=Compact")
+        self.assertEqual(said, "pay DStv Compact smartcard 7023456789")
+
+    def test_too_little_to_act_on_keeps_the_description(self):
+        for line in ("PAYMENT: type=airtime phone=none amount=500\nAn MTN recharge screen.",
+                     "PAYMENT: type=electricity meter=45058723664 disco=none\nA meter.",
+                     "PAYMENT: none\nA cat."):
+            with self.subTest(line=line):
+                said, rest = media.payment_request(line)
+                self.assertEqual(said, "")
+                self.assertNotIn("PAYMENT", rest)

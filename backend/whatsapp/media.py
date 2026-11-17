@@ -128,17 +128,45 @@ def interpret(kind: str, media_id: str, caption: str = "") -> tuple:
             if caption.strip() else described), "", None
 
 
-_PAYMENT_LINE = re.compile(r"^\s*\**\s*PAYMENT\s*:\s*(.*)$", re.I | re.M)
-_FIELD = re.compile(r"\b(account|bank|amount|name)\s*=\s*(.*?)(?=\s+\b(?:account|bank|amount|name)\s*=|$)",
-                    re.I)
+_PAYMENT_LINE = re.compile(r"^\s*\**\s*PAYMENT\s*:?\**\s*:?\s*(.*)$", re.I | re.M)
+_KEYS = ("type", "account", "bank", "phone", "network", "plan", "meter", "disco",
+         "meter_type", "smartcard", "provider", "amount", "name")
+_FIELD = re.compile(
+    r"\b(" + "|".join(_KEYS) + r")\s*=\s*(.*?)(?=\s+\b(?:" + "|".join(_KEYS) + r")\s*=|$)", re.I)
+_EMPTY = ("none", "n/a", "na", "unknown", "-", "null", "not shown", "")
+
+
+def _digits(value: str) -> str:
+    return re.sub(r"\D", "", value or "")
+
+
+def _naira(value: str) -> str:
+    """"NGN 2,800.00" -> "2800"; "" when there is no amount."""
+    raw = re.sub(r"[^\d.]", "", value or "").strip(".")
+    if not raw:
+        return ""
+    whole, _, kobo = raw.partition(".")
+    return whole if not kobo.strip("0") else f"{whole}.{kobo}"
+
+
+def _phone(value: str) -> str:
+    """A Nigerian mobile number in the local 11-digit form, or ""."""
+    digits = _digits(value)
+    if digits.startswith("234") and len(digits) == 13:
+        digits = "0" + digits[3:]
+    return digits if len(digits) == 11 and digits.startswith("0") else ""
 
 
 def payment_request(described: str) -> tuple:
-    """(transfer sentence or "", description without the PAYMENT line).
+    """(what the customer would have typed, or "", description without the PAYMENT line).
 
-    The reader is asked for one fixed line before its description. With a
-    10-digit account on it, that line becomes the transfer the customer would
-    have typed; anything else leaves the description to be read as before.
+    The reader is asked for one fixed line before its description, naming the
+    kind of payment and its details. That line becomes the message the customer
+    would have typed for it - a transfer, airtime, data, an electricity token or
+    a TV subscription - in the same words the chat already reads, so it gets the
+    same checks: name enquiry, meter or smartcard lookup, plan choice, the
+    confirm card and the PIN. A line with too little to act on leaves the
+    description to be read as before.
     """
     match = _PAYMENT_LINE.search(described or "")
     if not match:
@@ -147,16 +175,32 @@ def payment_request(described: str) -> tuple:
     fields = {}
     for key, value in _FIELD.findall(match.group(1)):
         value = value.strip().strip("*`'\".,;").strip()
-        if value and value.lower() not in ("none", "n/a", "unknown", "-", "null"):
+        if value.lower() not in _EMPTY:
             fields[key.lower()] = value
-    account = re.sub(r"\D", "", fields.get("account", ""))
-    if len(account) != 10:
-        return "", rest or described
-    parts = ["send"]
-    amount = re.sub(r"[^\d.]", "", fields.get("amount", ""))
-    if amount and amount.strip("."):
-        parts.append(amount.rstrip(".").split(".")[0] if amount.endswith(".00") else amount)
-    parts += ["to", account]
-    if fields.get("bank"):
-        parts.append(fields["bank"])
-    return " ".join(parts), rest
+    kind = fields.get("type", "").lower()
+    amount = _naira(fields.get("amount", ""))
+    account = _digits(fields.get("account", ""))
+    phone = _phone(fields.get("phone", ""))
+    meter = _digits(fields.get("meter", ""))
+    card = _digits(fields.get("smartcard", ""))
+
+    def joined(*parts):
+        return " ".join(p for p in parts if p)
+
+    if kind == "airtime" and phone:
+        return joined("airtime", amount, phone, fields.get("network", "")), rest
+    if kind == "data" and phone:
+        return joined(fields.get("plan", ""), "data", phone, fields.get("network", "")), rest
+    if kind == "electricity" and meter and fields.get("disco"):
+        disco = fields["disco"]
+        if not re.search(r"electric|power|disco|edc\b", disco, re.I):
+            disco += " electric"
+        meter_type = fields.get("meter_type", "").lower()
+        return joined(disco, meter_type if meter_type in ("prepaid", "postpaid") else "",
+                      "meter", meter, amount), rest
+    if kind == "cable" and card:
+        return joined("pay", fields.get("provider", "") or "cable TV",
+                      fields.get("plan", ""), "smartcard", card), rest
+    if len(account) == 10 and kind in ("", "transfer", "other"):
+        return joined("send", amount, "to", account, fields.get("bank", "")), rest
+    return "", rest or described
