@@ -155,6 +155,152 @@ const WhatsAppPanel = () => (
   </Pressable>
 );
 
+/**
+ * The receipt document itself: the teal Zitch header, the white ticket with the
+ * amount, status, time and rows, Zitch WhatsApp banking and where to get help.
+ * The post-purchase receipt and the receipt opened from transaction history both
+ * draw this (review, 17 Nov 2026: one receipt design everywhere), and what the
+ * ref points at is what "Save" and "Share" capture as the image.
+ */
+export const ReceiptTicket = React.forwardRef<View, {
+  title: string;
+  message: string;
+  /** Every row, sender, date, time and reference included. */
+  rows: ReceiptRow[];
+  status: string;
+}>(({ title, message, rows, status }, ref) => {
+  const layout = receiptLayout({ title, rows, status });
+  const entries: React.ReactNode[] = [
+    ...layout.parties.map((party) => (
+      <Entry key={`p-${party.label}`} label={party.label}>
+        <Text style={{ fontSize: 14, fontFamily: font.bold, color: C.ink, textAlign: 'right' }}>{party.name}</Text>
+        {party.detail ? (
+          <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: C.muted, textAlign: 'right', marginTop: 2 }}>{party.detail}</Text>
+        ) : null}
+      </Entry>
+    )),
+    ...layout.rows.map(([label, value, strong], i) => (
+      <Entry key={`r-${i}`} label={label}>
+        <NText
+          selectable={label === 'Reference'}
+          style={{ fontSize: strong ? 15.5 : 14, fontFamily: strong ? font.extrabold : font.bold, color: C.ink, textAlign: 'right', fontVariant: ['tabular-nums'] }}
+        >
+          {value}
+        </NText>
+      </Entry>
+    )),
+  ];
+
+  return (
+    <View ref={ref} collapsable={false} style={{ backgroundColor: C.paper, paddingBottom: 16 }}>
+      <LinearGradient
+        colors={[C.brand, C.brandDeep]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={{ height: 140, paddingHorizontal: 18, paddingTop: 18, overflow: 'hidden' }}
+      >
+        {/* A large ghost of the coil, cut off by the band: the white coil
+            itself (not tinted, so its shading is kept), faded right back,
+            as on the WhatsApp receipt. */}
+        <Image source={COIL} resizeMode="contain" style={{ position: 'absolute', right: -30, top: -36, width: Math.round(206 * COIL_RATIO), height: 206, opacity: 0.08 }} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <ZCoil height={36} box={27} />
+            <Text style={{ fontSize: 21, fontFamily: font.extrabold, color: '#fff', letterSpacing: -0.3 }}>zitch</Text>
+          </View>
+          <Text numberOfLines={1} style={{ flexShrink: 1, marginLeft: 12, fontSize: 12.5, fontFamily: font.bold, color: C.brandTint }}>
+            {layout.title}
+          </Text>
+        </View>
+      </LinearGradient>
+
+      {/* The ticket: a shadow on the outer view, the clip on the inner one,
+          because iOS drops the shadow of a view that clips its children. */}
+      <View style={{ marginTop: -76, marginHorizontal: 12, borderRadius: 20, backgroundColor: C.card, shadowColor: C.brandDeep, shadowOpacity: 0.12, shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: 3 }}>
+        <View style={{ borderRadius: 20, overflow: 'hidden', backgroundColor: C.card }}>
+          <View style={{ alignItems: 'center', paddingTop: 18, paddingHorizontal: 18, paddingBottom: 12 }}>
+            <NText
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              style={{ fontSize: layout.amount ? 34 : 22, fontFamily: font.extrabold, color: C.ink, letterSpacing: -0.5, fontVariant: ['tabular-nums'] }}
+            >
+              {layout.amount || layout.title}
+            </NText>
+            <StatusPill status={status} />
+            {layout.when ? (
+              <Text style={{ fontSize: 13, fontFamily: font.medium, color: C.muted, marginTop: 8 }}>{layout.when}</Text>
+            ) : null}
+            {message ? (
+              <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: C.muted, marginTop: 6, textAlign: 'center', lineHeight: 18, maxWidth: 290 }}>
+                {message}
+              </Text>
+            ) : null}
+          </View>
+
+          <TearLine />
+
+          <View style={{ paddingHorizontal: 16, paddingBottom: 6 }}>
+            {layout.highlights.map(([label, value], i) => (
+              <View key={`h-${i}`} style={{ backgroundColor: C.brandTint, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, marginTop: 6, marginBottom: 4 }}>
+                <Text style={{ fontSize: 10.5, fontFamily: font.extrabold, color: C.brandText, letterSpacing: 1 }}>{label.toUpperCase()}</Text>
+                <Text selectable style={{ fontSize: 19, fontFamily: font.extrabold, color: C.ink, letterSpacing: 0.6, marginTop: 4 }}>{value}</Text>
+              </View>
+            ))}
+            {entries.map((entry, i) => (
+              <React.Fragment key={i}>
+                {i > 0 ? <View style={{ height: 1, backgroundColor: C.line }} /> : null}
+                {entry}
+              </React.Fragment>
+            ))}
+          </View>
+
+          <Texture />
+        </View>
+      </View>
+
+      <WhatsAppPanel />
+
+      <View style={{ alignItems: 'center', marginTop: 8, gap: 2 }}>
+        <Text style={{ fontSize: 12, fontFamily: font.regular, color: C.muted }}>Need help? {SUPPORT_EMAIL}</Text>
+        <Text style={{ fontSize: 11, fontFamily: font.regular, color: C.muted }}>Keep this receipt for your records.</Text>
+      </View>
+    </View>
+  );
+});
+ReceiptTicket.displayName = 'ReceiptTicket';
+
+/** Save, Share and Copy ref, under every receipt. */
+export const ReceiptActionRow = ({ onSave, onShare, onCopy, busy }: {
+  onSave: () => void; onShare: () => void; onCopy: () => void; busy: boolean;
+}) => {
+  const { c } = useTheme();
+  const actions: [string, string, () => void][] = [
+    ['download', 'Save', onSave],
+    ['share', 'Share', onShare],
+    ['copy', 'Copy ref', onCopy],
+  ];
+  return (
+    <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+      {actions.map(([ic, lb, fn]) => (
+        <Pressable
+          key={ic}
+          onPress={fn}
+          disabled={busy}
+          accessibilityRole="button"
+          accessibilityLabel={lb}
+          accessibilityState={{ disabled: busy }}
+          style={({ pressed }) => ({ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingVertical: 11, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, opacity: pressed || busy ? 0.85 : 1 })}
+        >
+          {busy && ic !== 'copy'
+            ? <LoadingMark size={17} />
+            : <ZIcon name={ic} size={17} color={c.brand} />}
+          <Text style={{ fontSize: 12.5, fontFamily: font.semibold, color: c.ink2 }}>{lb}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+};
+
 const Receipt = ({
   title,
   message,
@@ -177,7 +323,6 @@ const Receipt = ({
    *  proof of payment, and a button the reader cannot press is noise on it. */
   footer?: React.ReactNode;
 }) => {
-  const { c } = useTheme();
   const card = useRef<View>(null);
   const [action, setAction] = useState<ExportAction | null>(null);
   const [busy, setBusy] = useState(false);
@@ -209,7 +354,6 @@ const Receipt = ({
     ['Time', stamp.time],
     ...(reference ? ([['Reference', reference]] as ReceiptRow[]) : []),
   ];
-  const layout = receiptLayout({ title, rows: allRows, status });
 
   // Plain-text rendering of the whole receipt, used by "Copy ref" when there is no
   // reference to copy.
@@ -221,33 +365,6 @@ const Receipt = ({
       flash('Copied', reference ? 'Reference copied' : 'Receipt copied');
     } catch { notifyError('Could not copy', 'Please try again.'); }
   };
-
-  const actions: [string, string, () => void][] = [
-    ['download', 'Save', () => setAction('save')],
-    ['share', 'Share', () => setAction('share')],
-    ['copy', 'Copy ref', onCopyRef],
-  ];
-
-  const entries: React.ReactNode[] = [
-    ...layout.parties.map((party) => (
-      <Entry key={`p-${party.label}`} label={party.label}>
-        <Text style={{ fontSize: 14, fontFamily: font.bold, color: C.ink, textAlign: 'right' }}>{party.name}</Text>
-        {party.detail ? (
-          <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: C.muted, textAlign: 'right', marginTop: 2 }}>{party.detail}</Text>
-        ) : null}
-      </Entry>
-    )),
-    ...layout.rows.map(([label, value, strong], i) => (
-      <Entry key={`r-${i}`} label={label}>
-        <NText
-          selectable={label === 'Reference'}
-          style={{ fontSize: strong ? 15.5 : 14, fontFamily: strong ? font.extrabold : font.bold, color: C.ink, textAlign: 'right', fontVariant: ['tabular-nums'] }}
-        >
-          {value}
-        </NText>
-      </Entry>
-    )),
-  ];
 
   return (
     <View style={{ flex: 1, paddingHorizontal: 16 }}>
@@ -262,103 +379,14 @@ const Receipt = ({
           {/* Everything inside this view is what gets captured as the JPEG. An
               explicit background matters: capturing a transparent tree renders
               black on Android. */}
-          <View ref={card} collapsable={false} style={{ backgroundColor: C.paper, paddingBottom: 16 }}>
-            <LinearGradient
-              colors={[C.brand, C.brandDeep]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={{ height: 140, paddingHorizontal: 18, paddingTop: 18, overflow: 'hidden' }}
-            >
-              {/* A large ghost of the coil, cut off by the band: the white coil
-                  itself (not tinted, so its shading is kept), faded right back,
-                  as on the WhatsApp receipt. */}
-              <Image source={COIL} resizeMode="contain" style={{ position: 'absolute', right: -30, top: -36, width: Math.round(206 * COIL_RATIO), height: 206, opacity: 0.08 }} />
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <ZCoil height={36} box={27} />
-                  <Text style={{ fontSize: 21, fontFamily: font.extrabold, color: '#fff', letterSpacing: -0.3 }}>zitch</Text>
-                </View>
-                <Text numberOfLines={1} style={{ flexShrink: 1, marginLeft: 12, fontSize: 12.5, fontFamily: font.bold, color: C.brandTint }}>
-                  {layout.title}
-                </Text>
-              </View>
-            </LinearGradient>
-
-            {/* The ticket: a shadow on the outer view, the clip on the inner one,
-                because iOS drops the shadow of a view that clips its children. */}
-            <View style={{ marginTop: -76, marginHorizontal: 12, borderRadius: 20, backgroundColor: C.card, shadowColor: C.brandDeep, shadowOpacity: 0.12, shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: 3 }}>
-              <View style={{ borderRadius: 20, overflow: 'hidden', backgroundColor: C.card }}>
-                <View style={{ alignItems: 'center', paddingTop: 18, paddingHorizontal: 18, paddingBottom: 12 }}>
-                  <NText
-                    numberOfLines={1}
-                    adjustsFontSizeToFit
-                    style={{ fontSize: layout.amount ? 34 : 22, fontFamily: font.extrabold, color: C.ink, letterSpacing: -0.5, fontVariant: ['tabular-nums'] }}
-                  >
-                    {layout.amount || layout.title}
-                  </NText>
-                  <StatusPill status={status} />
-                  {layout.when ? (
-                    <Text style={{ fontSize: 13, fontFamily: font.medium, color: C.muted, marginTop: 8 }}>{layout.when}</Text>
-                  ) : null}
-                  {message ? (
-                    <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: C.muted, marginTop: 6, textAlign: 'center', lineHeight: 18, maxWidth: 290 }}>
-                      {message}
-                    </Text>
-                  ) : null}
-                </View>
-
-                <TearLine />
-
-                <View style={{ paddingHorizontal: 16, paddingBottom: 6 }}>
-                  {layout.highlights.map(([label, value], i) => (
-                    <View key={`h-${i}`} style={{ backgroundColor: C.brandTint, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, marginTop: 6, marginBottom: 4 }}>
-                      <Text style={{ fontSize: 10.5, fontFamily: font.extrabold, color: C.brandText, letterSpacing: 1 }}>{label.toUpperCase()}</Text>
-                      <Text selectable style={{ fontSize: 19, fontFamily: font.extrabold, color: C.ink, letterSpacing: 0.6, marginTop: 4 }}>{value}</Text>
-                    </View>
-                  ))}
-                  {entries.map((entry, i) => (
-                    <React.Fragment key={i}>
-                      {i > 0 ? <View style={{ height: 1, backgroundColor: C.line }} /> : null}
-                      {entry}
-                    </React.Fragment>
-                  ))}
-                </View>
-
-                <Texture />
-              </View>
-            </View>
-
-            <WhatsAppPanel />
-
-            <View style={{ alignItems: 'center', marginTop: 8, gap: 2 }}>
-              <Text style={{ fontSize: 12, fontFamily: font.regular, color: C.muted }}>Need help? {SUPPORT_EMAIL}</Text>
-              <Text style={{ fontSize: 11, fontFamily: font.regular, color: C.muted }}>Keep this receipt for your records.</Text>
-            </View>
-          </View>
+          <ReceiptTicket ref={card} title={title} message={message} rows={allRows} status={status} />
         </View>
       </ScrollView>
 
       {/* Receipt actions stay pinned above the dashboard button. The details can
           scroll independently, but Save/Share must be visible the moment the
           success page opens, including on short phones. */}
-      <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
-        {actions.map(([ic, lb, fn]) => (
-          <Pressable
-            key={ic}
-            onPress={fn}
-            disabled={busy}
-            accessibilityRole="button"
-            accessibilityLabel={lb}
-            accessibilityState={{ disabled: busy }}
-            style={({ pressed }) => ({ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingVertical: 11, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, opacity: pressed || busy ? 0.85 : 1 })}
-          >
-            {busy && ic !== 'copy'
-              ? <LoadingMark size={17} />
-              : <ZIcon name={ic} size={17} color={c.brand} />}
-            <Text style={{ fontSize: 12.5, fontFamily: font.semibold, color: c.ink2 }}>{lb}</Text>
-          </Pressable>
-        ))}
-      </View>
+      <ReceiptActionRow onSave={() => setAction('save')} onShare={() => setAction('share')} onCopy={onCopyRef} busy={busy} />
 
       <ReceiptExport
         action={action}
