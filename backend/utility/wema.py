@@ -90,6 +90,11 @@ _PATH = {
 }
 # Products whose channel-id header is `access` (not `x-api-key`).
 _ACCESS_PRODUCTS = {"credit", "debit", "airtime", "bills", "remita"}
+# Products that get the channel id under BOTH names. On 17 Nov 2026 every PayBill
+# came back 409 "Authentication Failed" with `access` alone while ValidateCustomer
+# (same product, same headers) passed; Wema asked whether we send the x-api-key.
+# Sending it under both names lets either check find it.
+_BOTH_CHANNEL_HEADERS = {"bills"}
 
 
 # ALAT's published wallet tier limits (Getting Started guide, 2026-07-27). The BANK
@@ -308,12 +313,15 @@ def _headers(product: str) -> dict:
         return _bnpl_headers()
     channel = settings.WEMA.get("CHANNEL_ID", "")
     channel_header = "access" if product in _ACCESS_PRODUCTS else "x-api-key"
-    return {
+    headers = {
         "Ocp-Apim-Subscription-Key": _sub_key(product),
         channel_header: channel,
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
+    if product in _BOTH_CHANNEL_HEADERS:
+        headers["access"] = headers["x-api-key"] = channel
+    return headers
 
 
 def _base_url(product: str) -> str:

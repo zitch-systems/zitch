@@ -1680,6 +1680,18 @@ class WemaConformanceFixTests(BillerTransportSourceMixin, SimpleTestCase):
         wema.pay_bill(2000, "R", package_id="7", identifier="1234567890", source_account="01")
         self.assertEqual(mock_post.call_args[1]["json"]["packageId"], 7)
 
+    @patch("utility.wema.requests.post")
+    def test_bills_send_the_channel_id_as_access_and_x_api_key(self, mock_post):
+        """17 Nov 2026: PayBill refused "Authentication Failed" with `access` alone;
+        bills now carry the channel id under both names. Airtime is unchanged."""
+        mock_post.return_value = _resp({"result": {"status": "SUCCESS"}, "hasError": False})
+        wema.pay_bill(2000, "R", package_id="7", identifier="1234567890", source_account="01")
+        headers = mock_post.call_args[1]["headers"]
+        self.assertEqual(headers["access"], headers["x-api-key"])
+        self.assertTrue(headers["access"])
+        self.assertNotIn("x-api-key", wema._headers("airtime"))
+        self.assertIn("access", wema._headers("airtime"))
+
     def test_as_int_leaves_non_numeric_visible(self):
         # A blank/garbage wema_code must not be coerced to 0 — fail visibly instead.
         self.assertEqual(wema._as_int(""), "")
