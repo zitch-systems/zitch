@@ -325,3 +325,40 @@ it('sends the NIN and face check (Tier 2) and the address (Tier 3) as separate r
   expect(mockReplace).toHaveBeenCalledWith('/setup');
   await act(async () => tree.unmount());
 });
+
+describe('the notice after sending (17 Nov: a confirmed Tier 2 applies at once)', () => {
+  const { notify } = jest.requireMock('@/components/design/Notify') as { notify: jest.Mock };
+  const fillAndSend = async (tier2Answer: Record<string, unknown>) => {
+    mockApiJson.mockImplementation(async (path: string) => path === EP.kyc.status ? { ...base, bvn_verified: true, tier: 1 }
+      : path === EP.wallet.wemaUpgradeTier2 ? tier2Answer
+      : path === EP.kyc.tier3Send ? { success: true, sent: true, tier3_state: 'processing' } : { success: false });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Kyc />); });
+    await act(async () => { byLabel(tree, 'National Identification Number (NIN)').props.onChangeText('12345678901'); });
+    await act(async () => { byLabel(tree, 'Start face check').props.onPress(); });
+    await act(async () => { (mockLiveness.mock.calls[mockLiveness.mock.calls.length - 1][0] as { onCapture: (c: object) => void }).onCapture({ image: 'f', token: 't' }); });
+    await act(async () => { byLabel(tree, 'Bank Verification Number (BVN)').props.onChangeText('22222222222'); });
+    await act(async () => { byLabel(tree, 'House number').props.onChangeText('12'); });
+    await act(async () => { byLabel(tree, 'Street address').props.onChangeText('Allen Avenue'); });
+    await act(async () => { byLabel(tree, 'State').props.onChangeText('Lagos'); });
+    await act(async () => { byLabel(tree, 'Local government area').props.onChangeText('Ikeja'); });
+    await act(async () => { await byLabel(tree, 'Continue').props.onPress(); });
+    await act(async () => tree.unmount());
+  };
+
+  beforeEach(() => notify.mockReset());
+
+  it('says Tier 2 is confirmed when the bank confirmed it there and then', async () => {
+    await fillAndSend({ success: true, sent: true, tier2_state: 'confirmed', tier: 2 });
+    expect(notify).toHaveBeenCalledWith('Tier 2 confirmed',
+      'Your new limits apply now. Your bank is checking your address for Tier 3.', 'success');
+    expect(JSON.stringify(notify.mock.calls)).not.toContain('Verify Tier 2');
+  });
+
+  it('never claims Tier 2 while the account is not on it, and asks for no tap on Verify', async () => {
+    await fillAndSend({ success: true, sent: true, tier2_state: 'confirmed', tier: 0 });   // Tier 1 unfinished
+    await fillAndSend({ success: true, sent: true, tier2_state: 'pending', tier: 1 });
+    expect(notify.mock.calls.map((c) => c[0])).toEqual(['Sent for checking', 'Sent for checking']);
+    expect(notify.mock.calls[0][1]).toBe('Your bank is checking them. Each tier applies as soon as the bank confirms it. Account limits shows where they are.');
+  });
+});

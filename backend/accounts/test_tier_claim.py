@@ -1,10 +1,10 @@
-"""Sign-up sends the Tier 2 details to the bank; Verify Tier 2 applies them later.
+"""Sign-up sends the Tier 2 details to the bank; Tier 2 applies once it confirms.
 
 Review, Nov 2026: the customer gives BVN, NIN, a face check and the address at
-sign-up and everything goes to the bank at once, but they stay on Tier 1 until
-they tap Verify Tier 2 on Account limits. Then: a check the bank already
-confirmed upgrades them at once, one it is still running shows Processing, and
-one it refused (or that was never sent) asks for the NIN and face check again.
+sign-up and everything goes to the bank at once. A check the bank confirms
+applies Tier 2 at once, with no tap on Verify (17 Nov: no more sign-up hold);
+one it is still running shows Processing on Verify Tier 2 and is read back; one
+it refused (or that was never sent) asks for the NIN and face check again.
 """
 import json
 import time
@@ -54,24 +54,50 @@ class TierClaimTests(TestCase):
         with patch("utility.wema.get_kyc_status", return_value=bank_state):
             return self._post("/api/kyc/claim/", {"tier": tier})
 
-    def test_a_check_the_bank_confirmed_at_sign_up_waits_for_verify_then_applies_at_once(self):
+    def test_a_check_the_bank_confirmed_at_sign_up_applies_tier_2_at_once(self):
         r = self._signup_send({"success": True, "raw": {"message": "ok"}}, BANK_TIER_2)
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["tier2_state"], "confirmed")
+        self.assertEqual(r.json()["tier"], 2, "no tap on Verify Tier 2")
         self.user.refresh_from_db()
         self.assertTrue(self.user.face_verified)
         self.assertTrue(self.user.nin_verified)
-        self.assertEqual(self.user.tier, 1, "still Tier 1 until the customer asks")
+        self.assertEqual(self.user.tier, 2)
         with patch("utility.wema.get_kyc_status", return_value=BANK_TIER_2):
             status = self._post("/api/kyc/status/").json()
-        self.assertEqual(status["tier"], 1)
-        self.assertEqual(status["tier2_state"], "ready")
+        self.assertEqual(status["tier"], 2)
+        self.assertEqual(status["tier2_state"], "done")
+        # Verify Tier 2, if tapped anyway, just says it is done.
+        self.assertEqual(self._claim(bank_state=BANK_TIER_2).json()["state"], "upgraded")
 
+    def test_a_check_confirmed_before_tier_1_is_finished_applies_once_it_is(self):
+        User.objects.filter(pk=self.user.pk).update(email_verified=False)
+        r = self._signup_send({"success": True, "raw": {"message": "ok"}}, BANK_TIER_2)
+        self.assertEqual(r.json()["tier2_state"], "confirmed")
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.face_verified)
+        self.assertLess(self.user.tier, 2, "Tier 1 is unfinished: never report Tier 2")
+        self.assertEqual(self._claim(bank_state=BANK_TIER_2).json()["state"], "needs_tier1")
+        # The email is verified: the tier is recomputed with no hold left.
+        self.user.email_verified = True
+        self.user.recompute_tier()
+        self.assertEqual(self.user.tier, 2)
+
+    def test_a_sign_up_check_the_bank_confirms_later_applies_without_verify(self):
+        self._signup_send({"success": False, "pending": True}, BANK_TIER_1)
+        # The app's status call reads the bank back in the background.
+        with patch("utility.wema.get_kyc_status", return_value=BANK_TIER_2):
+            status = self._post("/api/kyc/status/").json()
+        self.assertEqual(status["tier"], 2)
+        self.assertEqual(status["tier2_state"], "done")
+
+    def test_a_customer_held_by_an_older_sign_up_is_lifted_when_the_bank_confirms(self):
+        User.objects.filter(pk=self.user.pk).update(tier_cap=1, tier2_review="pending",
+                                                    tier2_review_at=timezone.now())
         r = self._claim(bank_state=BANK_TIER_2)
         self.assertEqual(r.json()["state"], "upgraded")
-        self.assertEqual(r.json()["tier"], 2)
         self.user.refresh_from_db()
-        self.assertEqual(self.user.tier, 2)
+        self.assertEqual((self.user.tier, self.user.tier_cap), (2, 3))
 
     def test_a_check_still_with_the_bank_is_processing_until_the_bank_confirms_it(self):
         r = self._signup_send({"success": False, "pending": True}, BANK_TIER_1)

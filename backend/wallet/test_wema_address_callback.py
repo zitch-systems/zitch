@@ -140,3 +140,186 @@ class AddressCallbackTests(TestCase):
         _r, _read, reply = self._post(wema_body())
         reply.assert_called_once()
         self.assertIn("Address verified", reply.call_args.args[1])
+        self.assertIn("upgraded your account", reply.call_args.args[1])
+
+
+@override_settings(WEMA=WEMA_CB, PAYMENT_PROVIDER="wema")
+class AddressCallbackSentOnceTests(TestCase):
+    """Wema, 17 Nov 2026: the webhook is sent once, never retried; a missed one is
+    sent again only when Zitch asks. So nothing may depend on a second one."""
+
+    _post = AddressCallbackTests._post
+
+    def setUp(self):
+        AddressCallbackTests.setUp(self)
+        from django.core.cache import cache
+        cache.clear()   # the read-back throttle is kept in the cache
+
+    def _reconcile_refresh(self, bank):
+        from wallet.address_verification import refresh_address_verification
+
+        with patch("utility.wema.get_kyc_status", return_value=bank) as read, \
+             patch("whatsapp.router.reply") as reply:
+            refresh_address_verification(self.user, wallet=Wallet.objects.get(user=self.user))
+        self.user.refresh_from_db()
+        return read, reply
+
+    def test_a_webhook_that_beats_the_bank_record_is_remembered_and_finished_later(self):
+        self._post(wema_body(), bank=TIER_2)
+        self.assertEqual(self.user.tier3_review, "bank_ok")
+        self.assertFalse(self.user.address_verified)
+        # The reconcile job's read-back while the record still lags: still waiting.
+        self._reconcile_refresh(TIER_2)
+        self.assertFalse(self.user.address_verified)
+        # The record catches up: Tier 3, with no second webhook.
+        from django.core.cache import cache
+        cache.clear()
+        read, _reply = self._reconcile_refresh(TIER_3)
+        read.assert_called_once_with(ACCOUNT)
+        self.assertTrue(self.user.address_verified)
+        self.assertEqual((self.user.tier, self.user.tier3_review), (3, ""))
+
+    def test_the_status_read_back_is_throttled_per_customer(self):
+        self._post(wema_body(), bank=TIER_2)
+        read, _ = self._reconcile_refresh(TIER_2)
+        self.assertEqual(read.call_count, 1)
+        read, _ = self._reconcile_refresh(TIER_2)
+        read.assert_not_called()
+
+    def test_without_the_webhook_the_bank_record_alone_never_grants_tier_3(self):
+        read, _ = self._reconcile_refresh(TIER_3)   # tier3_review is only "pending"
+        read.assert_not_called()
+        self.assertFalse(self.user.address_verified)
+
+    def test_a_webhook_passed_check_does_not_expire_or_invite_a_resend(self):
+        from datetime import timedelta
+
+        from accounts.views import tier3_claim_state
+
+        self._post(wema_body(), bank=TIER_2)
+        User.objects.filter(pk=self.user.pk).update(
+            tier3_review_at=timezone.now() - timedelta(days=9),
+            address_verification_requested_at=timezone.now() - timedelta(days=9))
+        self.user.refresh_from_db()
+        self.assertEqual(tier3_claim_state(self.user), "processing")
+
+    def test_tier_3_from_the_bank_lifts_a_sign_up_hold(self):
+        User.objects.filter(pk=self.user.pk).update(tier_cap=2)
+        self._post(wema_body())
+        self.assertEqual((self.user.tier, self.user.tier_cap), (3, 3))
+
+    def test_an_address_that_passes_before_tier_2_does_not_claim_an_upgrade(self):
+        from whatsapp.models import WhatsAppLink
+
+        User.objects.filter(pk=self.user.pk).update(face_verified=False, tier=1)
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn="2348030001111",
+                                    status=WhatsAppLink.ACTIVE)
+        _r, _read, reply = self._post(wema_body())
+        self.assertTrue(self.user.address_verified)
+        self.assertEqual(self.user.tier, 1)
+        self.assertNotIn("upgraded", reply.call_args.args[1])
+        self.assertIn("earlier steps", reply.call_args.args[1])
+
+
+class AddressWebhookWatchTests(TestCase):
+    """The daily list of address checks to raise with Wema."""
+
+    def setUp(self):
+        self.user, _ = make_user(PHONE, "watch@zitch.app", identity_verified=False)
+
+    def _run(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        out = StringIO()
+        with patch("utility.alerts.alert") as alert:
+            call_command("address_webhook_watch", stdout=out)
+        return alert, out.getvalue()
+
+    def _waiting(self, hours, review="pending"):
+        from datetime import timedelta
+
+        at = timezone.now() - timedelta(hours=hours)
+        User.objects.filter(pk=self.user.pk).update(
+            address="12 Allen Avenue, Ikeja, Lagos",
+            address_verification_pending=True, address_verification_account_number=ACCOUNT,
+            address_verification_requested_at=at, tier3_review=review, tier3_review_at=at)
+
+    def test_nothing_waiting_sends_nothing(self):
+        alert, out = self._run()
+        alert.assert_not_called()
+        self.assertIn("no_webhook=0", out)
+
+    def test_a_check_with_no_webhook_after_two_hours_is_listed_without_the_full_account(self):
+        self._waiting(3)
+        alert, _out = self._run()
+        alert.assert_called_once()
+        context = alert.call_args.kwargs
+        self.assertEqual(context["level"], "error")
+        self.assertEqual(context["no_webhook"], 1)
+        self.assertIn(f"user {self.user.pk} (account ******6789, 3h)", context["no_webhook_list"])
+        self.assertNotIn(ACCOUNT, context["no_webhook_list"])
+        self.assertNotIn("Allen", str(context))
+
+    def test_a_check_under_two_hours_old_is_not_listed_yet(self):
+        self._waiting(1)
+        alert, _out = self._run()
+        alert.assert_not_called()
+
+    def test_a_long_wait_is_shown_in_days(self):
+        self._waiting(24 * 3 + 1)
+        alert, _out = self._run()
+        self.assertIn("3d)", alert.call_args.kwargs["no_webhook_list"])
+
+    def test_a_webhook_passed_check_whose_record_lags_is_listed_separately(self):
+        self._waiting(48, review="bank_ok")
+        alert, _out = self._run()
+        context = alert.call_args.kwargs
+        self.assertEqual((context["no_webhook"], context["bank_record_behind"]), (0, 1))
+
+    def test_it_runs_every_two_hours_in_the_scheduler(self):
+        from utility import schedule
+
+        job = schedule.job_named("address_webhook_watch")
+        self.assertEqual(job.command, ("address_webhook_watch",))
+        self.assertEqual(len(job.at), 12)
+        self.assertEqual({hour % 2 for hour, _ in job.at}, {1})
+        self.assertEqual({minute for _, minute in job.at}, {25})
+
+    def test_an_unchanged_list_is_not_a_new_email_but_a_new_customer_is(self):
+        from datetime import timedelta
+
+        self._waiting(3)
+        first, _ = self._run()
+        again, _ = self._run()
+        self.assertEqual(first.call_args.kwargs["dedupe"], again.call_args.kwargs["dedupe"])
+        other, _ = make_user("08030004444", "other@zitch.app", identity_verified=False)
+        User.objects.filter(pk=other.pk).update(
+            address_verification_pending=True, address_verification_account_number="0987654321",
+            address_verification_requested_at=timezone.now() - timedelta(hours=3), tier3_review="pending")
+        added, _ = self._run()
+        self.assertNotEqual(first.call_args.kwargs["dedupe"], added.call_args.kwargs["dedupe"])
+        self.assertEqual(added.call_args.kwargs["no_webhook"], 2)
+
+
+class LiftSignupHoldMigrationTests(TestCase):
+    def test_held_customers_get_the_tier_their_checks_earn_and_none_is_lowered(self):
+        import importlib
+
+        from django.apps import apps
+
+        lift = importlib.import_module("accounts.migrations.0039_lift_signup_tier_hold").lift_hold
+        held, _ = make_user("08030002222", "held@zitch.app", identity_verified=False)
+        User.objects.filter(pk=held.pk).update(
+            bvn_verified=True, face_verified=True, email_verified=True, phone_verified=True,
+            tier=1, tier_cap=1)
+        unfinished, _ = make_user("08030003333", "unfinished@zitch.app", identity_verified=False)
+        User.objects.filter(pk=unfinished.pk).update(
+            bvn_verified=True, face_verified=True, email_verified=False, phone_verified=True,
+            tier=0, tier_cap=1)
+        lift(apps, None)
+        held.refresh_from_db()
+        unfinished.refresh_from_db()
+        self.assertEqual((held.tier, held.tier_cap), (2, 3))
+        self.assertEqual((unfinished.tier, unfinished.tier_cap), (0, 3))
