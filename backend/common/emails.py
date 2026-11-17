@@ -115,7 +115,7 @@ def email_shell(content: str, *, preheader: str = "") -> str:
 
 # The receipt's palette (whatsapp/receipt.py, which takes it from the app's light
 # theme), so an alert email reads as the same document as the receipt image.
-RECEIPT_INK = "#06231f"
+RECEIPT_INK = "#000000"
 RECEIPT_DIM = "#526863"
 RECEIPT_LINE = "#e2eeeb"
 RECEIPT_TEAR = "#cde0dc"
