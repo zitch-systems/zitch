@@ -3583,11 +3583,18 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
 TIER3_PROCESSING_TEXT = ("⏳ *Tier 3 is pending.*\n\n"
                          "Your address is still being verified. Please check again later.")
 TIER3_REJECTED_TEXT = ("❌ *Tier 3 was not approved.*\n\n"
-                       "Your address could not be verified. Please try again in the Zitch app.")
+                       "Your address could not be verified. Tap *Enter address* to enter it again.")
 TIER3_IN_APP_TEXT = ("Add your home address in the Zitch app: Account limits, then Verify Tier 3.")
 TIER2_PROCESSING_TEXT = ("⏳ *Tier 2 is processing.*\n\n"
                          "Your NIN and face check are with your bank. You don't need to send them again. "
                          "Reply *8* to check again.")
+
+
+def _address_again(user, msisdn: str) -> None:
+    """A refused address: the Tier 3 page, where it is entered again."""
+    from .verification_web import send_address_page
+
+    send_address_page(user, msisdn, TIER3_REJECTED_TEXT)
 
 
 def _tier3_done_text() -> str:
@@ -3615,7 +3622,7 @@ def _send_tier3_from_chat(user, msisdn: str) -> None:
     if state3 == "processing":
         return reply(msisdn, TIER3_PROCESSING_TEXT)
     if state3 == "not_confirmed":
-        return reply(msisdn, TIER3_REJECTED_TEXT)
+        return _address_again(user, msisdn)
     # Not sent yet (normally it goes with Tier 2): send it now.
     parts = saved_address_parts(user.address)
     if not parts:
@@ -3629,7 +3636,7 @@ def _send_tier3_from_chat(user, msisdn: str) -> None:
     if state3 == "ready" and apply_confirmed_tier(user, 3) >= 3:
         return reply(msisdn, _tier3_done_text())
     if state3 == "not_confirmed":
-        return reply(msisdn, TIER3_REJECTED_TEXT)
+        return _address_again(user, msisdn)
     return reply(msisdn, "We couldn't send your address right now. Please try again later. "
                  "Your verification so far is saved.")
 

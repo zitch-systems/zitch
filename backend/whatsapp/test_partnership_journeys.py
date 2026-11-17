@@ -219,12 +219,18 @@ class PartnershipJourneyTests(TestCase):
         with patch.object(router, "reply_buttons") as buttons:
             router._offer_tier_upgrade(self.user, MSISDN)
         self.assertIn(("tier3", "Upgrade to Tier 3"), buttons.call_args.args[2])
-        with patch("utility.wema.upgrade_tier3") as sent, patch.object(router, "reply") as reply:
+        with patch("utility.wema.upgrade_tier3") as sent, \
+             patch("whatsapp.verification_web.start_verification", return_value="https://x/v/t") as page, \
+             patch("whatsapp.providers.send_cta_url", return_value={"success": True}) as cta:
             router.handle_inbound(MSISDN, "tier3")
         sent.assert_not_called()
-        self.assertEqual(reply.call_args.args[1], router.TIER3_REJECTED_TEXT)
-        self.assertIn("could not be verified", router.TIER3_REJECTED_TEXT)
-        self.assertNotIn("Wema", router.TIER3_REJECTED_TEXT)
+        # The refusal opens the Tier 3 page, where the address is entered again.
+        page.assert_called_once_with(self.user, MSISDN, 3)
+        msisdn, body, url = cta.call_args.args
+        self.assertEqual((msisdn, body, url), (MSISDN, router.TIER3_REJECTED_TEXT, "https://x/v/t"))
+        self.assertEqual(cta.call_args.kwargs["cta"], "Enter address")
+        self.assertIn("could not be verified", body)
+        self.assertNotIn("Wema", body)
 
     def test_tier3_from_chat_offers_the_saved_address_by_area_only_and_sends_it(self):
         self._tier2_user()

@@ -145,10 +145,14 @@ class AddressCallbackTests(TestCase):
         reply.assert_not_called()
         User.objects.filter(pk=self.user.pk).update(
             address_verified=False, address_verification_pending=True, tier3_review="pending")
-        _r, _read, reply = self._post(wema_body(
-            title="Address verification failed",
-            message="Address verification failed for customer with details below"))
-        reply.assert_called_once_with("2348030001111", TIER3_REFUSED_TEXT)
+        with patch("whatsapp.verification_web.start_verification", return_value="https://x/v/t"), \
+             patch("whatsapp.providers.send_cta_url", return_value={"success": True}) as cta:
+            _r, _read, reply = self._post(wema_body(
+                title="Address verification failed",
+                message="Address verification failed for customer with details below"))
+        reply.assert_not_called()
+        self.assertEqual(cta.call_args.args, ("2348030001111", TIER3_REFUSED_TEXT, "https://x/v/t"))
+        self.assertEqual(cta.call_args.kwargs["cta"], "Enter address")
 
     def test_a_refusal_without_a_whatsapp_link_sends_nothing_and_still_answers(self):
         User.objects.filter(pk=self.user.pk).update(

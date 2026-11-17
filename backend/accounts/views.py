@@ -2834,6 +2834,54 @@ def verify_kyc_address(user, data):
                 success=False, code="address_verification_unavailable",
                 **tier3_address_capability())
 
+
+def submit_tier3_address(user, data):
+    """The WhatsApp Tier 3 page's address form (17 Nov 2026): a refused address
+    is entered again there and sent as its own Tier 3 request, exactly as the app
+    and the chat send one (send_tier3_address). Only the bank's address webhook
+    can verify it. The app's old /api/kyc/address/ stays closed
+    (verify_kyc_address)."""
+    from wallet.address_verification import (
+        ADDRESS_VERIFICATION_UNAVAILABLE_MESSAGE, refresh_address_verification,
+        tier3_address_capability,
+    )
+
+    refresh_address_verification(user)
+    if user.address_verified:
+        return ok(success=True, message="Address verified", **_kyc_state(user))
+    if user.address_verification_pending:
+        return JsonResponse({**_kyc_state(user), "success": False, "pending": True,
+                             "message": "Your address is being verified."}, status=202)
+    if not (user.tier1_identity_verified and user.face_verified and user.phone_verified):
+        return fail("Complete Tier 2 identity and liveness verification before verifying your address.",
+                    status=409, upgrade_required=True, required_tier=2)
+    # Sent as its own Tier 3 request, the same way as the app and the chat
+    # (send_tier3_address); the result arrives by the bank's address webhook.
+    data = data if isinstance(data, dict) else {}
+    house = str(data.get("buildingNumber") or data.get("house") or "").strip()[:24]
+    street = str(data.get("street") or "").strip()[:100]
+    lga = str(data.get("lga") or "").strip()[:60]
+    typed_state = str(data.get("state") or "").strip()
+    state = next((s for s in _NIGERIAN_STATES if s.lower() == typed_state.lower()), "")
+    if not (house and street and lga):
+        return fail("Enter your house number, street and LGA.", status=400)
+    if not state:
+        return fail("Enter a Nigerian state, for example Lagos.", status=400)
+    _sent, state3, _address = send_tier3_address(user, house, street, state, lga)
+    if state3 in ("ready", "done"):
+        user.refresh_from_db()
+        return ok(success=True, message="Address verified", **_kyc_state(user))
+    if state3 == "processing":
+        user.refresh_from_db()
+        return JsonResponse({**_kyc_state(user), "success": False, "pending": True,
+                             "message": "Your address is being verified."}, status=202)
+    if state3 == "not_confirmed":
+        return fail("We could not verify this address. Check every field and try again.", status=400)
+    return fail(ADDRESS_VERIFICATION_UNAVAILABLE_MESSAGE, status=503,
+                success=False, code="address_verification_unavailable",
+                **tier3_address_capability())
+
+
 @api
 @ratelimit("kyc_id_document", limit=10, window=600)
 @require_user
