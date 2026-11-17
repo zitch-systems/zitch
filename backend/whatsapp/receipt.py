@@ -867,7 +867,8 @@ def _draw_receipt(title: str, rows: list, ref: str, *, status: str = "Successful
     d = ImageDraw.Draw(img)
 
     # Header: the white coil and the wordmark on the left, straight on the teal
-    # (no disc behind the coil), and the receipt's title on the right.
+    # (no disc behind the coil), "WhatsApp Banking" under the wordmark, and the
+    # receipt's title on the right.
     row_mid = _px(64)
     x = left
     if mark is not None:
@@ -875,6 +876,8 @@ def _draw_receipt(title: str, rows: list, ref: str, *, status: str = "Successful
         x += mark.width + _px(14)
     word_base = row_mid + _cap_height(wordmark) / 2 + _px(1)
     d.text((x, word_base), "zitch", font=wordmark, fill=(255, 255, 255), anchor="ls")
+    d.text((x + _px(2), word_base + _px(30)), "WhatsApp Banking", font=_font(_BOLD, 21),
+           fill=(255, 255, 255), anchor="ls")
     title = layout["title"]
     d.text((right - _text_width(title, header), row_mid + _cap_height(header) / 2),
            title, font=header, fill=_TEAL_50, anchor="ls")

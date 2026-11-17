@@ -3533,14 +3533,10 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
         "face_verified", "address_verified", "address_verification_pending", "id_document_verified",
     ])
     if user.tier >= 2:
-        from accounts.views import _kyc_state
         from wallet.address_verification import refresh_address_verification
 
         if user.address_verification_pending:
             refresh_address_verification(user)
-        address_status = _kyc_state(user)
-        if address_status.get("address_verification_pending"):
-            return reply(msisdn, TIER3_PROCESSING_TEXT)
         user.refresh_from_db(fields=["tier", "address_verified"])
     from wallet.views import refresh_tier2_face
 
@@ -3553,24 +3549,12 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
     if user.tier >= 3:
         return reply(msisdn, status + "\n\nYou are already on the highest verification tier.")
     if user.tier >= 2:
-        from accounts.views import saved_address_parts, tier3_claim_state
+        from accounts.views import saved_address_parts
 
-        # Tier 3 is the address, sent to the bank as its own request, as in the
-        # app. A refused one, or none saved, is entered in the app.
-        state3 = tier3_claim_state(user)
-        if state3 != "ready" and (state3 == "not_confirmed" or not saved_address_parts(user.address)):
-            return reply(msisdn, status + "\n\n*Upgrade to Tier 3*\n" + (
-                "Your address details need review. " if user.tier3_review == "rejected"
-                else "") + TIER3_IN_APP_TEXT)
-        if state3 == "ready":
-            # The bank verified the address. Zitch's own limiter: it applies on this tap.
-            pa = PendingAction.objects.create(
-                user=user, msisdn=msisdn, action_type="kyc", state=KYC_UPGRADE_STATE,
-                payload={}, expires_at=_flow_deadline("idle"),
-            )
-            _touch(pa, state=KYC_UPGRADE_STATE, payload=pa.payload)
-            return reply_buttons(msisdn, status + "\n\n*Upgrade to Tier 3*\nTap to move up to Tier 3.",
-                                 [("tier3", "Upgrade to Tier 3"), ("later", "Later")])
+        # Tier 3 is the address saved at sign-up. With none saved it is
+        # entered in the app; otherwise one tap, answered by where it stands.
+        if not saved_address_parts(user.address):
+            return reply(msisdn, status + "\n\n*Upgrade to Tier 3*\n" + TIER3_IN_APP_TEXT)
     pa = PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="kyc", state=KYC_UPGRADE_STATE,
         payload={}, expires_at=_flow_deadline("idle"),
@@ -3590,18 +3574,28 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
     return reply_buttons(
         msisdn,
         status + "\n\n*Upgrade to Tier 3*\n"
-        f"Your bank checks the home address you gave at sign-up (in {lga}, {state}).",
+        f"We'll verify the home address you gave at sign-up (in {lga}, {state}).",
         [("tier3", "Upgrade to Tier 3"), ("later", "Later")],
     )
 
 
-TIER3_PROCESSING_TEXT = ("⏳ *Tier 3 is processing.*\n\n"
-                         "Your address is with your bank. Tier 3 opens once the bank's check can be "
-                         "confirmed. You don't need to send it again.")
+# The three answers to "Upgrade to Tier 3" (17 Nov 2026). No bank is named.
+TIER3_PROCESSING_TEXT = ("⏳ *Tier 3 is pending.*\n\n"
+                         "Your address is still being verified. Please check again later.")
+TIER3_REJECTED_TEXT = ("❌ *Tier 3 was not approved.*\n\n"
+                       "Your address could not be verified. Please try again in the Zitch app.")
 TIER3_IN_APP_TEXT = ("Add your home address in the Zitch app: Account limits, then Verify Tier 3.")
 TIER2_PROCESSING_TEXT = ("⏳ *Tier 2 is processing.*\n\n"
                          "Your NIN and face check are with your bank. You don't need to send them again. "
                          "Reply *8* to check again.")
+
+
+def _tier3_done_text() -> str:
+    from accounts.models import User
+
+    return ("✅ *Tier 3 verification complete.*\n\n"
+            "Your address is verified. Your daily limit has been increased to "
+            f"*{_money(User.DAILY_TRANSFER_LIMITS[3])}*.")
 
 
 def _send_tier3_from_chat(user, msisdn: str) -> None:
@@ -3611,14 +3605,18 @@ def _send_tier3_from_chat(user, msisdn: str) -> None:
                                 tier3_claim_state)
 
     _clear_actions(msisdn)
-    if user.tier >= 2 and tier3_claim_state(user) == "ready":
-        # Already verified by the bank: this tap is what moves the account up.
+    state3 = tier3_claim_state(user)
+    if state3 == "ready" and user.tier >= 2:
+        # Already verified: this tap is what moves the account up.
         if apply_confirmed_tier(user, 3) >= 3:
-            from accounts.models import User
-
-            return reply(msisdn, "✅ *Tier 3 verification complete.*\n\n"
-                         "Your address is verified. Your daily limit has been increased to "
-                         f"*{_money(User.DAILY_TRANSFER_LIMITS[3])}*.")
+            return reply(msisdn, _tier3_done_text())
+    if state3 == "done":
+        return reply(msisdn, "✅ You are already on Tier 3.")
+    if state3 == "processing":
+        return reply(msisdn, TIER3_PROCESSING_TEXT)
+    if state3 == "not_confirmed":
+        return reply(msisdn, TIER3_REJECTED_TEXT)
+    # Not sent yet (normally it goes with Tier 2): send it now.
     parts = saved_address_parts(user.address)
     if not parts:
         return reply(msisdn, TIER3_IN_APP_TEXT)
@@ -3628,8 +3626,10 @@ def _send_tier3_from_chat(user, msisdn: str) -> None:
         return reply(msisdn, TIER3_PROCESSING_TEXT)
     if state3 == "done":
         return reply(msisdn, "✅ You are already on Tier 3.")
+    if state3 == "ready" and apply_confirmed_tier(user, 3) >= 3:
+        return reply(msisdn, _tier3_done_text())
     if state3 == "not_confirmed":
-        return reply(msisdn, "Your address details need review. " + TIER3_IN_APP_TEXT)
+        return reply(msisdn, TIER3_REJECTED_TEXT)
     return reply(msisdn, "We couldn't send your address right now. Please try again later. "
                  "Your verification so far is saved.")
 

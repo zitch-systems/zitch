@@ -309,19 +309,11 @@
           },
           {
             "type": "TextBody",
-            "text": "Zitch will collect and use the details you provide to create and secure your account, verify your identity, support transactions, protect against fraud, and contact you about your account."
+            "text": "We use your name, phone, email, BVN and address to open and secure your account, verify you and prevent fraud, under the Nigeria Data Protection Act 2023."
           },
           {
-            "type": "TextBody",
-            "text": "This includes your name, email, phone number, BVN, address and PIN settings, handled under the Nigeria Data Protection Act, 2023."
-          },
-          {
-            "type": "TextBody",
-            "text": "Privacy Policy: https://zitch.ng/privacy.html"
-          },
-          {
-            "type": "TextBody",
-            "text": "Terms & Conditions: https://zitch.ng/terms.html"
+            "type": "TextCaption",
+            "text": "Privacy Policy: zitch.ng/privacy.html \u00b7 Terms: zitch.ng/terms.html"
           },
           {
             "type": "Image",
@@ -1189,16 +1181,6 @@
                   "name": "data_exchange",
                   "payload": {
                     "resend": true
-                  }
-                }
-              },
-              {
-                "type": "EmbeddedLink",
-                "text": "Do this later",
-                "on-click-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "later": true
                   }
                 }
               },

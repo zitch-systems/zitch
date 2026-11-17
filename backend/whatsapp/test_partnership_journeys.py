@@ -194,18 +194,37 @@ class PartnershipJourneyTests(TestCase):
         wallet.account_number = "0123456789"
         wallet.save(update_fields=["account_number"])
 
-    def test_tier3_pending_refresh_does_not_offer_another_submission(self):
+    def test_a_pending_tier3_tap_says_pending_and_sends_nothing_again(self):
+        """17 Nov 2026: the tap answers success, pending or rejected - never a second send."""
         self._tier2_user()
-        with patch("accounts.views._kyc_state", return_value={"address_verification_pending": True}), \
-             patch.object(router, "reply") as reply, \
+        type(self.user).objects.filter(pk=self.user.pk).update(
+            address_verification_pending=True, tier3_review="pending", tier3_review_at=timezone.now())
+        self.user.refresh_from_db()
+        with patch("wallet.address_verification.refresh_address_verification"), \
              patch.object(router, "reply_buttons") as buttons:
             router._offer_tier_upgrade(self.user, MSISDN)
+        self.assertIn(("tier3", "Upgrade to Tier 3"), buttons.call_args.args[2])
+        with patch("utility.wema.upgrade_tier3") as sent, patch.object(router, "reply") as reply:
+            router.handle_inbound(MSISDN, "tier3")
+        sent.assert_not_called()
         text = reply.call_args.args[1]
-        self.assertIn("Tier 3 is processing", text)
-        self.assertIn("You don't need to send it again", text)
-        self.assertNotIn("Support", text)
-        buttons.assert_not_called()
-        self.assertFalse(PendingAction.objects.filter(user=self.user).exists())
+        self.assertIn("Tier 3 is pending", text)
+        self.assertNotIn("Wema", text)
+        self.assertNotIn("bank", text)
+
+    def test_a_refused_tier3_tap_says_not_approved_and_sends_nothing_again(self):
+        self._tier2_user()
+        type(self.user).objects.filter(pk=self.user.pk).update(tier3_review="rejected")
+        self.user.refresh_from_db()
+        with patch.object(router, "reply_buttons") as buttons:
+            router._offer_tier_upgrade(self.user, MSISDN)
+        self.assertIn(("tier3", "Upgrade to Tier 3"), buttons.call_args.args[2])
+        with patch("utility.wema.upgrade_tier3") as sent, patch.object(router, "reply") as reply:
+            router.handle_inbound(MSISDN, "tier3")
+        sent.assert_not_called()
+        self.assertEqual(reply.call_args.args[1], router.TIER3_REJECTED_TEXT)
+        self.assertIn("could not be verified", router.TIER3_REJECTED_TEXT)
+        self.assertNotIn("Wema", router.TIER3_REJECTED_TEXT)
 
     def test_tier3_from_chat_offers_the_saved_address_by_area_only_and_sends_it(self):
         self._tier2_user()
@@ -227,14 +246,14 @@ class PartnershipJourneyTests(TestCase):
         self.assertEqual(account, "0123456789")
         self.assertEqual((address["buildingNumber"], address["street"], address["lga"], address["state"]),
                          ("12", "Allen Avenue", "Ikeja", "Lagos"))
-        self.assertIn("Tier 3 is processing", reply.call_args.args[1])
+        self.assertIn("Tier 3 is pending", reply.call_args.args[1])
         self.user.refresh_from_db()
         self.assertTrue(self.user.address_verification_pending)
         self.assertFalse(self.user.address_verified, "the bank's answer never raises Tier 3")
         self.assertEqual(self.user.tier, 2)
 
-    def test_tier3_from_chat_without_a_usable_address_or_after_a_refusal_points_to_the_app(self):
-        for address, review in (("", ""), ("Somewhere", ""), ("12 Allen Avenue, Ikeja, Lagos", "rejected")):
+    def test_tier3_from_chat_without_a_usable_address_points_to_the_app(self):
+        for address, review in (("", ""), ("Somewhere", "")):
             with self.subTest(address=address, review=review):
                 self._tier2_user(address)
                 type(self.user).objects.filter(pk=self.user.pk).update(tier3_review=review)
@@ -246,7 +265,6 @@ class PartnershipJourneyTests(TestCase):
                 buttons.assert_not_called()
                 sent.assert_not_called()
                 self.assertIn("Account limits, then Verify Tier 3", reply.call_args.args[1])
-                self.assertEqual("rejected" in review, "details need review" in reply.call_args.args[1])
 
     def test_a_tier_3_address_the_bank_verified_applies_on_the_chat_tap(self):
         """Zitch's own limiter: verified at the bank, applied only when the customer taps."""

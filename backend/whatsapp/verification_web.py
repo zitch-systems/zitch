@@ -785,9 +785,8 @@ def send_address_with_tier2(user, msisdn) -> str:
         return "error"
 
 
-TIER3_REFUSED_TEXT = ("⚠️ *Your address couldn't be verified.*\n\n"
-                      "Your bank couldn't confirm the home address you gave. Add it again in the "
-                      "Zitch app: Account limits, then Verify Tier 3.")
+TIER3_REFUSED_TEXT = ("⚠️ *Your address could not be verified.*\n\n"
+                      "Please try again in the Zitch app.")
 
 
 def notify_tier3_refused(user, msisdn: str = "") -> bool:
