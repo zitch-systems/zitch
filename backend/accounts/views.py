@@ -260,7 +260,7 @@ def _new_device_challenge(user, request) -> str:
     if device_id and devices.filter(device_id=device_id).exists():
         return ""
     identity = _identity(user)
-    if not (identity and identity[0] == "bvn" and user.email_verified and user.phone_verified):
+    if not (identity and identity[0] == "bvn" and user.phone_verified):
         log.warning("new_device_signin_unchallengeable user=%s reason=no_bvn_face_reference", user.pk)
         return ""
     if not tier2_face_available():
@@ -2799,7 +2799,7 @@ def verify_kyc_address(user, data):
             "message": "Your submitted address verification needs review. Please contact Zitch Support; do not submit it again.",
         }, status=202)
     if not (user.tier1_identity_verified and user.face_verified
-            and user.phone_verified and user.email_verified):
+            and user.phone_verified):
         return fail("Complete Tier 2 identity and liveness verification before verifying your address.",
                     status=409, upgrade_required=True, required_tier=2)
     return fail(ADDRESS_VERIFICATION_UNAVAILABLE_MESSAGE, status=503,

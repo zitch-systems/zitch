@@ -269,7 +269,7 @@ def _form(request, pa, user, *, message="", status=200, values=None, refresh_sta
         return _page(request, "unavailable", status=503,
                      message=capability["tier3_address_unavailable_reason"])
     if not (user.tier1_identity_verified and user.face_verified
-            and user.email_verified and user.phone_verified and user.tier >= 2):
+            and user.phone_verified and user.tier >= 2):
         return _page(request, "unavailable", status=409,
                      message="Complete Tier 2 identity verification before verifying your address. "
                              "Return to WhatsApp to continue.")
@@ -401,7 +401,7 @@ def _submit(request, claims):
             return _page(request, "unavailable", status=400,
                          message="This action is not available from this verification link.")
         if not (user.tier1_identity_verified and user.face_verified
-                and user.email_verified and user.phone_verified and user.tier >= 2):
+                and user.phone_verified and user.tier >= 2):
             return _form(request, pa, user, refresh_status=False)
         if user.address_verified:
             return _page(request, "complete")

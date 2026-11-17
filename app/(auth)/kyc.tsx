@@ -807,9 +807,7 @@ const Kyc = () => {
             </View>
           )}
 
-          {!status?.email_verified ? (
-            <MethodCard id="email" icon="remita" color={C_NIN} title="Verify email" sub="Required before Tier 1" badge="First" />
-          ) : needsUpgrade && !hasTier1Identity ? (
+          {needsUpgrade && !hasTier1Identity ? (
             <>
               <View style={{ flexDirection: 'row', gap: 10, padding: 14, borderRadius: 14, backgroundColor: 'rgba(45,127,249,.10)', marginTop: 14 }}>
                 <ZIcon name="help" size={16} color={C_NIN} />
@@ -826,7 +824,7 @@ const Kyc = () => {
               {(!hasTier1Identity || status.nin_verified) && <MethodCard id="nin" icon="card" color={C_NIN} title="NIN verification" sub="Tier 1 · SMS code or face verification" done={!!status.nin_verified} />}
             </>
           )}
-          {status.email_verified && hasTier1Identity && (tier2Unavailable && (needsBankUpgrade || !status.face_verified)
+          {hasTier1Identity && (tier2Unavailable && (needsBankUpgrade || !status.face_verified)
             ? <Tier2Unavailable /> : needsBankUpgrade
             ? <MethodCard id="upgrade" icon="user" color={C_SELFIE} title="Tier 2 · Face verification"
                 sub="Your BVN and NIN, then a live face check" />
@@ -845,7 +843,7 @@ const Kyc = () => {
 
       {method === 'email' && (
         <View>
-          <Hero icon="remita" color={C_NIN} title="Verify your email" sub="Tier 1 requires a verified phone number and email address. We’ll send a 6-digit code to your inbox." />
+          <Hero icon="remita" color={C_NIN} title="Verify your email" sub="Optional: confirm your email to get receipts and alerts there. No tier needs it. We’ll send a 6-digit code to your inbox." />
           <View style={{ marginTop: 22 }}>
             {!emailSent ? (
               <>

@@ -2400,6 +2400,9 @@ class ChatAccountSetupTests(TestCase):
             w = get_or_create_wallet(user)
             w.account_number, w.bank_name, w.account_name = "9900000001", "Wema Bank", "NGOZI ADE"
             w.save(update_fields=["account_number", "bank_name", "account_name"])
+            user.bvn_verified = True   # the real step binds the matched BVN
+            user.recompute_tier()
+            user.save(update_fields=["bvn_verified", "tier"])
             return {"success": True}, 200
         complete.side_effect = provision
         with patch("whatsapp.router.sms_live", return_value=False):
@@ -2503,6 +2506,9 @@ class ChatAccountSetupTests(TestCase):
             w = get_or_create_wallet(user)
             w.account_number, w.bank_name, w.account_name = "9900000002", "Wema Bank", "NGOZI ADE"
             w.save(update_fields=["account_number", "bank_name", "account_name"])
+            user.bvn_verified = True   # the real step binds the matched BVN
+            user.recompute_tier()
+            user.save(update_fields=["bvn_verified", "tier"])
             return {"success": True}, 200
         complete.side_effect = provision
         resp = handle_flow_request({"action": "data_exchange",
@@ -3396,19 +3402,17 @@ class ChatKycTests(TestCase):
     @patch("whatsapp.router.sms_live", return_value=True)
     @patch("whatsapp.router.send_email")
     @patch("whatsapp.router.send_sms", return_value={"success": True})
-    def test_email_step_sends_to_the_inbox_not_the_phone(self, sms, email, _sl, _el):
+    def test_the_ladder_goes_from_the_phone_to_the_id_without_an_email_code(self, sms, email, _sl, _el):
+        """No tier needs the email (17 Nov 2026): after the phone code the chat
+        asks for the BVN, and nothing is emailed."""
         self.inbound("8", "e1")
         self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "e2")
-        # Now on email: the code went to the ADDRESS, never by SMS.
-        self.assertIn("k@zitch.test", self.last_reply())
-        email.assert_called_once()
-        self.assertEqual(email.call_args[0][0], "k@zitch.test")
-        code = re.search(r"\b(\d{6})\b", email.call_args[0][2]).group(1)
-        self.assertEqual(sms.call_count, 1)     # no second SMS
-
-        self.inbound(code, "e3")
+        self.assertIn("BVN", self.last_reply())
+        self.assertNotIn("k@zitch.test", self.last_reply())
+        email.assert_not_called()
         self.user.refresh_from_db()
-        self.assertTrue(self.user.email_verified)
+        self.assertTrue(self.user.phone_verified)
+        self.assertFalse(self.user.email_verified)
 
     @patch("whatsapp.router.email_live", return_value=True)
     @patch("whatsapp.router.sms_live", return_value=True)
@@ -3419,7 +3423,6 @@ class ChatKycTests(TestCase):
     def test_full_run_reaches_tier_1(self, sms, email, bvn, nin, _sl, _el):
         self.inbound("8", "f1")
         self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "f2")
-        self.inbound(re.search(r"\b(\d{6})\b", email.call_args[0][2]).group(1), "f3")
         self.assertIn("BVN", self.last_reply())
         self.inbound("12345678901", "f4")
         self.user.refresh_from_db()
@@ -3428,8 +3431,10 @@ class ChatKycTests(TestCase):
         nin.assert_not_called()  # Tier 1 needs either identity, not both.
         self.assertEqual(self.user.tier, 1)      # derived, not granted
         self.assertEqual(self.user.transaction_limit, User.TIER_LIMITS[1])
-        for check in ("✅ Phone number", "✅ Email address", "✅ BVN"):
+        for check in ("✅ Phone number", "✅ BVN"):
             self.assertIn(check, self.last_reply())
+        self.assertNotIn("Email address", self.last_reply())
+        email.assert_not_called()
         self.assertNotIn("per transaction", self.last_reply())
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
         # Neither identity number is readable in the log.
@@ -3447,15 +3452,14 @@ class ChatKycTests(TestCase):
         """Completing Tier 1 must not silently collect or approve a second ID."""
         self.inbound("8", "q1")
         self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "q2")
-        self.inbound(re.search(r"\b(\d{6})\b", email.call_args[0][2]).group(1), "q3")
         self.inbound("12345678901", "q4")     # BVN verifies
         self.user.refresh_from_db()
         self.assertTrue(self.user.bvn_verified)
         self.assertFalse(self.user.nin_verified)
         self.assertFalse(self.user.nin_hash)
         nin.assert_not_called()
-        # Tier 1 is earned on the FIRST verified identity (email + phone + BVN or
-        # NIN — see User.recompute_tier). The second identity being queued for
+        # Tier 1 is earned on the FIRST verified identity (phone + BVN or NIN —
+        # see User.recompute_tier). The second identity being queued for
         # review is what unlocks Tier 2, and must not hold the customer at the
         # floor in the meantime.
         self.assertEqual(self.user.tier, 1)
@@ -3480,33 +3484,29 @@ class ChatKycTests(TestCase):
 
     @patch("whatsapp.router.email_live", return_value=False)
     @patch("whatsapp.router.sms_live", return_value=True)
-    def test_an_unconfigured_email_rail_says_so_instead_of_lying(self, _sms_live, _mail_live):
+    def test_a_dead_email_rail_does_not_block_verification(self, _sms_live, _mail_live):
+        """The email is not a step any more, so a missing email rail cannot
+        stop a verified phone from going on to the BVN."""
         self.user.phone_verified = True
         self.user.save(update_fields=["phone_verified"])
         with patch("whatsapp.router.send_email") as email:
             self.inbound("8", "n2")
         email.assert_not_called()
-        self.assertIn("can't send emails", self.last_reply())
+        self.assertNotIn("can't send emails", self.last_reply())
+        self.assertIn("BVN", self.last_reply())
 
     @patch("whatsapp.router.email_live", return_value=True)
     @patch("whatsapp.router.sms_live", return_value=True)
     @patch("whatsapp.router.send_email", return_value={"success": False, "raw": {
         "statusCode": 403, "message": "The send.zitch.ng domain is not verified"}})
-    def test_a_rejected_email_says_so_instead_of_lying(self, email, _sms_live, _mail_live):
-        """A KEYED rail can still refuse the send — an unverified sender domain is
-        the usual reason, and RESEND_API_KEY being set says nothing about it. The
-        SMS branch has always checked its result; email announced "we sent a
-        6-digit code" no matter what came back, so the customer waited on mail
-        that Resend had refused outright."""
+    def test_a_refusing_email_rail_is_never_called_by_verification(self, email, _sms_live, _mail_live):
+        """Verify never sends an email now, so a rail that would refuse cannot
+        strand the customer waiting on mail."""
         self.user.phone_verified = True
         self.user.save(update_fields=["phone_verified"])
         self.inbound("8", "r1")
-        email.assert_called_once()
-        r = self.last_reply()
-        self.assertIn("couldn't send the email", r)
-        self.assertNotIn("6-digit code", r)
-        # No half-open flow left behind waiting for a code that cannot arrive.
-        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
+        email.assert_not_called()
+        self.assertNotIn("couldn't send the email", self.last_reply())
 
     @override_settings(TEST_OTP={"PHONE": "08011112222", "CODE": "123456"})
     @patch("whatsapp.router.sms_live", return_value=False)
@@ -4532,7 +4532,9 @@ class IdentityNeverFallsBackToChatInProductionTests(TestCase):
         self.assertEqual(PendingAction.objects.get(
             msisdn=MSISDN, action_type="kyc").state, BVN_METHOD_STATE)
 
-    def test_a_failed_email_code_send_refuses_chat_entry_when_flows_exist(self):
+    def test_an_unverified_email_never_becomes_a_verification_step(self):
+        """No tier needs the email: with it unconfirmed, Verify goes straight to
+        the identity, and no email code is sent or asked for in the chat."""
         from whatsapp.router import handle_inbound
 
         self.user.email_verified = False
@@ -4540,10 +4542,10 @@ class IdentityNeverFallsBackToChatInProductionTests(TestCase):
         with patch("whatsapp.router.flows_live", return_value=True), \
              patch("whatsapp.router.send_flow", return_value={"success": False}), \
              patch("whatsapp.router.email_live", return_value=True), \
-             patch("whatsapp.router.send_email", return_value={"success": True}):
+             patch("whatsapp.router.send_email", return_value={"success": True}) as email:
             handle_inbound(MSISDN, "8")
-        out = self._last()
-        self.assertIn("won't ask", out)
+        email.assert_not_called()
+        self.assertIn("BVN", self._last())
 
     def test_an_unconfigured_deploy_keeps_the_chat_path(self):
         """Dev and preview deploys have no Flows at all; refusing there would

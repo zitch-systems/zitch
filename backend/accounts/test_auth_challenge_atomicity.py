@@ -275,7 +275,7 @@ class ProfileWriteAtomicityTests(TestCase):
         self.assertTrue(self.user.check_password("Changed-Secret-75!"))
         self.assertTrue(self.user.check_transaction_pin("582619"))
 
-    def test_changed_contact_persists_tier_drop_and_retires_previous_challenges(self):
+    def test_changed_email_keeps_the_tier_and_retires_previous_challenges(self):
         User.objects.filter(pk=self.user.pk).update(
             bvn_verified=True, nin_verified=True, face_verified=True,
             address_verified=True, tier=3,
@@ -291,7 +291,8 @@ class ProfileWriteAtomicityTests(TestCase):
         self.assertTrue(self.user.phone_verified)
         self.assertTrue(self.user.bvn_verified)
         self.assertTrue(self.user.face_verified)
-        self.assertEqual(self.user.tier, 0)
+        # No tier needs the email: changing it un-verifies the inbox only.
+        self.assertEqual(self.user.tier, 3)
         self.assertTrue(reset.used)
         self.assertTrue(inbox.used)
 

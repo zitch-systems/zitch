@@ -99,10 +99,15 @@ ONE_SCREEN_SUMMARY = ("Enter the 6-digit code we sent to your verified Zitch ema
                       "then your existing PIN.")
 #: The approved design: the same code by SMS to the account's phone number too.
 BOTH_SUMMARY = "Enter the code sent to your Zitch phone number and email."
+#: No verified email: the code goes to the phone only.
+SMS_SUMMARY = "Enter the 6-digit code we sent by SMS to your Zitch phone number, then your PIN."
 
 
 def _summary(ob) -> str:
-    return BOTH_SUMMARY if ob.payload.get("sms_sent") else ONE_SCREEN_SUMMARY
+    if ob.payload.get("sms_sent"):
+        # Older sessions carry no email_sent flag; they always emailed.
+        return BOTH_SUMMARY if ob.payload.get("email_sent", True) else SMS_SUMMARY
+    return ONE_SCREEN_SUMMARY
 
 
 def _send_login_sms(user, code: str) -> bool:
@@ -141,7 +146,7 @@ def _screen(ob, error=""):
                            error=error, screen=screen or PIN_CHAIN)
     if ob.payload.get("sms_sent"):
         return _identity_screen("email", label="Code", error=error, screen=screen,
-                                summary=BOTH_SUMMARY)
+                                summary=_summary(ob))
     return _identity_screen("email", label="Email code", error=error, screen=screen,
                             summary="Enter the code sent to your verified Zitch email.")
 
@@ -158,22 +163,25 @@ def start_login(msisdn):
         return reply(msisdn, "Please wait a minute before requesting another sign-in code.")
     user = User.objects.filter(phone__in=[_local_phone(msisdn), msisdn, "+" + msisdn],
                                is_active=True, phone_verified=True).first()
-    if not user or not user.email_verified or not user.email or not user.transaction_pin:
+    if not user or not user.transaction_pin:
         return reply(msisdn, "We couldn't start secure sign-in for this number. Use the WhatsApp number "
                      "registered on your Zitch account, or contact support to recover access."
                      + _support_suffix())
     if user.pin_reset_required:
         return reply(msisdn, "Your transaction PIN needs a reset. Contact support to recover access securely."
                      + _support_suffix())
-    if not email_live() and not (settings.DEBUG or getattr(settings, "TESTING", False)):
-        return reply(msisdn, "We couldn't send your sign-in code. Please try again shortly.")
     code = f"{secrets.randbelow(10**6):06d}"
-    sent = send_email(user.email, "Connect your Zitch WhatsApp",
-                      f"Your Zitch sign-in code is {code}. It expires in 10 minutes. "
-                      "Enter it only in the secure WhatsApp form. Never share it.")
-    if not sent.get("success"):
-        return reply(msisdn, "We couldn't send your sign-in code. Please try again shortly.")
+    # The verified phone is the sign-in channel; a verified email gets a copy.
+    # Either copy works and the PIN is still required. Email is never needed.
+    email_sent = False
+    if user.email and user.email_verified and (
+            email_live() or settings.DEBUG or getattr(settings, "TESTING", False)):
+        email_sent = bool(send_email(user.email, "Connect your Zitch WhatsApp",
+                                     f"Your Zitch sign-in code is {code}. It expires in 10 minutes. "
+                                     "Enter it only in the secure WhatsApp form. Never share it.").get("success"))
     sms_sent = _send_login_sms(user, code)
+    if not (email_sent or sms_sent):
+        return reply(msisdn, "We couldn't send your sign-in code. Please try again shortly.")
     one_screen = login_one_screen_live()
     payload = {"user_id": user.pk, "credentials": _credentials(user), "nonce": secrets.token_urlsafe(24),
                "code_hash": make_password(code), "attempts": 0,
@@ -182,12 +190,16 @@ def start_login(msisdn):
         payload["one_screen"] = True
     if sms_sent:
         payload["sms_sent"] = True
+    if email_sent:
+        payload["email_sent"] = True
     ob, _ = WaOnboarding.objects.update_or_create(msisdn=msisdn, defaults={
         "step": CODE_STATE, "expires_at": timezone.now() + TTL, "payload": payload,
     })
     response = _screen(ob)
     sent = send_flow(msisdn, _token(ob), header="Sign in to Zitch",
                      body=("Enter the code sent to your email and phone number, then your PIN, "
+                           "to connect this WhatsApp." if sms_sent and email_sent else
+                           "Enter the code sent to your phone number, then your PIN, "
                            "to connect this WhatsApp." if sms_sent else
                            "Enter your email code and existing PIN privately to connect this WhatsApp."),
                      screen=response["screen"], screen_data=response["data"],
@@ -236,7 +248,7 @@ def handle_login(token, action, data):
         user = User.objects.select_for_update().filter(pk=ob.payload.get("user_id"), is_active=True).first()
         registered = _canonical_phone(user.phone) if user else ""
         if (not user or not registered or registered != ob.msisdn
-                or not user.phone_verified or not user.email_verified
+                or not user.phone_verified
                 or not hmac.compare_digest(ob.payload["credentials"], _credentials(user))):
             ob.delete()
             return _result_screen("Account details changed. Start sign-in again in the chat.", "failed")

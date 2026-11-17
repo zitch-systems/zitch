@@ -251,3 +251,48 @@ class WhatsAppLoginTests(TestCase):
         response = self.exchange(token, {"number": "123456"})
         self.assertIn("ended", response["data"]["message"])
         self.assertFalse(WhatsAppLink.objects.exists())
+
+
+@override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": True}, WHATSAPP_LOGIN_SMS_CODE=True)
+class WhatsAppLoginWithoutEmailTests(TestCase):
+    """No tier or sign-in needs a verified email (17 Nov 2026): the verified
+    phone carries the sign-in code, and the PIN is still required."""
+
+    def setUp(self):
+        cache.clear()
+        self.enterContext(patch("requests.sessions.Session.request",
+                                side_effect=AssertionError("Unexpected network call")))
+        self.user = User.objects.create_user(
+            username="08099990002", phone="08099990002", email="typed@example.com",
+            phone_verified=True, email_verified=False,
+            transaction_pin=make_password("638291"),
+        )
+        self.msisdn = "2348099990002"
+
+    def test_an_unverified_email_signs_in_by_sms_alone(self):
+        with patch("whatsapp.providers.flows_live", return_value=True), \
+             patch("whatsapp.providers.send_flow", return_value={"success": True}) as flow, \
+             patch("whatsapp.login_flow.send_email") as email, \
+             patch("utility.providers.send_sms", return_value={"success": True}) as sms, \
+             patch("whatsapp.login_flow.secrets.randbelow", return_value=123456):
+            start_login(self.msisdn)
+        email.assert_not_called()
+        sms.assert_called_once()
+        self.assertIn("123456", sms.call_args[0][1])
+        ob = WaOnboarding.objects.get(msisdn=self.msisdn)
+        self.assertTrue(ob.payload.get("sms_sent"))
+        self.assertFalse(ob.payload.get("email_sent"))
+        self.assertIn("phone number", flow.call_args.kwargs["body"])
+        self.assertNotIn("email", flow.call_args.kwargs["body"])
+
+    def test_no_channel_delivered_means_no_sign_in_form(self):
+        with patch("whatsapp.providers.flows_live", return_value=True), \
+             patch("whatsapp.providers.send_flow") as flow, \
+             patch("whatsapp.login_flow.send_email") as email, \
+             patch("utility.providers.send_sms", return_value={"success": False}), \
+             patch("whatsapp.router.reply") as reply:
+            start_login(self.msisdn)
+        email.assert_not_called()
+        flow.assert_not_called()
+        self.assertFalse(WaOnboarding.objects.filter(msisdn=self.msisdn).exists())
+        self.assertIn("couldn't send your sign-in code", reply.call_args[0][1])

@@ -69,7 +69,7 @@ def _identity(user):
 
 def _bound(session, user):
     return (session.expires_at > timezone.now()
-            and user.email_verified and user.phone_verified
+            and user.phone_verified
             and hmac.compare_digest(session.credential_stamp, _stamp(user))
             and getattr(user, f"{session.identity_type}_verified", False)
             and getattr(user, f"{session.identity_type}_hash", "") == session.identity_hash
@@ -91,7 +91,7 @@ def start_tier2_liveness(user, purpose=TIER2_PURPOSE):
     with transaction.atomic():
         user = User.objects.select_for_update().get(pk=user.pk)
         identity = _identity(user)
-        if not identity or not (user.email_verified and user.phone_verified):
+        if not identity or not user.phone_verified:
             return {"success": False, "message": "Verify your contact details and either BVN or NIN first."}
         if identity[0] != "bvn":
             return {"success": False, "message": "The live face workflow currently supports verified BVN. "

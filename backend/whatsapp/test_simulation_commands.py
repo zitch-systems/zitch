@@ -163,12 +163,10 @@ class WhatsAppSimulationCommandTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.phone_verified)
         self.assertFalse(self.user.email_verified)
-        email.assert_called_once()
-        self.assertEqual(email.call_args.args[0], self.user.email)
+        # No tier needs the email, so the ladder goes from the phone to the ID.
+        email.assert_not_called()
         pa.refresh_from_db()
-        self.assertEqual(pa.state, FLOW_ID_STATE)
-        self.assertEqual(pa.payload.get("id_kind"), "email")
-        self.assertEqual(pa.payload.get("id_step"), "code")
+        self.assertNotEqual(pa.payload.get("id_kind"), "email")
         replies = "\n".join(WaMessageLog.objects.filter(
             msisdn=MSISDN, direction=WaMessageLog.OUT
         ).values_list("text", flat=True))
