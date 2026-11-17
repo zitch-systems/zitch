@@ -850,7 +850,11 @@ const Kyc = () => {
 
       {method === 'email' && (
         <View>
-          <Hero icon="remita" color={C_NIN} title="Verify your email" sub="This is the email you signed up with. Change it here if it’s wrong. Once it’s verified it can’t be changed. We’ll send a 6-digit code to your inbox." />
+          {/* Once the code is sent, say where it went and that it goes in the box
+              below (17 Nov 2026: "where will the code be inputed"). */}
+          <Hero icon="remita" color={C_NIN} title="Verify your email" sub={emailSent
+            ? `Enter the 6-digit code we sent to ${(email || status?.email || 'your email').trim()}.`
+            : 'This is the email you signed up with. Change it here if it’s wrong. Once it’s verified it can’t be changed. We’ll send a 6-digit code to your inbox.'} />
           <View style={{ marginTop: 22 }}>
             {!emailSent ? (
               <>
