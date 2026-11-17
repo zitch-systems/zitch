@@ -5697,6 +5697,46 @@ def _is_new_command(text: str) -> bool:
     return True
 
 
+#: Asking for the payment on the open card to go ahead.
+_PROCEED_RE = re.compile(
+    r"\b(send|sned|snd|pay|proceed|continue|go\s*ahead|process|complete|finish|"
+    r"approve|confirm|transfer|execute|do\s+it|do\s+am|run\s+it|make\s+(?:the\s+)?payment)\b")
+#: Calling it off, or saying the details on the card are wrong.
+_CANCEL_RE = re.compile(
+    r"\b(cancel|stop|abort|halt|don'?t|do\s+not|dont|never\s*mind|nevermind|"
+    r"wrong|mistake|mistaken|error|incorrect|not\s+(?:this|that|it|correct|right)|"
+    r"no+|nope)\b")
+#: "to <someone>" that still means the payment on the card.
+_SAME_TARGET_RE = re.compile(
+    r"\bto\s+(?:it|them|him|her|that|this|the\s+(?:account|same|person|merchant|"
+    r"seller|vendor|shop|store)|paystack|same)\b")
+
+
+def _pending_reply_kind(text: str) -> str:
+    """What a message typed under an open payment card asks for.
+
+    "proceed" - send THIS payment ("send the money", "go ahead", "process it").
+    "cancel"  - stop, or the details are wrong.
+    "new"     - a payment to someone else by name ("send money to Ada").
+    ""        - anything else; a new account number or amount is a different
+                payment, decided by the caller.
+
+    Anything with a digit in it carries new details (an account, an amount), so
+    it is never read as proceed or cancel.
+    """
+    low = re.sub(r"\s+", " ", (text or "").strip().lower())
+    if not low or any(ch.isdigit() for ch in low):
+        return ""
+    if _CANCEL_RE.search(low):
+        return "cancel"
+    if not _PROCEED_RE.search(low):
+        return ""
+    # "send money to Ada" names someone else: a new payment, not this one.
+    if re.search(r"\bto\s+\w", low) and not _SAME_TARGET_RE.search(low):
+        return "new"
+    return "proceed"
+
+
 #: Words that only acknowledge. Typed with a card open they mean "got it", and
 #: reading them as a new instruction silently dropped the payment being agreed to.
 _ACK_WORDS = frozenset((
@@ -5834,13 +5874,31 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         # line and no way forward but a word they were never told first. An
         # unconfirmed payment has moved no money, so a clear new instruction
         # simply replaces it.
-        if _is_new_command(text):
+        #
+        # But "send the money" under the card is not moving on - it is asking for
+        # THIS payment. On 17 Nov 2026 it was read as a new instruction, the
+        # payment was dropped ("leaving that payment unconfirmed") and the
+        # customer was asked for the details they had just given. Only a cancel
+        # or a correction, or a different payment, replaces the card.
+        intent = _pending_reply_kind(text)
+        if intent == "proceed":
+            if _send_pin_flow(pa, user):
+                return None
+            return reply(msisdn, _confirm_prompt(pa))
+        if intent == "cancel":
+            _clear_actions(msisdn)
+            return reply(msisdn, "Okay - I've cancelled that payment. Nothing was sent.")
+        if intent == "new" or _is_new_command(text):
+            # A different payment (another account number, amount or person),
+            # or a different request altogether.
             _clear_actions(msisdn)
             reply(msisdn, "Okay - leaving that payment unconfirmed.")
             return handle_inbound(msisdn, text)
         cta = "Use PIN"
-        return reply(msisdn, f"🔐 Tap *{cta}* on the secure screen I sent to enter your PIN - "
-                             "it stays private and never appears in this chat. Or reply \"cancel\".")
+        return reply(msisdn, f"🔐 Your payment is still waiting. Tap *{cta}* on the secure screen "
+                             "I sent to enter your PIN - it stays private and never appears in "
+                             "this chat.\n\nReply \"cancel\" to drop it, or send different "
+                             "account details to pay someone else.")
     if pa.state == FLOW_ID_STATE:
         # Identity Flow open. Three different things arrive here and only one of
         # them used to get an answer.
