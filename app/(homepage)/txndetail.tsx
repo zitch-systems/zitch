@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, Share } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
+import { View, Text, Share } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { notify, flash, notifyError } from '@/components/design/Notify';
-import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Btn, money } from '@/components/design/ui';
-import { NText } from '@/components/design/Naira';
-import { receiptHtml, shareReceipt, outcomeMessage, type ReceiptFormat } from '@/lib/receipt';
+import { ReceiptTicket, ReceiptActionRow } from '@/components/design/Receipt';
+import ReceiptExport, { type ExportAction } from '@/components/design/ReceiptExport';
+import { receiptHtml, receiptStamp, senderRows, type ReceiptRow } from '@/lib/receipt';
+import { useWallet } from '@/lib/wallet';
 import { useTheme, font } from '@/lib/theme';
 import { apiJson } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
@@ -27,15 +27,21 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 /** The name a sent receipt's subline uses; none for money received. */
 const recipientNameForLine = (name: unknown, inflow: boolean) => (inflow ? '' : String(name ?? '').trim());
 
-/** "14 Nov 2026, 6:40 PM" from epoch ms, or from the server's "2026-11-14 18:40". */
-export const receiptWhen = (ts: string | undefined, detail: string): string => {
+/** When the transaction happened: the row's epoch ms, else the server's "2026-11-14 18:40". */
+export const receiptDate = (ts: string | undefined, detail: string): Date | null => {
   let t = Number(ts);
   if (!Number.isFinite(t) || t <= 0) {
     const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(detail || '');
-    if (!m) return detail;
+    if (!m) return null;
     t = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime();
   }
-  const d = new Date(t);
+  return new Date(t);
+};
+
+/** "14 Nov 2026, 6:40 PM" from epoch ms, or from the server's "2026-11-14 18:40". */
+export const receiptWhen = (ts: string | undefined, detail: string): string => {
+  const d = receiptDate(ts, detail);
+  if (!d) return detail;
   const h = d.getHours();
   return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}, ${h % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
 };
@@ -68,21 +74,12 @@ type TransactionStatusResult = {
   message?: string;
 };
 
-// The receipt card is drawn on fixed colours: it is shared as an image, and a
-// shared receipt must read the same whatever theme the sender's phone was in.
-const R = { card: '#FFFFFF', ink: '#06231F', muted: '#5E7470', line: '#EAF2F0', brand: '#0FA295', foot: '#7A8B87' };
-
-const Row2 = ({ k, v, strong, last }: { k: string; v: string; strong?: boolean; last?: boolean }) => (
-  <View style={{ flexDirection: 'row', gap: 14, justifyContent: 'space-between', alignItems: 'center', paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: R.line }}>
-    <Text style={{ fontSize: 14, color: R.muted, fontFamily: font.regular }}>{k}</Text>
-    <NText selectable style={{ flex: 1, fontSize: strong ? 16 : 14.5, fontFamily: strong ? font.extrabold : font.semibold, color: R.ink, textAlign: 'right', fontVariant: ['tabular-nums'] }}>{v}</NText>
-  </View>
-);
-
 const TxnDetail = () => {
   const { c } = useTheme();
   const card = useRef<View>(null);
-  const [sharing, setSharing] = useState<ReceiptFormat | null>(null);
+  const [action, setAction] = useState<ExportAction | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { accountName, firstName, accountNumber } = useWallet();
   const p = useLocalSearchParams<{
     type?: string; amount?: string; status?: string; dir?: string; detail?: string; reference?: string; icon?: string;
     narration?: string; underReview?: string; statusMessage?: string; reviewKind?: string;
@@ -224,98 +221,63 @@ const TxnDetail = () => {
       ? `${absAmount} ${state === 'failed' ? 'not ' : ''}sent to ${recipientNameForLine(liveTxn?.recipient_name ?? p.recipientName, inflow)}.`
       : `${absAmount} ${state === 'failed' ? 'not ' : ''}${inflow ? 'received' : isTransfer ? 'sent' : 'paid'} · ${type}`)
     : type;
-  // "14 Nov 2026, 6:40 PM" from the row's own time, never the raw server string.
-  const when = receiptWhen(p.ts, detail);
-  const badge = state === 'failed' ? { bg: '#E5484D', icon: 'x' } : state === 'pending' ? { bg: '#E8A33D', icon: 'history' } : { bg: '#00B51D', icon: 'check' };
   const electricityToken = state === 'success' && !underReview ? String(liveTxn?.token || '').trim() : '';
-  const electricityRows = electricityToken ? [
-    ['Electricity token', electricityToken],
+  const electricityRows: ReceiptRow[] = electricityToken ? ([
+    // "Token" gets the ticket's highlighted box: the one value typed into the meter.
+    ['Token', electricityToken],
     ['Meter', liveTxn?.meter], ['Meter type', liveTxn?.meter_type],
     ['Customer', liveTxn?.customer_name], ['Address', liveTxn?.customer_address],
     ['Units', liveTxn?.electricity_units],
-  ].filter((row) => row[1]) : [];
+  ] as [string, unknown][]).filter((row) => row[1]).map(([k, v]) => [k, String(v)] as ReceiptRow) : [];
 
-  // A bank transfer reads as the design's receipt: who, which account and bank,
-  // the reference, the fee and the total. Anything else keeps its description.
+  // The receipt from history is the same document as the one after a payment
+  // (review, 17 Nov 2026): the amount as the headline, the status, when it
+  // happened (the transaction's own time, not now), who it went to and who it
+  // came from, then the details and the reference.
   const recipientName = String(liveTxn?.recipient_name ?? p.recipientName ?? '').trim();
   const recipientAccount = String(liveTxn?.recipient_account ?? p.recipientAccount ?? '').trim();
   const recipientBank = String(liveTxn?.recipient_bank ?? p.recipientBank ?? '').trim();
   const feeValue = Number(liveTxn?.fee ?? p.fee ?? '');
   const fee = Number.isFinite(feeValue) && feeValue > 0 ? money(feeValue) : '';
-  const total = Number.isFinite(amount) ? money(Math.abs(amount) + (fee ? feeValue : 0)) : formattedAmount;
-  const rows: [string, string, boolean?][] = recipientName && !inflow ? [
-    ['Recipient', recipientName],
-    ...(recipientAccount ? ([['Account', recipientAccount]] as [string, string][]) : []),
-    ...(recipientBank ? ([['Bank', recipientBank]] as [string, string][]) : []),
-    ...(narration && !/^transfer to /i.test(narration) ? ([['Note', narration]] as [string, string][]) : []),
-    ['Reference', reference || '—'],
-    ...(fee ? ([['Fee', fee]] as [string, string][]) : []),
-    ['Total', total, true],
-  ] : [
-    ['Description', type],
-    ...(narration ? ([['Note', narration]] as [string, string][]) : []),
-    ['Reference', reference || '—'],
-    ...electricityRows.map(([label, value]) => [String(label), String(value)] as [string, string]),
-    ['Total', formattedAmount.replace(/^[+-]/, ''), true],
+  const at = receiptDate(p.ts, detail);
+  const stamp = at ? receiptStamp(at) : null;
+  // Money out left this wallet, so the customer is the sender (their Zitch
+  // account, masked on the ticket). Money in names no sender: we don't have one.
+  const from = inflow ? [] : senderRows({
+    name: accountName || firstName,
+    account: accountNumber,
+    bank: accountNumber ? 'Zitch account' : undefined,
+  });
+  const rows: ReceiptRow[] = [
+    ['Amount', absAmount || formattedAmount, true],
+    ...(recipientName && !inflow ? ([
+      ['Recipient', recipientName],
+      ...(recipientBank ? [['Bank', recipientBank]] : []),
+      ...(recipientAccount ? [['Account', recipientAccount]] : []),
+    ] as ReceiptRow[]) : ([['Description', type]] as ReceiptRow[])),
+    ...from,
+    ...(narration && !/^transfer to /i.test(narration) ? ([['Note', narration]] as ReceiptRow[]) : []),
+    ...electricityRows,
+    ...(fee && Number.isFinite(amount) ? ([['Fee', fee], ['Total debited', money(Math.abs(amount) + feeValue)]] as ReceiptRow[]) : []),
+    ...(stamp ? ([['Date', stamp.date], ['Time', stamp.time]] as ReceiptRow[]) : detail ? ([['Date', detail]] as ReceiptRow[]) : []),
+    ...(reference ? ([['Reference', reference]] as ReceiptRow[]) : []),
   ];
 
-  const share = async (format: ReceiptFormat) => {
-    if (sharing) return;
-    setSharing(format);
+  const onCopyRef = async () => {
     try {
-      const outcome = await shareReceipt(format, {
-        capture: async () => {
-          const { captureRef } = await import('react-native-view-shot');
-          if (!card.current) throw new Error('Receipt is not ready to capture');
-          return captureRef(card.current, { format: 'jpg', quality: 0.95, result: 'tmpfile' });
-        },
-        html: receiptHtml({ title: headline, message: subline, rows, status }),
-        reference,
-      });
-      const line = outcomeMessage(outcome, format);
-      if (!line) return;
-      if (outcome === 'shared' || outcome === 'saved') flash('Ready', line);
-      else notifyError('Receipt', line);
-    } catch {
-      notifyError('Receipt', 'Could not prepare the receipt. Please try again.');
-    } finally {
-      setSharing(null);
-    }
+      await Clipboard.setStringAsync(reference || [headline, subline, '', ...rows.map(([k, v]) => `${k}: ${v}`), '', 'Zitch'].join('\n'));
+      flash('Copied', reference ? 'Reference copied' : 'Receipt copied');
+    } catch { notifyError('Could not copy', 'Please try again.'); }
   };
 
   return (
     <Screen>
       <Header title="Transaction receipt" onBack={() => router.back()} />
 
-      {/* Everything in this view is what "Share as image" captures. */}
-      <View ref={card} collapsable={false} style={{ marginTop: 4, borderRadius: 24, backgroundColor: R.card, overflow: 'hidden', shadowColor: '#063731', shadowOpacity: 0.1, shadowRadius: 14, shadowOffset: { width: 0, height: 12 }, elevation: 4 }}>
-        <LinearGradient
-          colors={['#14A899', '#0A8C80', '#047C71']}
-          locations={[0, 0.55, 1]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={{ borderRadius: 24, alignItems: 'center', paddingTop: 26, paddingHorizontal: 20, paddingBottom: 30 }}
-        >
-          <View style={{ width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' }}>
-            <View style={{ width: 46, height: 46, borderRadius: 23, backgroundColor: badge.bg, alignItems: 'center', justifyContent: 'center' }}>
-              <ZIcon name={badge.icon} size={24} color="#fff" stroke={3} />
-            </View>
-          </View>
-          <Text style={{ marginTop: 14, fontSize: 24, fontFamily: font.extrabold, color: '#fff', letterSpacing: -0.3 }}>{headline}</Text>
-          <NText style={{ marginTop: 6, fontSize: 14, fontFamily: font.medium, color: 'rgba(255,255,255,0.9)', textAlign: 'center' }}>{subline}</NText>
-          {state !== 'success' ? (
-            <View style={{ marginTop: 10, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.18)' }}>
-              <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: '#fff' }}>{status}</Text>
-            </View>
-          ) : null}
-        </LinearGradient>
-        <View style={{ paddingTop: 4, paddingHorizontal: 20 }}>
-          {rows.map(([k, v, strong], i) => <Row2 key={k} k={k} v={v} strong={strong} last={i === rows.length - 1} />)}
-        </View>
-        <View style={{ alignItems: 'center', paddingTop: 16, paddingHorizontal: 20, paddingBottom: 20 }}>
-          <Text style={{ fontSize: 19, fontFamily: font.extrabold, color: R.brand, letterSpacing: -0.2 }}>Zitch</Text>
-          <Text style={{ marginTop: 3, fontSize: 12, fontFamily: font.regular, color: R.foot }}>Transaction receipt{when ? ` · ${when}` : ''}</Text>
-        </View>
+      {/* The same receipt as after a payment. Rounded on screen by this wrapper;
+          the captured view inside is square, as a JPEG has no transparency. */}
+      <View style={{ marginTop: 4, borderRadius: 24, overflow: 'hidden' }}>
+        <ReceiptTicket ref={card} title={headline} message={subline} rows={rows} status={rawStatus} />
       </View>
 
       {underReview ? (
@@ -375,24 +337,24 @@ const TxnDetail = () => {
             }}
           />
         ) : (
-        <View style={{ flexDirection: 'row', gap: 10 }}>
-          {([['jpeg', 'image', 'Share as image'], ['pdf', 'file', 'Share as PDF']] as [ReceiptFormat, string, string][]).map(([fmt, icon, label]) => (
-            <Pressable
-              key={fmt}
-              onPress={() => void share(fmt)}
-              disabled={sharing !== null}
-              accessibilityRole="button"
-              accessibilityLabel={label}
-              accessibilityState={{ disabled: sharing !== null }}
-              style={({ pressed }) => ({ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 54, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, opacity: pressed || sharing === fmt ? 0.7 : 1 })}
-            >
-              <ZIcon name={icon} size={19} color={c.brand} />
-              <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1 }}>{label}</Text>
-            </Pressable>
-          ))}
-        </View>
+          <ReceiptActionRow onSave={() => setAction('save')} onShare={() => setAction('share')} onCopy={() => void onCopyRef()} busy={busy} />
         )}
       </View>
+
+      <ReceiptExport
+        action={action}
+        onClose={() => setAction(null)}
+        onBusy={setBusy}
+        source={() => ({
+          capture: async () => {
+            const { captureRef } = await import('react-native-view-shot');
+            if (!card.current) throw new Error('Receipt is not ready to capture');
+            return captureRef(card.current, { format: 'jpg', quality: 0.95, result: 'tmpfile' });
+          },
+          html: receiptHtml({ title: headline, message: subline, rows, status: rawStatus }),
+          reference,
+        })}
+      />
     </Screen>
   );
 };
