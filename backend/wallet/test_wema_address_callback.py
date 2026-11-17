@@ -278,11 +278,29 @@ class AddressWebhookWatchTests(TestCase):
         context = alert.call_args.kwargs
         self.assertEqual((context["no_webhook"], context["bank_record_behind"]), (0, 1))
 
-    def test_it_runs_daily_in_the_scheduler(self):
+    def test_it_runs_every_two_hours_in_the_scheduler(self):
         from utility import schedule
 
-        self.assertEqual(schedule.job_named("address_webhook_watch").command,
-                         ("address_webhook_watch",))
+        job = schedule.job_named("address_webhook_watch")
+        self.assertEqual(job.command, ("address_webhook_watch",))
+        self.assertEqual(len(job.at), 12)
+        self.assertEqual({hour % 2 for hour, _ in job.at}, {1})
+        self.assertEqual({minute for _, minute in job.at}, {25})
+
+    def test_an_unchanged_list_is_not_a_new_email_but_a_new_customer_is(self):
+        from datetime import timedelta
+
+        self._waiting(3)
+        first, _ = self._run()
+        again, _ = self._run()
+        self.assertEqual(first.call_args.kwargs["dedupe"], again.call_args.kwargs["dedupe"])
+        other, _ = make_user("08030004444", "other@zitch.app", identity_verified=False)
+        User.objects.filter(pk=other.pk).update(
+            address_verification_pending=True, address_verification_account_number="0987654321",
+            address_verification_requested_at=timezone.now() - timedelta(hours=3), tier3_review="pending")
+        added, _ = self._run()
+        self.assertNotEqual(first.call_args.kwargs["dedupe"], added.call_args.kwargs["dedupe"])
+        self.assertEqual(added.call_args.kwargs["no_webhook"], 2)
 
 
 class LiftSignupHoldMigrationTests(TestCase):

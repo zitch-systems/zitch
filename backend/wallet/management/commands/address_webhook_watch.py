@@ -1,9 +1,10 @@
-"""Daily: the Tier 3 address checks the bank has not answered.
+"""Every two hours: the Tier 3 address checks the bank has not answered.
 
 Wema sends the address-verification webhook once and does not retry; a missed
-one is sent again only when Zitch asks (Temi, Wema, 17 Nov 2026). So once a day
-the operator (``utility.alerts`` → ``OPS_ALERT_EMAILS``) gets the list to raise
-with Wema:
+one is sent again only when Zitch asks (Temi, Wema, 17 Nov 2026). So every two
+hours the operator (``utility.alerts`` → ``OPS_ALERT_EMAILS``) gets the list to
+raise with Wema. An unchanged list is emailed again at most every six hours
+(``OPS_ALERT_REPEAT_SECONDS``); a new customer on it is emailed at once:
 
 - address checks waiting more than two hours with no webhook at all;
 - checks the webhook passed whose bank record still doesn't show Tier 3 a day
@@ -13,6 +14,7 @@ Pseudonymous only, as every operator alert: user ids and the last four digits
 of the account, never names or addresses. The full account number is in admin.
 Nothing to report sends nothing.
 """
+import hashlib
 from datetime import timedelta
 
 from django.core.management.base import BaseCommand
@@ -62,7 +64,11 @@ class Command(BaseCommand):
         if behind:
             context["bank_record_behind_list"] = "; ".join(
                 _entries(lagging, "tier3_review_at", now))
+        # The same list is emailed again only after OPS_ALERT_REPEAT_SECONDS (six
+        # hours by default); a list with a customer added or gone is a new email.
+        listed = (sorted(no_webhook.values_list("pk", flat=True)),
+                  sorted(lagging.values_list("pk", flat=True)))
         alert("Tier 3 address checks to raise with Wema. no_webhook: ask Wema to resend "
               "the address webhook. bank_record_behind: the webhook passed but Wema's "
               "record does not show Tier 3", level="error",
-              dedupe=now.date().isoformat(), **context)
+              dedupe=hashlib.sha256(repr(listed).encode()).hexdigest()[:12], **context)
