@@ -11,9 +11,9 @@ from django.test import TestCase
 from django.utils import timezone
 
 from wallet.models import BankHistoryCheckpoint, Wallet, WemaFaceSession
-from wallet.services import attach_existing_bank_account
+from wallet.services import attach_existing_bank_account, repair_missing_funding_accounts
 from wallet.tests import make_user
-from whatsapp.models import AuditLog
+from whatsapp.models import AuditLog, PendingAction, WhatsAppLink
 
 
 def _found(name="EZE ADA CHIOMA", number="0123456789"):
@@ -65,6 +65,41 @@ class ExistingCustomerAttachTests(TestCase):
                                        "account_lookup_state": "not_found"})
         self.assertIsNone(wallet)
         self.assertEqual(Wallet.objects.get(user=self.user).account_number, "")
+
+
+class RepairSweepTellsTheCustomerTests(TestCase):
+    """The sweep attaches accounts with nobody in the chat; the customer must hear."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.user, _ = make_user("08011117005", "sweep@example.test")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn="2348011117005",
+                                    status=WhatsAppLink.ACTIVE)
+        PendingAction.objects.create(
+            user=self.user, msisdn="2348011117005", action_type="add_account",
+            state="flow_identity", payload={}, expires_at=timezone.now() + timedelta(minutes=5))
+
+    def test_an_account_attached_by_the_sweep_is_sent_to_the_chat(self):
+        def attach(user, using_bvn):
+            Wallet.objects.filter(user=user).update(account_number="0452881679")
+            return Wallet.objects.get(user=user), "attached"
+
+        with patch("wallet.services.attach_existing_bank_account", side_effect=attach), \
+                patch("whatsapp.router._send_account_details") as sent:
+            result = repair_missing_funding_accounts()
+        self.assertEqual(result["repaired"], 1)
+        sent.assert_called_once()
+        self.assertEqual(sent.call_args.args[0], "2348011117005")
+        self.assertFalse(PendingAction.objects.filter(user=self.user).exists())
+
+    def test_nothing_is_sent_while_the_account_is_still_missing(self):
+        with patch("wallet.services.attach_existing_bank_account", return_value=(None, "pending")), \
+                patch("whatsapp.router._send_account_details") as sent:
+            result = repair_missing_funding_accounts()
+        self.assertEqual(result["repaired"], 0)
+        sent.assert_not_called()
+        self.assertTrue(PendingAction.objects.filter(user=self.user).exists())
 
 
 class Tier2NeedsAnAccountTests(TestCase):

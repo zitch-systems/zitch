@@ -804,6 +804,32 @@ def _attach_existing_customer_account(user, session) -> tuple:
     return wallet, "Your existing Wema account was found and attached."
 
 
+def notify_funding_account_reconnected(user) -> None:
+    """Send a chat customer the account number a background read-back attached.
+
+    The repair sweep and the face callback attach accounts with nobody in the
+    chat, so without this the customer keeps hearing the number is not ready.
+    Never raises: the account is already attached.
+    """
+    try:
+        from whatsapp.models import PendingAction, WhatsAppLink
+
+        # A setup action left open would read the customer's next message as
+        # identity input for an account that now exists.
+        PendingAction.objects.filter(user=user, action_type="add_account").delete()
+        msisdn = (WhatsAppLink.objects
+                  .filter(user=user, status=WhatsAppLink.ACTIVE)
+                  .exclude(wa_msisdn="")
+                  .values_list("wa_msisdn", flat=True).first())
+        if not msisdn:
+            return
+        from whatsapp.router import _send_account_details
+        _send_account_details(msisdn, get_or_create_wallet(user),
+                              intro="✅ *Your Zitch account number is ready*")
+    except Exception:  # noqa: BLE001
+        log.warning("funding_account_reconnect_notify_failed user=%s", user.pk, exc_info=True)
+
+
 def repair_missing_funding_accounts(*, email: str = "", limit: int = 20) -> dict:
     """Check callback-provisioned accounts and escalate stalled issuance.
 
@@ -845,6 +871,7 @@ def repair_missing_funding_accounts(*, email: str = "", limit: int = 20) -> dict
             repaired += 1
             cache.delete(key)
             log.info("partner_bank_account_repaired user=%s", user.pk)
+            notify_funding_account_reconnected(user)
         else:
             log.info("partner_bank_account_not_ready user=%s detail=%s",
                      user.pk, str(detail or "")[:160])

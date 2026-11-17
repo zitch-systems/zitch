@@ -169,6 +169,96 @@ class BrowserFaceCorrelationTrustTests(TestCase):
         self.assertEqual(proof.provider_reference, "untrusted-correlation")
 
 
+@override_settings(DEBUG=False, TESTING=False, WEMA_CUTOVER_APPROVED=True, SECURE_SSL_REDIRECT=False,
+    ALLOWED_HOSTS=["testserver"], WEMA={
+        "BASE_URL": "https://lagos-alat-blueapi.azure-api.net",
+        "CHANNEL_ID": "test-channel", "KEYS": {"wallet": "test-wallet", "face_account": "test-face"},
+        "SIMULATION": False, "FACE_CB_MODE": "registered", "FACE_CALLBACK_IPS": ["9.9.9.9"],
+        "FACE_CALLBACK_ORIGINS": ["https://face.example"], "CALLBACK_TOKEN": "test-token"})
+class BrowserFaceExistingCustomerReconnectTests(TestCase):
+    """A customer who proved their BVN earlier and whose bank account was detached.
+
+    The bank refuses to open a second account. That refusal cannot attest the
+    browser claim, so nothing about the identity changes, but the account the bank
+    already holds is read back and attached instead of leaving the customer to
+    repeat BVN and face for the same refusal.
+    """
+
+    EXISTING = {"success": False, "failure_category": "existing_customer",
+                "account_state": "review_required", "http_status": 400}
+    FOUND = {"success": True, "account_number": "0452881679", "account_name": "EZE ADA",
+             "bank_name": "Wema Bank", "account_lookup_state": "found", "http_status": 200}
+
+    def setUp(self):
+        from whatsapp.models import WhatsAppLink
+        self.user = User.objects.create_user(
+            username="existing-face", phone="08070000202", email="existing@example.test",
+            first_name="Ada", last_name="Eze", email_verified=True, phone_verified=True,
+            bvn_verified=True, bvn_hash=hash_identifier("22222222222"), tier=1)
+        self.session = WemaFaceSession.objects.create(
+            user=self.user, state="existing-face-session", identity_type="bvn",
+            identity_hash=hash_identifier("22222222222"),
+            expires_at=timezone.now() + timedelta(minutes=20))
+        self.wallet = get_or_create_wallet(self.user)
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn="2348070000202",
+                                    status=WhatsAppLink.ACTIVE)
+
+    def callback(self, lookup):
+        with mock.patch("utility.wema.create_wallet_with_face", return_value=self.EXISTING), \
+                mock.patch("utility.wema.get_account_details", return_value=lookup) as read, \
+                mock.patch("wallet.wema_callbacks._tell_whatsapp_face_passed") as passed, \
+                mock.patch("wallet.services.notify_funding_account_reconnected") as ready, \
+                mock.patch("whatsapp.router.reply") as reply, \
+                self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post("/webhooks/wema/face", {
+                "success": True, "c_id": "untrusted-correlation", "id": "22222222222",
+                "id_type": "bvn"},
+                content_type="application/json", REMOTE_ADDR="8.8.8.8",
+                HTTP_ORIGIN="https://face.example")
+        self.assertEqual(response.status_code, 200)
+        passed.assert_not_called()
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, WemaFaceSession.FAILED)
+        self.assertEqual(self.session.correlation_id, "")
+        self.assertFalse(IdentityProof.objects.filter(user=self.user).exists())
+        self.wallet.refresh_from_db()
+        return read, ready, reply
+
+    def test_the_account_the_bank_holds_is_attached_and_the_customer_told(self):
+        read, ready, reply = self.callback(self.FOUND)
+        read.assert_called_once_with(self.user.phone, bvn=True)
+        self.assertEqual(self.wallet.account_number, "0452881679")
+        ready.assert_called_once()
+        reply.assert_not_called()
+
+    def test_an_unresolved_read_back_tells_the_customer_not_to_repeat_verification(self):
+        from whatsapp.models import PendingAction
+        PendingAction.objects.create(
+            user=self.user, msisdn="2348070000202", action_type="add_account",
+            state="flow_identity", payload={}, expires_at=timezone.now() + timedelta(minutes=5))
+        read, ready, reply = self.callback({"success": False, "account_number": "",
+                                            "account_lookup_state": "not_found"})
+        read.assert_called_once()
+        self.assertEqual(self.wallet.account_number, "")
+        ready.assert_not_called()
+        self.assertIn("already holds an account for your BVN", reply.call_args.args[1])
+        self.assertFalse(PendingAction.objects.filter(user=self.user).exists())
+
+    def test_an_identity_not_proven_before_the_callback_reads_back_nothing(self):
+        User.objects.filter(pk=self.user.pk).update(bvn_verified=False, bvn_hash="")
+        read, ready, reply = self.callback(self.FOUND)
+        read.assert_not_called()
+        ready.assert_not_called()
+        reply.assert_not_called()
+        self.assertEqual(self.wallet.account_number, "")
+
+    def test_a_face_check_on_a_different_identity_reads_back_nothing(self):
+        User.objects.filter(pk=self.user.pk).update(bvn_hash=hash_identifier("44444444444"))
+        read, _ready, _reply = self.callback(self.FOUND)
+        read.assert_not_called()
+        self.assertEqual(self.wallet.account_number, "")
+
+
 @override_settings(
     WEMA={"CALLBACK_TOKEN": "tok", "CALLBACK_TOKEN_PREV": "",
           "CALLBACK_ENFORCE_IPS": False, "CALLBACK_IPS": [],

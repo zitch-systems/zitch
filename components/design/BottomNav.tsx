@@ -30,6 +30,8 @@ export const DOCK = {
   iconRow: 24,
   icon: 22,
   fab: 56,
+  /** The green circle itself (fab was its size with the white ring). */
+  fabGreen: 48,
   fabRise: 32,
   label: 11,
 } as const;
@@ -74,9 +76,11 @@ const WhatsAppButton = () => {
       style={({ pressed }) => ({ flex: 1.15, minWidth: 0, alignItems: 'center', gap: 5, opacity: pressed ? 0.66 : 1 })}
     >
       <View style={{ height: DOCK.iconRow, width: DOCK.fab, alignItems: 'center' }}>
+        {/* Just the green circle, no white ring round it (17 Nov 2026): the same
+            48 px circle in the same place as when it had the 4 px ring. */}
         <View style={{
-          width: DOCK.fab, height: DOCK.fab, borderRadius: DOCK.fab / 2, marginTop: -DOCK.fabRise,
-          backgroundColor: WHATSAPP_GREEN, borderWidth: 4, borderColor: c.surface,
+          width: DOCK.fabGreen, height: DOCK.fabGreen, borderRadius: DOCK.fabGreen / 2, marginTop: -(DOCK.fabRise - 4),
+          backgroundColor: WHATSAPP_GREEN,
           alignItems: 'center', justifyContent: 'center',
           shadowColor: '#128C7E', shadowOpacity: 0.45, shadowRadius: 9, shadowOffset: { width: 0, height: 8 }, elevation: 6,
         }}>

@@ -51,7 +51,11 @@ jest.mock('@/components/design/ui', () => {
   const ReactActual = jest.requireActual<typeof import('react')>('react');
   const { Text, View, Pressable } = jest.requireActual<typeof import('react-native')>('react-native');
   const Container = ({ children }: { children: ReactNode }) => ReactActual.createElement(View, null, children);
-  return { Screen: Container, Card: Container, NText: Text, Sheet: () => null, TxnRow: () => null,
+  // The Screen's header (Home's frozen top) renders above its children, as in the app.
+  const Screen = ({ header, children, onRefresh }: { header?: ReactNode; children: ReactNode; onRefresh?: () => void }) => ReactActual.createElement(View, null,
+    ReactActual.createElement(View, { testID: 'frozen-top' }, header),
+    ReactActual.createElement(View, { testID: 'scrolls', ...({ onRefresh } as object) }, children));
+  return { Screen, Card: Container, NText: Text, Sheet: () => null, TxnRow: () => null,
     Btn: ({ label, ...props }: any) => ReactActual.createElement(Pressable, { ...props, accessibilityLabel: label }),
     money: (value: number) => `₦${value}`, settledTransactionTotal: () => 0 };
 });
@@ -95,5 +99,21 @@ it('falls back to the products-off home when the lookups fail', async () => {
   await act(async () => { tree = renderer.create(<Home />); });
   expect(labels(tree)).toContain('Electricity');
   expect(labels(tree)).not.toContain('Fixed Save');
+  act(() => tree.unmount());
+});
+
+it('keeps the greeting, balance card and quick actions still, and scrolls and refreshes only what is below', async () => {
+  mockApiJson.mockImplementation(async () => ({ product_available: false, rates: [] }));
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Home />); });
+  const part = (id: string) => tree.root.findByProps({ testID: id });
+  const words = (id: string) => part(id).findAll((n) => typeof n.props.children === 'string').map((n) => n.props.children).join(' | ');
+  // 17 Nov 2026: this side of Home never scrolls
+  for (const fixed of ['AVAILABLE BALANCE', 'Wallet', 'Transfer', 'Add Money', 'Statement', 'History']) expect(words('frozen-top')).toContain(fixed);
+  expect(words('frozen-top')).not.toContain('Pay a bill');
+  expect(words('scrolls')).toContain('Pay a bill');
+  expect(words('scrolls')).not.toContain('AVAILABLE BALANCE');
+  // and the part that scrolls is the one that pulls down to refresh
+  expect(typeof tree.root.findByProps({ testID: 'scrolls' }).props.onRefresh).toBe('function');
   act(() => tree.unmount());
 });

@@ -4808,6 +4808,14 @@ def _page_existing_customer(user, kind: str) -> None:
 
 _EXISTING_CUSTOMER_REVIEW = "wema.existing_customer_review"
 
+#: Sent in place of another identity/face round once the bank has said it
+#: already holds an account for this identity.
+EXISTING_ACCOUNT_RECONNECT_MESSAGE = (
+    "Our partner bank already holds an account for your {kind}, so a new one can't be "
+    "opened. We're reconnecting that account to your Zitch wallet and will send the "
+    "account number here as soon as it's attached. Please don't repeat {kind} or face "
+    "verification.")
+
 
 def _existing_customer_setup_status(user) -> tuple[str, str] | None:
     """Keep a refused SMS setup visible after its temporary chat action ends."""
@@ -4867,6 +4875,15 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
         # a missing NUBAN after that needs account recovery, not fresh identity.
         from wallet.models import WemaFaceSession
         from wallet.account_recovery import active_account_recovery
+        latest_face = (WemaFaceSession.objects.filter(user=user, identity_type=kind)
+                       .order_by("-created", "-pk").first())
+        if latest_face is not None and latest_face.account_failure_category == "existing_customer":
+            # The bank holds an account for this identity and refuses to open a
+            # second, so another identity/face round is refused the same way. The
+            # read-back above and the repair sweep attach it once the bank returns
+            # it; the page asks a person to look in the meantime.
+            _page_existing_customer(user, kind)
+            return reply(msisdn, EXISTING_ACCOUNT_RECONNECT_MESSAGE.format(kind=kind.upper()))
         if active_account_recovery(user) is None and WemaFaceSession.objects.filter(
                 user=user, status=WemaFaceSession.VERIFIED).exists():
             # Returning here skipped the page below, so this promise of a review
