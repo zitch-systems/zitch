@@ -262,6 +262,7 @@ const BuyData = () => {
         format={groupPhone}
         maxLength={15}
         placeholder="0801 234 5678"
+        autoComplete="tel"
       />
 
       <SectionTitle top={22}>Plan type</SectionTitle>
