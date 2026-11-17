@@ -46,6 +46,10 @@ jest.mock('@/lib/receipt', () => ({
   shareReceipt: (...args: unknown[]) => mockShareReceipt(...args),
 }));
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn().mockResolvedValue(undefined) }));
+jest.mock('@react-native-async-storage/async-storage', () => ({ getItem: jest.fn(async () => null), setItem: jest.fn(async () => {}) }));
+jest.mock('@/lib/wallet', () => ({ useWallet: () => ({ accountName: 'WILLIAM ADEYEMI', firstName: 'William', accountNumber: '0123456789' }) }));
+jest.mock('@/components/design/Loading', () => ({ LoadingMark: () => null, ZCoil: () => null }));
+jest.mock('@/components/design/WhatsAppGlyph', () => ({ WhatsAppGlyph: () => null }));
 jest.mock('@/components/design/ZIcon', () => () => null);
 jest.mock('@/lib/theme', () => ({
   useTheme: () => ({ c: {
@@ -63,6 +67,7 @@ jest.mock('@/components/design/ui', () => {
   return {
     Screen: ({ children }: { children: ReactNode }) => ReactActual.createElement(View, null, children),
     Header: () => null,
+    Sheet: ({ open, children }: { open: boolean; children: ReactNode }) => (open ? ReactActual.createElement(View, null, children) : null),
     Btn: ({ label, onPress, disabled }: { label: string; onPress: () => void; disabled?: boolean }) =>
       ReactActual.createElement(
         Pressable,
@@ -165,7 +170,7 @@ describe('transaction-detail pending refresh', () => {
     expect(rendered).toContain('Under review');
     expect(rendered).toContain('Do not retry');
     expect(tree.root.findByProps({ accessibilityLabel: 'Share status' })).toBeTruthy();
-    expect(tree.root.findAllByProps({ accessibilityLabel: 'Share as image' })).toHaveLength(0);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Share' })).toHaveLength(0);
     act(() => tree.unmount());
   });
 
@@ -262,12 +267,22 @@ describe('transaction-detail pending refresh', () => {
     act(() => tree.unmount()); share.mockRestore();
   });
 
+  // Share opens the same "Share receipt as" sheet as the receipt after a payment.
+  const shareAs = async (tree: renderer.ReactTestRenderer, format: 'JPEG image' | 'PDF document') => {
+    await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Share' }).props.onPress(); });
+    await act(async () => {
+      const pick = tree.root.findByProps({ accessibilityLabel: format }).props.onPress();
+      jest.advanceTimersByTime(400);
+      await pick;
+    });
+  };
+
   it('reports a receipt sharing error instead of silently ignoring it', async () => {
     mockApiJson.mockResolvedValue(transaction('SUCCESSFUL'));
     mockShareReceipt.mockRejectedValue(new Error('sharing unavailable'));
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<TxnDetail />); });
-    await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Share as image' }).props.onPress(); });
+    await shareAs(tree, 'JPEG image');
     expect(mockShareReceipt).toHaveBeenCalledWith('jpeg', expect.objectContaining({ reference: 'ZTC-POLL-1' }));
     expect(notifyError).toHaveBeenCalledWith('Receipt', 'Could not prepare the receipt. Please try again.');
     act(() => tree.unmount());
@@ -278,11 +293,59 @@ describe('transaction-detail pending refresh', () => {
     mockShareReceipt.mockResolvedValue('shared');
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<TxnDetail />); });
-    await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Share as PDF' }).props.onPress(); });
+    await shareAs(tree, 'PDF document');
     expect(mockShareReceipt).toHaveBeenCalledWith('pdf', expect.objectContaining({ html: expect.stringContaining('ZTC-POLL-1') }));
     act(() => tree.unmount());
   });
 
+});
+
+describe('the receipt from history is the new receipt design', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    mockApiJson.mockReset();
+    mockParams.status = 'SUCCESSFUL';
+    mockParams.amount = '15000';
+    Object.assign(mockParams, { type: 'Bank transfer', recipientName: 'Chidi Eze', recipientBank: 'Kuda Bank', recipientAccount: '2233445566', fee: '10', ts: String(new Date(2026, 10, 14, 17, 40).getTime()) });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    Object.assign(mockParams, { type: 'Transfer', amount: '1000', status: 'PENDING', recipientName: undefined, recipientBank: undefined, recipientAccount: undefined, fee: undefined, ts: undefined });
+  });
+
+  it('shows the Zitch header, amount, status, parties, total, time and reference, with Save, Share and Copy ref', async () => {
+    mockApiJson.mockResolvedValue({ success: false });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<TxnDetail />); });
+    const text = JSON.stringify(tree.toJSON());
+    for (const part of ['zitch', 'Money sent', '₦15,000', 'Chidi Eze', 'Kuda Bank · 2233445566', 'WILLIAM ADEYEMI', 'Zitch account · 0123****89',
+      'Total debited', '15,010', '14 Nov 2026, 05:40 PM', 'ZTC-POLL-1', 'Bank wherever you chat']) {
+      expect(text).toContain(part);
+    }
+    for (const label of ['Save', 'Share', 'Copy ref']) expect(tree.root.findByProps({ accessibilityLabel: label })).toBeTruthy();
+    act(() => tree.unmount());
+  });
+
+  it('copies the reference', async () => {
+    mockApiJson.mockResolvedValue({ success: false });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<TxnDetail />); });
+    await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Copy ref' }).props.onPress(); });
+    expect(require('expo-clipboard').setStringAsync).toHaveBeenCalledWith('ZTC-POLL-1');
+    act(() => tree.unmount());
+  });
+
+  it('names no sender on money received', async () => {
+    mockApiJson.mockResolvedValue({ success: false });
+    Object.assign(mockParams, { dir: 'in', type: 'Wallet funding', recipientName: undefined, fee: undefined });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<TxnDetail />); });
+    const text = JSON.stringify(tree.toJSON());
+    expect(text).toContain('Money received');
+    expect(text).not.toContain('WILLIAM ADEYEMI');
+    act(() => tree.unmount());
+    mockParams.dir = 'out';
+  });
 });
 
 describe('receiptWhen', () => {

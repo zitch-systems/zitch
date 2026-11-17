@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, Text, Pressable } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { Animated, Easing, View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
@@ -8,6 +8,7 @@ import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { WHATSAPP_GREEN } from '@/lib/whatsappGlyph';
 import { useTheme, font } from '@/lib/theme';
 import { BANKING_TABS, selectedBankingTab } from '@/components/navigation/bankingTabs';
+import { useReduceMotion } from '@/components/design/Skeleton';
 
 type TabItem = typeof BANKING_TABS[number];
 
@@ -65,8 +66,37 @@ const BankingTab = ({ item, state, navigation }: BottomTabBarProps & { item: Tab
   );
 };
 
+/** The ring wiggle (17 Nov 2026): every few seconds the WhatsApp logo shakes
+ * like a phone ringing, then rests. Degrees of each swing, then back to level. */
+export const WIGGLE = { restMs: 2400, swingMs: 110, swings: [-15, 13, -11, 8, -4, 0] } as const;
+
+/**
+ * The logo's ring wiggle. Only the logo turns, the green circle stays put. Still
+ * when the phone's Reduce Motion setting is on.
+ */
+export const useRingWiggle = () => {
+  const [turn] = useState(() => new Animated.Value(0));
+  const reduceMotion = useReduceMotion();
+  useEffect(() => {
+    if (reduceMotion) return;
+    turn.setValue(0);
+    const loop = Animated.loop(Animated.sequence([
+      Animated.delay(WIGGLE.restMs),
+      ...WIGGLE.swings.map((deg, i) => Animated.timing(turn, {
+        toValue: deg, duration: i === WIGGLE.swings.length - 1 ? WIGGLE.swingMs + 40 : WIGGLE.swingMs,
+        easing: Easing.inOut(Easing.quad), useNativeDriver: true,
+      })),
+    ]));
+    loop.start();
+    return () => { loop.stop(); turn.setValue(0); };
+  }, [turn, reduceMotion]);
+  const rotate = turn.interpolate({ inputRange: [-90, 90], outputRange: ['-90deg', '90deg'] });
+  return reduceMotion ? null : { transform: [{ rotate }] };
+};
+
 const WhatsAppButton = () => {
   const { c } = useTheme();
+  const wiggle = useRingWiggle();
   return (
     <Pressable
       onPress={() => router.push('/linkwhatsapp')}
@@ -84,7 +114,9 @@ const WhatsAppButton = () => {
           alignItems: 'center', justifyContent: 'center',
           shadowColor: '#128C7E', shadowOpacity: 0.45, shadowRadius: 9, shadowOffset: { width: 0, height: 8 }, elevation: 6,
         }}>
-          <WhatsAppGlyph size={26} color="#fff" />
+          <Animated.View testID="whatsapp-wiggle" style={wiggle ?? undefined}>
+            <WhatsAppGlyph size={26} color="#fff" />
+          </Animated.View>
         </View>
       </View>
       <Text numberOfLines={2} style={{ fontSize: DOCK.label, lineHeight: DOCK.label + 3, fontFamily: font.semibold, color: c.brand, textAlign: 'center' }}>WhatsApp banking</Text>

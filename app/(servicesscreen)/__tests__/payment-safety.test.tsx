@@ -250,3 +250,31 @@ it.each([
   expect(control(tree, 'Confirm payment')).toBeTruthy();
   act(() => tree.unmount());
 });
+
+// Airtime and bill numbers are typed on the number keyboard (17 Nov 2026). The
+// RecentField default is the number pad, so no override, or a numeric one, passes.
+describe('number keyboard on airtime and bill fields', () => {
+  const NUMERIC = [undefined, 'number-pad', 'decimal-pad'];
+  const numberFields: [string, React.ComponentType, string[]][] = [
+    ['airtime', BuyAirtime, ['Phone number', 'Or enter amount']],
+    ['data', BuyData, ['Phone number']],
+    ['cable', BuyCable, ['Smartcard / IUC number']],
+    ['electricity', BuyElectricity, ['Meter number', 'Enter amount (min 1,000)']],
+    ['exams', Exams, ['Phone number (PIN delivery)']],
+    ['remita', Remita, ['Enter the RRR on your bill']],
+  ];
+  it.each(numberFields)('%s', async (_name, Component, labels) => {
+    const { RecentField } = jest.requireMock('@/components/design/billkit');
+    const { Field } = jest.requireMock('@/components/design/ui');
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Component />); });
+    const fields = tree.root.findAll((n) => n.type === RecentField || n.type === Field);
+    for (const label of labels) {
+      const field = fields.find((n) => n.props.label === label || n.props.placeholder === label);
+      expect(field).toBeDefined();
+      expect(NUMERIC).toContain(field!.props.keyboardType);
+      if (field!.type === Field) expect(field!.props.keyboardType).toBeDefined();
+    }
+    act(() => tree.unmount());
+  });
+});

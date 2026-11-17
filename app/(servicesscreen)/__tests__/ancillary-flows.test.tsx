@@ -228,6 +228,19 @@ it('preserves an edited statement email when account lookup finishes late and ex
   expect(mockApiJson).toHaveBeenCalledWith('/api/wallet/statement/request/', expect.objectContaining({ email: 'accountant@example.com', file_type: 'excel', include_address: false }));
 });
 
+it('shows the address on a PDF statement by default, and leaves it off when turned off', async () => {
+  mockApiJson.mockResolvedValue({ success: true, email: 'owner@example.com' });
+  await render(<Statement />);
+  expect(tree!.root.findByProps({ accessibilityLabel: 'Address shown on statement' }).props.on).toBe(true);
+  await act(async () => { tree!.root.findByType(PickerSheet).props.onPick('pdf'); });
+  await press('Continue');
+  expect(mockApiJson).toHaveBeenCalledWith('/api/wallet/statement/request/', expect.objectContaining({ email: 'owner@example.com', file_type: 'pdf', include_address: true }));
+  mockApiJson.mockClear();
+  await act(async () => { tree!.root.findByProps({ accessibilityLabel: 'Address shown on statement' }).props.onChange(false); });
+  await press('Continue');
+  expect(mockApiJson).toHaveBeenCalledWith('/api/wallet/statement/request/', expect.objectContaining({ file_type: 'pdf', include_address: false }));
+});
+
 it.each(['NaN', 'Infinity', '-1', '1.234', '1.2.3', '1,2', '50001'])('rejects invalid transaction limit %s', async (value) => {
   mockApiJson.mockResolvedValue(limitState);
   await render(<Limits />);

@@ -54,7 +54,9 @@ const Statement = () => {
   const [now] = useState(() => Date.now());
   const [frame, setFrame] = useState('m1');
   const [fileType, setFileType] = useState('');
-  const [showAddress, setShowAddress] = useState(false);
+  // On by default (review, 17 Nov 2026): a PDF statement shows the account's
+  // address unless the customer turns it off. Excel never carries it.
+  const [showAddress, setShowAddress] = useState(true);
   const [picker, setPicker] = useState(false);
   const [editEmail, setEditEmail] = useState(false);
   const [email, setEmail] = useState('');
