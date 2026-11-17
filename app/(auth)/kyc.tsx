@@ -341,6 +341,7 @@ const Kyc = () => {
         notify('Email code sent', res.message || `Enter the code sent to ${target}.`, 'success');
       } else {
         if (res.code === 'reauth_required' || res.code === 'pin_locked') setEmailProofRequired(true);
+        if (res.code === 'email_locked') { setEmail(''); setMethod('menu'); void load(); }
         notify('Could not send code', res.message || 'Check the email address and try again.');
       }
     } catch { if (isCurrent()) notify('Could not send code', 'Check your connection and try again.'); }
@@ -354,7 +355,7 @@ const Kyc = () => {
       const res = await kycService.confirmEmail(emailOtp);
       if (!isCurrent()) return;
       if (res.success && res.email_verified) {
-        notify('Email verified', 'Continue with BVN or NIN verification.', 'success');
+        notify('Email verified', `${status?.email || 'Your email'} is verified. It can’t be changed now.`, 'success');
         setEmail(''); setEmailOtp(''); setEmailSent(false); setMethod('menu');
         await load();
       } else notify('Verification failed', res.message || 'Check the code and try again.');
@@ -723,15 +724,15 @@ const Kyc = () => {
     </View>
   );
 
-  const MethodCard = ({ id, icon, color, title, sub, badge, done, onPress }: { id: Method; icon: string; color: string; title: string; sub: string; badge?: string; done?: boolean; onPress?: () => void }) => (
-    <Tap accessibilityLabel={`${title}, ${done ? 'Verified' : sub}`} disabled={!!done || busy} onPress={() => { if (!done) { if (onPress) onPress(); else setMethod(id); } }} style={{ marginTop: 12 }}>
+  const MethodCard = ({ id, icon, color, title, sub, badge, done, doneSub, onPress }: { id: Method; icon: string; color: string; title: string; sub: string; badge?: string; done?: boolean; doneSub?: string; onPress?: () => void }) => (
+    <Tap accessibilityLabel={`${title}, ${done ? (doneSub || 'Verified') : sub}`} disabled={!!done || busy} onPress={() => { if (!done) { if (onPress) onPress(); else setMethod(id); } }} style={{ marginTop: 12 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13, padding: 15, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, ...cardShadow }}>
         <View style={{ width: 46, height: 46, borderRadius: 13, backgroundColor: color + '22', alignItems: 'center', justifyContent: 'center' }}>
           <ZIcon name={icon} size={22} color={color} stroke={1.9} />
         </View>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>{title}</Text>
-          <Text style={{ fontSize: 12.5, color: done ? c.lime : c.ink3, marginTop: 1, fontFamily: font.regular }}>{done ? 'Verified' : sub}</Text>
+          <Text numberOfLines={1} style={{ fontSize: 12.5, color: done ? c.lime : c.ink3, marginTop: 1, fontFamily: font.regular }}>{done ? (doneSub || 'Verified') : sub}</Text>
         </View>
         {done ? (
           <ZIcon name="check" size={20} color={c.lime} stroke={2.6} />
@@ -806,6 +807,13 @@ const Kyc = () => {
             </View>
           )}
 
+          {/* The email from sign-up (17 Nov 2026): verify it here, and change it
+              first if it is wrong. Once verified it is fixed, so the card is
+              done and cannot be opened again. */}
+          <MethodCard id="email" icon="remita" color={C_NIN} title="Email address"
+            sub={status.email ? `${status.email} · Tap to verify` : 'Add your email and verify it'}
+            done={!!status.email_verified} doneSub={status.email ? `${status.email} · Verified` : 'Verified'} />
+
           {needsUpgrade && !hasTier1Identity ? (
             <>
               <View style={{ flexDirection: 'row', gap: 10, padding: 14, borderRadius: 14, backgroundColor: 'rgba(45,127,249,.10)', marginTop: 14 }}>
@@ -842,7 +850,7 @@ const Kyc = () => {
 
       {method === 'email' && (
         <View>
-          <Hero icon="remita" color={C_NIN} title="Verify your email" sub="Optional: confirm your email to get receipts and alerts there. No tier needs it. We’ll send a 6-digit code to your inbox." />
+          <Hero icon="remita" color={C_NIN} title="Verify your email" sub="This is the email you signed up with. Change it here if it’s wrong. Once it’s verified it can’t be changed. We’ll send a 6-digit code to your inbox." />
           <View style={{ marginTop: 22 }}>
             {!emailSent ? (
               <>

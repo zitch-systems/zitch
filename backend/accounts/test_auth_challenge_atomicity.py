@@ -276,9 +276,10 @@ class ProfileWriteAtomicityTests(TestCase):
         self.assertTrue(self.user.check_transaction_pin("582619"))
 
     def test_changed_email_keeps_the_tier_and_retires_previous_challenges(self):
+        # Only an email not yet verified can change (17 Nov 2026).
         User.objects.filter(pk=self.user.pk).update(
             bvn_verified=True, nin_verified=True, face_verified=True,
-            address_verified=True, tier=3,
+            address_verified=True, tier=3, email_verified=False,
         )
         reset = OTP.issue(self.user.phone, "121212", email=self.user.email, purpose=OTP.RESET)
         inbox = OTP.issue(self.user.phone, "343434", email=self.user.email, purpose=OTP.EMAIL)

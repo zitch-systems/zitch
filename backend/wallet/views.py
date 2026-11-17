@@ -56,7 +56,8 @@ WEMA_ATTEMPT_TTL = timedelta(minutes=15)
 @require_user
 def wallet_balance(request):
     """POST /api/wallet_balance/ {access_token}
-    -> {success, wallet, user_first_name, user_last_name, user_phone_number, user_email}
+    -> {success, wallet, user_first_name, user_last_name, user_phone_number, user_email,
+        user_email_verified}
     """
     from accounts.views import avatar_url, spend_account_namespace
     from wallet.deposit_sync import refresh_deposits_briefly
@@ -76,6 +77,8 @@ def wallet_balance(request):
         user_last_name=user.last_name or "",
         user_phone_number=user.phone or "",
         user_email=user.email or "",
+        # Account details locks a verified email (17 Nov 2026).
+        user_email_verified=bool(user.email_verified),
         user_avatar=avatar_url(request, user),
     )
 

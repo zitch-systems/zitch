@@ -162,3 +162,50 @@ it('offers retry after a profile load failure instead of editable empty account 
   expect(tree.root.findByProps({ accessibilityLabel: 'Verified phone' }).props.value).toBe('08012345678');
   act(() => tree.unmount());
 });
+
+describe('AccountDetails email (fixed once verified, 17 Nov 2026)', () => {
+  const profile = (verified: boolean) => ({
+    json: async () => ({
+      success: true, user_first_name: 'Ada', user_last_name: 'Okafor', user_email: 'ada@example.com',
+      user_email_verified: verified, user_phone_number: '08020000002',
+    }),
+  });
+  const mount = async () => {
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => {
+      tree = renderer.create(<AccountDetails />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    return tree;
+  };
+  beforeEach(() => {
+    mockGeneration = 0;
+    mockApiPost.mockReset();
+    mockGetToken.mockReset().mockResolvedValue('session-token');
+    mockRouterPush.mockReset();
+  });
+
+  it('shows a verified email read-only and never sends a new one', async () => {
+    mockApiPost.mockResolvedValueOnce(profile(true)).mockResolvedValueOnce({ ok: true, json: async () => ({ success: true }) });
+    const tree = await mount();
+    const email = tree.root.findByProps({ accessibilityLabel: 'Verified email' });
+    expect(email.props.value).toBe('ada@example.com');
+    expect(email.props.editable).toBe(false);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Email' })).toHaveLength(0);
+    expect(tree.root.findAll((n) => n.props.children === 'Your email is verified, so it can’t be changed.').length).toBeGreaterThan(0);
+    await act(async () => { tree.root.findByProps({ accessibilityLabel: 'First name' }).props.onChangeText('Adanna'); });
+    await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Save changes' }).props.onPress(); });
+    expect(mockApiPost).toHaveBeenLastCalledWith('/update', { email: 'ada@example.com', first_name: 'Adanna', last_name: 'Okafor' });
+    act(() => tree.unmount());
+  });
+
+  it('lets an unverified email be changed and points to verifying it', async () => {
+    mockApiPost.mockResolvedValueOnce(profile(false));
+    const tree = await mount();
+    expect(tree.root.findByProps({ accessibilityLabel: 'Email' }).props.editable).toBe(true);
+    await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Verify your email' }).props.onPress(); });
+    expect(mockRouterPush).toHaveBeenCalledWith('/kyc');
+    act(() => tree.unmount());
+  });
+});
