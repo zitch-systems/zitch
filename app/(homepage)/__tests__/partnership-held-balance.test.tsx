@@ -51,7 +51,9 @@ jest.mock('@/components/design/ui', () => {
   const ReactActual = jest.requireActual<typeof import('react')>('react');
   const { Text, View, Pressable } = jest.requireActual<typeof import('react-native')>('react-native');
   const Container = ({ children }: { children: ReactNode }) => ReactActual.createElement(View, null, children);
-  return { Screen: Container, Card: Container, NText: Text, Sheet: () => null, TxnRow: () => null,
+  // The Screen's header (Home's frozen top) renders above its children, as in the app.
+  const Screen = ({ header, children }: { header?: ReactNode; children: ReactNode }) => ReactActual.createElement(View, null, header, children);
+  return { Screen, Card: Container, NText: Text, Sheet: () => null, TxnRow: () => null,
     Btn: ({ label, ...props }: any) => ReactActual.createElement(Pressable, { ...props, accessibilityLabel: label }),
     money: (value: number) => `₦${value}`, settledTransactionTotal: () => 0 };
 });
