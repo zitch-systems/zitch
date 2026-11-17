@@ -793,7 +793,7 @@ class WemaCallbacksDiagnoseTests(TestCase):
         handlers = {r["handler"] for r in body["routes"]}
         self.assertEqual(handlers, {"wema_account_callback", "wema_authenticate_callback",
                                     "wema_transaction_callback", "wema_notification_callback",
-                                    "wema_upgrade_callback"})
+                                    "wema_address_callback"})
 
     def test_reports_ready_when_configured(self):
         body = self._body()
