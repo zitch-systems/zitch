@@ -224,6 +224,7 @@ const Exams = () => {
         format={groupPhone}
         maxLength={15}
         placeholder="0801 234 5678"
+        autoComplete="tel"
       />
       <View style={{ height: 10 }} />
       <BalanceHint amount={amount} balance={balance} />

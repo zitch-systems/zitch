@@ -124,6 +124,7 @@ export const RecentField = ({
   accessibilityLabel,
   below,
   onContacts,
+  autoComplete,
 }: {
   label: string;
   value: string;
@@ -144,6 +145,8 @@ export const RecentField = ({
   below?: React.ReactNode;
   /** Shows a contacts button after the field; the caller asks for permission. */
   onContacts?: () => void;
+  /** 'tel' on phone number fields, so the phone can offer a number to fill in. */
+  autoComplete?: 'tel';
 }) => {
   const { c } = useTheme();
   const tint = useFieldTint();
@@ -155,10 +158,18 @@ export const RecentField = ({
   return (
     <View style={{ marginBottom: 4 }}>
       <SectionTitle>{label}</SectionTitle>
-      <View style={{
-        flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 58, paddingLeft: leading ? 12 : 16, paddingRight: items.length || onContacts ? 6 : 16,
-        borderRadius: 18, backgroundColor: active ? c.surface : tint, borderWidth: 2, borderColor: active ? c.brand : 'transparent',
-      }}>
+      {/* A tap anywhere on the field (not only on the digits) puts the cursor in it
+          and opens the keyboard, so a number can be typed straight in (17 Nov 2026).
+          The arrow and contacts buttons inside keep their own taps. */}
+      <Pressable
+        testID="recent-field-box"
+        onPress={() => { setOpen(false); input.current?.focus(); }}
+        accessible={false}
+        focusable={false}
+        style={{
+          flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 58, paddingLeft: leading ? 12 : 16, paddingRight: items.length || onContacts ? 6 : 16,
+          borderRadius: 18, backgroundColor: active ? c.surface : tint, borderWidth: 2, borderColor: active ? c.brand : 'transparent',
+        }}>
         {leading}
         <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <TextInput
@@ -169,7 +180,13 @@ export const RecentField = ({
             onBlur={() => setFocused(false)}
             placeholder={placeholder}
             placeholderTextColor={c.ink3}
+            // The number keyboard by default (phone, meter and smartcard numbers).
             keyboardType={keyboardType}
+            autoCorrect={false}
+            autoCapitalize="none"
+            spellCheck={false}
+            autoComplete={autoComplete}
+            textContentType={autoComplete === 'tel' ? 'telephoneNumber' : undefined}
             maxLength={maxLength}
             accessibilityLabel={accessibilityLabel || label}
             style={{ flexShrink: 1, minWidth: 60, paddingVertical: 0, fontSize: 15.5, color: c.ink1, fontFamily: font.bold, fontVariant: ['tabular-nums'] }}
@@ -206,7 +223,7 @@ export const RecentField = ({
             </Pressable>
           </>
         ) : null}
-      </View>
+      </Pressable>
       {below}
       {open ? (
         <View style={{
