@@ -75,6 +75,8 @@ JOBS = (
         at=((0, 5), (6, 5), (12, 5), (18, 5)), alarm_flags=("--fail-nonzero",)),
     Job("settlement_report", ("settlement_report",), at=((6, 15),),
         alarm_flags=("--fail-on-breach",)),
+    # Wema sends the address webhook once; this lists the ones to ask it to resend.
+    Job("address_webhook_watch", ("address_webhook_watch",), at=((7, 25),)),
 )
 
 

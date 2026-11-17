@@ -247,8 +247,8 @@ const faceRefusal = (res: { success?: boolean; pending?: boolean; code?: string;
  * Sign-up's "Identity and address" page once the BVN is verified (review, Nov
  * 2026): the NIN, a quick face check and the address. Continue sends them to
  * the bank as separate requests at the same time: the NIN and face check as the
- * Tier 2 request, the address as the Tier 3 request. The customer stays on
- * Tier 1 until they tap Verify on Account limits.
+ * Tier 2 request, the address as the Tier 3 request. Each tier applies as soon
+ * as the bank confirms it.
  */
 export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face, onStartFace, onFaceRefused, faceBusy, address, onAddress }: {
   savedAddress?: string; onDone: () => void; bvn: string;
@@ -294,7 +294,15 @@ export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face
         else notify('NIN and face check', v2?.message || 'Could not send them. Check your connection and try again.');
         return;
       }
-      if (sent.current.tier2 || sent.current.tier3) notify('Sent for checking', 'Your bank is checking them. Verify Tier 2 and Tier 3 in Account limits when you’re ready.', 'success');
+      // Tier 2 applies at once when the bank confirms it there and then (and Tier 1 is finished).
+      const tier2Now = (v2 as { tier2_state?: string } | null)?.tier2_state === 'confirmed' && (v2?.tier ?? 0) >= 2;
+      if (tier2Now) {
+        notify('Tier 2 confirmed', sent.current.tier3
+          ? 'Your new limits apply now. Your bank is checking your address for Tier 3.'
+          : 'Your new limits apply now.', 'success');
+      } else if (sent.current.tier2 || sent.current.tier3) {
+        notify('Sent for checking', 'Your bank is checking them. Each tier applies as soon as the bank confirms it. Account limits shows where they are.', 'success');
+      }
       onDone();
     } finally {
       inFlight.current = false;

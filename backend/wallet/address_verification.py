@@ -43,18 +43,39 @@ def bank_tier_number(value):
     return found.pop() if len(found) == 1 else 0
 
 
-def refresh_address_verification(user, wallet=None, result=None) -> bool:
-    """Keep existing verification and pending records without inventing evidence.
+#: Read the bank back for a webhook-confirmed address at most this often per
+#: customer (the app polls the status; the reconcile job runs every five minutes).
+_TIER3_READBACK_SECONDS = 120
 
-    Wema's available account-status response carries neither the submitted
-    address nor a verification request reference. Completed/Rejected, even after
-    Pending, can belong to an older bank job. Therefore neither a fresh fetch nor
-    a supplied account-status result can approve this address or release it for
-    another submission. Bank-tier synchronization remains independent.
+
+def refresh_address_verification(user, wallet=None, result=None) -> bool:
+    """Reload the address records, and finish Tier 3 when Wema's address webhook
+    already said this address passed and the bank's own record now shows Tier 3.
+
+    Wema's account-status response carries neither the submitted address nor a
+    verification request reference, so on its own it never approves an address
+    or releases it for another submission. Only after the webhook has tied the
+    result to this account and request (``tier3_review`` is TIER3_BANK_OK) is the
+    status read back to finish it, because Wema sends that webhook once and does
+    not retry. ``result`` is a status read-back the caller already has.
     """
+    from django.core.cache import cache
+
+    from wallet.models import Wallet
+    from wallet.wema_callbacks import TIER3_BANK_OK, grant_tier3_once_bank_shows_it
+
     user._address_verification_refreshed = True
     current = get_user_model().objects.get(pk=user.pk)
+    if (current.tier3_review == TIER3_BANK_OK and current.address_verification_pending
+            and not current.address_verified):
+        wallet = wallet or Wallet.objects.filter(user=current).first()
+        if wallet is not None and wallet.account_number and (
+                result is not None
+                or cache.add(f"wema_tier3_readback:{current.pk}", 1, _TIER3_READBACK_SECONDS)):
+            grant_tier3_once_bank_shows_it(current, wallet, status=result)
+            current = get_user_model().objects.get(pk=user.pk)
     for field in ("address", "address_verified", "address_verification_pending",
-                  "address_verification_requested_at", "address_verification_account_number", "tier"):
+                  "address_verification_requested_at", "address_verification_account_number",
+                  "tier3_review", "tier3_review_at", "tier_cap", "tier"):
         setattr(user, field, getattr(current, field))
     return bool(current.address_verified)
