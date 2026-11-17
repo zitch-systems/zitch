@@ -441,6 +441,27 @@ describe.each(signInScreens)('$name sign-in biometrics', ({ component: Component
   });
 });
 
+// Settings and Me link to Security Center once (17 Nov 2026), so its rows are the
+// one home of the password, the transaction PIN and biometric sign-in.
+it('Security Center holds the password, the transaction PIN and biometrics, once each', async () => {
+  const tree = await renderScreen(<SecuritySetup />);
+  const rows = tree.root.findAll((n) => typeof n.props.accessibilityLabel === 'string' && typeof n.type === 'string')
+    .map((n) => n.props.accessibilityLabel).filter((l) => l !== 'toggle');
+  expect(rows).toEqual(['Password', 'Transaction PIN', 'Biometrics']);
+});
+
+it('Security Center does not show biometric sign-in as on when saving it fails', async () => {
+  mockAvailable.mockResolvedValue(true);
+  mockAuthenticate.mockResolvedValue(true);
+  mockSetBiometricEnabled.mockRejectedValueOnce(new Error('Storage unavailable'));
+  const tree = await renderScreen(<SecuritySetup />);
+  await act(async () => { await toggle(tree, 'Biometrics').props.onPress(); });
+  expect(mockAuthenticate).toHaveBeenCalledWith('Enable biometric sign-in');
+  expect(mockNotify).toHaveBeenCalledWith('Could not update biometrics', 'Please try again.');
+  expect(toggle(tree, 'Biometrics').props.on).toBe(false);
+  expect(toggle(tree, 'Biometrics').props.disabled).toBe(false);
+});
+
 it('cancels a scheduled PIN submission when choosing a different PIN', async () => {
   jest.useFakeTimers();
   const tree = await renderScreen(<SetPin />);

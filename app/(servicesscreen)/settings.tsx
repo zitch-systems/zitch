@@ -10,7 +10,6 @@ import { useTheme, font } from '@/lib/theme';
 import { clearSession, getSessionGeneration } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
-import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
 import { TERMS_URL, PRIVACY_URL } from '@/components/configFiles/links';
 import { getPushAvailability, registerForPushNotifications } from '@/lib/notifications';
 
@@ -18,12 +17,11 @@ const Toggle = ({ label, ...props }: { on: boolean; onChange: (v: boolean) => vo
   <SharedToggle {...props} accessibilityLabel={label} />
 );
 
+const SECURITY_CENTER_SUB = 'Password, transaction PIN and biometrics';
+
 const Settings = () => {
   const { c, theme, setTheme } = useTheme();
-  const [biometrics, setBiometrics] = useState(false);
-  const [bioBusy, setBioBusy] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
-  const bioLock = useRef(false);
   const logoutLock = useRef(false);
   const mounted = useRef(true);
   const notificationLock = useRef(false);
@@ -32,43 +30,9 @@ const Settings = () => {
   const pushAvailability = getPushAvailability();
 
   useEffect(() => {
-    let active = true;
     mounted.current = true;
-    const generation = getSessionGeneration();
-    const current = () => active && generation === getSessionGeneration();
-    isBiometricEnabled().then((enabled) => { if (current()) setBiometrics(enabled); })
-      .catch(() => { if (current()) notify('Could not load preferences', 'Please reopen Settings to try again.'); })
-      .finally(() => { if (current()) setBioBusy(false); });
-    return () => { active = false; mounted.current = false; };
+    return () => { mounted.current = false; };
   }, []);
-
-  const toggleBio = async (v: boolean) => {
-    if (bioLock.current || bioBusy || !mounted.current) return;
-    const generation = getSessionGeneration();
-    const current = () => mounted.current && generation === getSessionGeneration();
-    bioLock.current = true;
-    setBioBusy(true);
-    try {
-      if (v) {
-        const available = await isBiometricAvailable();
-        if (!current()) return;
-        if (!available) {
-          notify('Biometrics unavailable', 'Set up Face ID or a fingerprint in your device settings first.');
-          return;
-        }
-        const authenticated = await authenticate('Enable biometric sign-in');
-        if (!current() || !authenticated) return;
-      }
-      if (!current()) return;
-      await setBiometricEnabled(v);
-      if (current()) setBiometrics(v);
-    } catch {
-      if (current()) notify('Could not save preference', 'Please try again.');
-    } finally {
-      bioLock.current = false;
-      if (current()) setBioBusy(false);
-    }
-  };
 
   const openUrl = (url: string) => Linking.openURL(url).catch(() => notify('Error', 'Could not open this link.'));
 
@@ -139,11 +103,13 @@ const Settings = () => {
 
   const version = Constants.expoConfig?.version ?? '1.0.0';
 
+  // Each setting lives in one place (17 Nov 2026). Password, transaction PIN and
+  // biometric sign-in are all in Security Center, so Settings links to it once
+  // instead of also listing Change Transaction PIN and a biometrics toggle.
   const security = [
+    { icon: 'insurance', title: 'Security Center', sub: SECURITY_CENTER_SUB, go: () => router.push('/securitysetup') },
     // Verify me (17 Nov 2026): the email from sign-up, then BVN, NIN and the face check.
     { icon: 'user', title: 'Identity verification', sub: 'Your email, BVN, NIN and face check', go: () => router.push('/kyc') },
-    { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 6-digit PIN', go: () => router.push('/resetpin') },
-    { icon: 'insurance', title: 'Security Center', sub: 'Protect your funds', go: () => router.push('/securitysetup') },
     { icon: 'chart', title: 'Account Limits', sub: 'Your tier and transaction limits', go: () => router.push('/accountlimits') },
   ];
   const about = [
@@ -158,7 +124,9 @@ const Settings = () => {
         <Header title="Settings" onBack={() => router.back()} />
       </View>
 
-      <View style={{ paddingHorizontal: 16 }}>
+      {/* One 20px column for the header, the cards and the section labels
+          (17 Nov 2026); the labels line up with the row icons inside the cards. */}
+      <View style={{ paddingHorizontal: 20 }}>
         {/* Bank on WhatsApp — the channel's hero entry */}
         <Card pad={0} style={{ paddingHorizontal: 16, marginBottom: 18 }}>
           <Pressable accessibilityRole="button" accessibilityLabel="Link WhatsApp" onPress={() => router.push('/linkwhatsapp')} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 15, gap: 14 }}>
@@ -174,15 +142,11 @@ const Settings = () => {
         </Card>
 
         {/* Preferences */}
-        <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.ink3, marginLeft: 6, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Preferences</Text>
+        <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.ink3, marginLeft: 16, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Preferences</Text>
         <Card pad={0} style={{ paddingHorizontal: 16 }}>
           <ZItem
             icon="spark" title="Dark mode" sub="Easier on the eyes at night"
             right={<Toggle label="Dark mode" on={theme === 'dark'} onChange={(v) => setTheme(v ? 'dark' : 'light')} />}
-          />
-          <ZItem
-            icon="faceid" title="Biometric login" sub="Unlock Zitch with your face or fingerprint"
-            right={<Toggle label="Biometric login" disabled={bioBusy} on={biometrics} onChange={toggleBio} />}
           />
           <ZItem
             icon="bell" title="Transaction alerts" sub={notificationBusy ? 'Registering this device…'
@@ -194,7 +158,7 @@ const Settings = () => {
         </Card>
 
         {/* Security */}
-        <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.ink3, marginLeft: 6, marginTop: 18, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Security</Text>
+        <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.ink3, marginLeft: 16, marginTop: 18, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Security</Text>
         <Card pad={0} style={{ paddingHorizontal: 16 }}>
           {security.map((r, i) => (
             <ZItem key={r.title} icon={r.icon} title={r.title} sub={r.sub} onPress={r.go} last={i === security.length - 1} right={chev} />
@@ -202,7 +166,7 @@ const Settings = () => {
         </Card>
 
         {/* About */}
-        <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.ink3, marginLeft: 6, marginTop: 18, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>About</Text>
+        <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.ink3, marginLeft: 16, marginTop: 18, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>About</Text>
         <Card pad={0} style={{ paddingHorizontal: 16 }}>
           {about.map((r, i) => (
             <ZItem key={r.title} icon={r.icon} title={r.title} onPress={r.go} last={i === about.length - 1} right={chev} />

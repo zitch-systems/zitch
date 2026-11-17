@@ -169,6 +169,8 @@ export const ICON_COLORS: Record<string, string> = {
   send: '#0FA295',     // transfer
   withdraw: '#16A34A',
   insurance: '#16A34A',
+  // Password in Security Center (17 Nov 2026): a teal tile like its neighbours, not a blank one.
+  shield: '#0FA295',
   remita: '#2D7FF9',
   movie: '#D6336C',
   convert: '#0CA5B8',
