@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
@@ -243,18 +243,29 @@ export type SignupFace = { image: string; token: string };
 const faceRefusal = (res: { success?: boolean; pending?: boolean; code?: string; _httpStatus?: number }) =>
   !res.success && !res.pending && (/^(selfie|liveness)_/.test(res.code || '') || res._httpStatus === 502);
 
+/** What came back from a send: a network failure carries no HTTP status. */
+type SendAnswer = { success?: boolean; pending?: boolean; sent?: boolean; code?: string; message?: string;
+  tier3_state?: string; _httpStatus?: number } | null;
+
 /**
- * Sign-up's "Identity and address" page once the BVN is verified (review, Nov
- * 2026): the NIN, a quick face check and the address. Continue sends them to
- * the bank as separate requests at the same time: the NIN and face check as the
- * Tier 2 request, the address as the Tier 3 request. Each tier applies as soon
- * as the bank confirms it.
+ * Sign-up's "Identity and address" page once the BVN is verified (17 Nov 2026).
+ * The BVN opened the account (the bank mints the account number with it), so:
+ * - Tier 2: the BVN, NIN, account number and face check go to the bank in the
+ *   background as soon as the face check is done. Nothing is shown about it.
+ * - Tier 3: the address goes as its own request when the customer continues
+ *   after entering it. Nothing is shown about that either.
+ * Zitch's own limiter: the account stays on Tier 1 until the customer taps
+ * Tier 2 (and then Tier 3) on Account limits, however soon the bank answers.
+ * Only what the customer must fix is shown: a face check to retake, numbers the
+ * bank or Zitch refused, a lost connection.
  */
-export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face, onStartFace, onFaceRefused, faceBusy, address, onAddress }: {
+export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face, onStartFace, onFaceRefused, faceBusy, address, onAddress, accountReady = true }: {
   savedAddress?: string; onDone: () => void; bvn: string;
   nin: string; onNin: (v: string) => void;
   face: SignupFace | null; onStartFace: () => void; onFaceRefused: () => void; faceBusy?: boolean;
   address: AddressValue; onAddress: (v: AddressValue) => void;
+  /** The bank has opened the account number. Its face route can verify the BVN a moment before. */
+  accountReady?: boolean;
 }) => {
   const { c } = useTheme();
   const [bvnAgain, setBvnAgain] = useState('');
@@ -262,8 +273,13 @@ export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face
   const [editing, setEditing] = useState(!savedAddress || !!addressPayload(address));
   const [sending, setSending] = useState(false);
   const inFlight = useRef(false);
-  // A request the bank already has is not sent again when the other one needs a retry.
+  // A request the bank already has is never sent again.
   const sent = useRef({ tier2: false, tier3: false });
+  const tier2Run = useRef<Promise<SendAnswer> | null>(null);
+  // The details a background send already tried, so a refusal is not retried on every render.
+  const tried = useRef('');
+  const refused = useRef(onFaceRefused);
+  refused.current = onFaceRefused;
 
   // The bank needs the BVN typed again with the NIN (Zitch keeps only a hash).
   const bvnForBank = bvn.length === 11 ? bvn : bvnAgain;
@@ -272,36 +288,57 @@ export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face
   const payload = addressPayload(address);
   const ready = (editing ? !!payload : true) && (!identityStarted || identityGiven);
 
+  // One Tier 2 request at a time; its answer is shared by whoever asked.
+  const sendTier2 = useCallback((): Promise<SendAnswer> => {
+    if (sent.current.tier2) return Promise.resolve({ success: true });
+    if (!identityGiven || !face) return Promise.resolve(null);
+    if (!tier2Run.current) {
+      tried.current = `${bvnForBank}|${nin}|${face.token}`;
+      tier2Run.current = kycService.sendTier2AtSignup(bvnForBank, nin, face.image, face.token)
+        .then((answer) => {
+          const v = answer as SendAnswer;
+          if (v?.success || v?.pending) sent.current.tier2 = true;
+          else if (v && faceRefusal(v as never)) { refused.current(); notify('Face check', 'Take the face check again.'); }
+          return v;
+        })
+        .catch(() => null)
+        .finally(() => { tier2Run.current = null; });
+    }
+    return tier2Run.current;
+  }, [identityGiven, face, bvnForBank, nin]);
+
+  // In the background, as soon as the face check is done and the account number is in.
+  useEffect(() => {
+    if (!identityGiven || !face || !accountReady || sent.current.tier2) return;
+    if (tried.current === `${bvnForBank}|${nin}|${face.token}`) return;
+    void sendTier2();
+  }, [identityGiven, face, accountReady, bvnForBank, nin, sendTier2]);
+
   const send = async () => {
-    if (!ready || inFlight.current) return;
+    if (!ready || inFlight.current || !accountReady) return;
     inFlight.current = true;
     setSending(true);
     try {
-      // Separate requests, sent together: Tier 2 (NIN + face) and Tier 3 (address).
-      const tier2 = identityGiven && face && !sent.current.tier2 ? kycService.sendTier2AtSignup(bvnForBank, nin, face.image, face.token) : null;
+      // Separate requests: Tier 2 if the background send has not gone through
+      // (or is still running), and the address as Tier 3, side by side.
+      const tier2 = identityGiven && !sent.current.tier2 ? sendTier2() : null;
       const tier3 = editing && payload && !sent.current.tier3 ? kycService.sendTier3(payload) : null;
-      const [r2, r3] = await Promise.allSettled([tier2, tier3]);
-      const v2 = r2.status === 'fulfilled' ? r2.value : null;
-      const v3 = r3.status === 'fulfilled' ? r3.value : null;
-      if (tier2 && (v2?.success || (v2 as { pending?: boolean } | null)?.pending)) sent.current.tier2 = true;
-      if (tier3 && v3?.success) sent.current.tier3 = true;
+      const [v2, v3] = await Promise.all([tier2, tier3]) as [SendAnswer, SendAnswer];
+      // The address was taken unless the bank's account was not there to send it to.
+      if (tier3 && v3?.success && v3.tier3_state !== 'not_sent') sent.current.tier3 = true;
       if (tier3 && !v3?.success) {
         notify('Address', v3?.message || 'Could not save your address. Check your connection and try again.');
         return;
       }
-      if (tier2 && !(v2?.success || (v2 as { pending?: boolean } | null)?.pending)) {
-        if (v2 && faceRefusal(v2 as never)) { onFaceRefused(); notify('Face check', 'Take the face check again.'); }
-        else notify('NIN and face check', v2?.message || 'Could not send them. Check your connection and try again.');
+      if (tier3 && !sent.current.tier3) {
+        notify('Address', 'Your account is still being opened. Try again in a moment.');
         return;
       }
-      // Tier 2 applies at once when the bank confirms it there and then (and Tier 1 is finished).
-      const tier2Now = (v2 as { tier2_state?: string } | null)?.tier2_state === 'confirmed' && (v2?.tier ?? 0) >= 2;
-      if (tier2Now) {
-        notify('Tier 2 confirmed', sent.current.tier3
-          ? 'Your new limits apply now. Your bank is checking your address for Tier 3.'
-          : 'Your new limits apply now.', 'success');
-      } else if (sent.current.tier2 || sent.current.tier3) {
-        notify('Sent for checking', 'Your bank is checking them. Each tier applies as soon as the bank confirms it. Account limits shows where they are.', 'success');
+      if (tier2 && !sent.current.tier2) {
+        if (v2 && faceRefusal(v2 as never)) return;   // asked to retake it already
+        notify('NIN and face check', v2?._httpStatus && v2._httpStatus < 500 && v2.message
+          ? v2.message : 'Could not continue. Check your connection and try again.');
+        return;
       }
       onDone();
     } finally {
@@ -352,7 +389,8 @@ export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face
       )}
 
       <View style={{ marginTop: 26 }}>
-        <Btn label={sending ? 'Sending…' : 'Continue'} disabled={!ready || sending} onPress={() => void send()} />
+        <Btn label={!accountReady ? 'Opening your account…' : sending ? 'Saving…' : 'Continue'}
+          disabled={!ready || sending || !accountReady} onPress={() => void send()} />
       </View>
       {identityStarted && !identityGiven ? (
         <Text style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3, marginTop: 10, textAlign: 'center' }}>
@@ -367,8 +405,9 @@ export const OnboardingIdentity = ({ savedAddress, onDone, bvn, nin, onNin, face
 /**
  * Steps 2 to 4 under the BVN form: the NIN, the face check and the address can
  * all be done while the BVN is verified (one page, review Nov 2026). Nothing is
- * sent until Continue once the BVN is verified, because the account it all goes
- * to opens with the BVN (Tier 1).
+ * sent before the BVN is verified and its account number is in, because the
+ * account it all goes to opens with the BVN (Tier 1). OnboardingIdentity then
+ * sends it.
  */
 export const IdentityWaits = ({ nin, onNin, editable = true, face, onStartFace, faceBusy, address, onAddress }: {
   nin: string; onNin: (v: string) => void; editable?: boolean;

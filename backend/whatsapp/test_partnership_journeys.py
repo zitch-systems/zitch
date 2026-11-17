@@ -246,7 +246,24 @@ class PartnershipJourneyTests(TestCase):
                 buttons.assert_not_called()
                 sent.assert_not_called()
                 self.assertIn("Account limits, then Verify Tier 3", reply.call_args.args[1])
-                self.assertEqual("rejected" in review, "couldn't confirm the address" in reply.call_args.args[1])
+                self.assertEqual("rejected" in review, "details need review" in reply.call_args.args[1])
+
+    def test_a_tier_3_address_the_bank_verified_applies_on_the_chat_tap(self):
+        """Zitch's own limiter: verified at the bank, applied only when the customer taps."""
+        self._tier2_user()
+        type(self.user).objects.filter(pk=self.user.pk).update(address_verified=True, tier_cap=2, tier=2)
+        self.user.refresh_from_db()
+        with patch.object(router, "reply_buttons") as buttons:
+            router._offer_tier_upgrade(self.user, MSISDN)
+        self.assertIn(("tier3", "Upgrade to Tier 3"), buttons.call_args.args[2])
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.tier, 2, "nothing applies before the tap")
+        with patch("utility.wema.upgrade_tier3") as sent, patch.object(router, "reply") as reply:
+            router.handle_inbound(MSISDN, "tier3")
+        sent.assert_not_called()
+        self.assertIn("You're now Tier 3", reply.call_args.args[1])
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.tier, 3)
 
     def test_tier2_from_chat_applies_a_bank_confirmed_sign_up_check_without_a_new_photo(self):
         self._tier2_user()

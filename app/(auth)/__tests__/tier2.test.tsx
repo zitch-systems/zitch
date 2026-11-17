@@ -156,10 +156,12 @@ it('shows a bank still checking the face, and finishes from Check again', async 
   mockApiJson.mockImplementation(async (path: string) => {
     if (path === EP.kyc.status) return done ? { ...tier1, face_verified: true, tier: 2 } : { ...tier1, tier2_face_pending: true };
     if (path === EP.kyc.address) return { success: false };
+    // Check again is a tap on Tier 2: it reads the bank back and applies a confirmed check.
+    if (path === EP.kyc.claim) return done ? { success: true, state: 'upgraded', tier: 2 } : { success: true, state: 'processing', tier: 1 };
     throw new Error(`Unexpected API call: ${path}`);
   });
   const tree = await render();
-  expect(text(tree)).toContain('Your bank is checking your face');
+  expect(text(tree)).toContain('Your bank is still checking your details');
   expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
   done = true;
   await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Check again' }).props.onPress(); });
@@ -204,7 +206,7 @@ it('says the sign-up check was not confirmed when Verify Tier 2 sends the custom
     ? { ...tier1, tier2_state: 'not_confirmed', tier2_review: 'rejected' } : { success: false });
   const tree = await render();
   const out = text(tree);
-  expect(out).toContain('We couldn’t confirm the NIN or face check from your sign-up.');
+  expect(out).toContain('Your details need review. Your bank couldn’t confirm your NIN or face check.');
   expect(out).toContain('Enter your NIN and retake the face check');
   expect(tree.root.findAllByType(TextInput)).toHaveLength(2);
   act(() => tree.unmount());
@@ -212,6 +214,6 @@ it('says the sign-up check was not confirmed when Verify Tier 2 sends the custom
   mockApiJson.mockImplementation(async (path: string) => path === EP.kyc.status
     ? { ...tier1, tier2_state: 'not_confirmed', tier2_review: '' } : { success: false });
   const fresh = await render();
-  expect(text(fresh)).not.toContain('We couldn’t confirm');
+  expect(text(fresh)).not.toContain('need review');
   act(() => fresh.unmount());
 });

@@ -1461,6 +1461,13 @@ def _kyc_state(user) -> dict:
         # Verify Tier 3: "done", "processing" (sent to the bank), "not_confirmed"
         # (the bank refused it: enter the address again) or "not_sent".
         "tier3_state": tier3_claim_state(user),
+        # "rejected" when the bank refused the address: the Tier 3 page then says
+        # the details need review. Not shown anywhere before the customer taps Tier 3.
+        "tier3_review": "rejected" if user.tier3_review == "rejected" else "",
+        # Details the bank refused, for the app's "Details need review" pop-up
+        # (17 Nov 2026: a refusal shows on its own; nothing else does). "at"
+        # tells one refusal from the next, so a dismissed one stays dismissed.
+        "details_review": _details_review(user),
         "address_verification_pending": user.address_verification_pending,
         "address_verification_state": ("verified" if user.address_verified else
                                        "pending" if user.address_verification_pending else "not_verified"),
@@ -1680,9 +1687,10 @@ def tier2_claim_state(user) -> str:
 
 
 def tier3_claim_state(user) -> str:
-    """Where Tier 3 stands. Tier 3 is raised by Wema's address webhook, which ties
-    the result to this account and request (wallet.wema_callbacks); the bank's
-    account status alone never makes it "ready"."""
+    """Where Tier 3 stands. An address is verified by Wema's address webhook,
+    which ties the result to this account and request (wallet.wema_callbacks);
+    the bank's account status alone never makes it "ready". A "ready" address
+    applies when the customer taps Tier 3."""
     if user.tier >= 3:
         return "done"
     if user.address_verified:
@@ -1694,6 +1702,16 @@ def tier3_claim_state(user) -> str:
             return "not_confirmed"
         return "processing"
     return "not_sent"
+
+
+def _details_review(user) -> list:
+    """The tiers whose details the bank refused, still below that tier."""
+    rows = []
+    for tier, state, at in ((2, user.tier2_review, user.tier2_review_at),
+                            (3, user.tier3_review, user.tier3_review_at)):
+        if state == "rejected" and user.tier < tier:
+            rows.append({"tier": tier, "at": at.isoformat() if at else ""})
+    return rows
 
 
 def _tier3_review_expired(user) -> bool:
@@ -1713,13 +1731,18 @@ def _tier3_review_expired(user) -> bool:
 @require_user
 def kyc_claim_tier(request):
     """POST /api/kyc/claim/ {access_token, tier: 2|3}
-    -> {success, state: upgraded|processing|not_confirmed|needs_tier1|needs_tier2, ...kyc state}
+    -> {success, state: upgraded|processing|needs_review|not_confirmed|needs_tier1|needs_tier2, ...kyc state}
 
-    Verify Tier 2/3 on Account limits. Sign-up already sent the details to the
-    bank; this applies a tier the bank confirmed, reports one it is still
-    checking, or says the details must be entered again. Nothing new is sent to
-    the bank: a pending check is only read back.
+    The customer taps Tier 2 or Tier 3 (Account limits, or the identity screen).
+    Zitch's own limiter (17 Nov 2026): sign-up sends the details to the bank in
+    the background and nothing is shown until this tap. Then: a tier the bank
+    confirmed applies now ("upgraded"); one it is still checking is "processing";
+    details the bank refused are "needs_review" (the app's "Details need review"
+    pop-up); and none sent, or no answer in time, is "not_confirmed" (enter them
+    on the Tier 2 or Tier 3 page). Nothing new is sent to the bank: a pending
+    check is only read back.
     """
+    from wallet.address_verification import refresh_address_verification
     from wallet.views import confirm_wema_tier2, _TIER2_PENDING_KEY
 
     user = request.user_obj
@@ -1732,9 +1755,13 @@ def kyc_claim_tier(request):
 
     if wanted == 3:
         state3 = tier3_claim_state(user)
+        if state3 == "processing":
+            # A webhook-passed address whose bank record has caught up finishes here.
+            refresh_address_verification(user)
+            user.refresh_from_db()
+            state3 = tier3_claim_state(user)
         if state3 == "ready" and user.tier >= 2:
-            # An address verified some other way (never from the bank's
-            # uncorrelated answer): lift the sign-up cap so the tier shows it.
+            # The bank verified the address (its webhook): the tap lifts the cap.
             apply_confirmed_tier(user, 3)
             state3 = tier3_claim_state(user)
         if state3 == "done":
@@ -1742,7 +1769,9 @@ def kyc_claim_tier(request):
         if state3 == "processing":
             return ok(success=True, state="processing", **_kyc_state(user))
         if state3 == "not_confirmed":
-            return ok(success=True, state="not_confirmed", **_kyc_state(user))
+            refused = user.tier3_review == "rejected"
+            return ok(success=True, state="needs_review" if refused else "not_confirmed",
+                      **_kyc_state(user))
         if user.tier < 2:
             return ok(success=True, state="needs_tier2",
                       message="Verify Tier 2 first.", **_kyc_state(user))
@@ -1759,15 +1788,16 @@ def kyc_claim_tier(request):
         confirm_wema_tier2(user, hashed=hashed)
         user.refresh_from_db()
         state = tier2_claim_state(user)
-        if state == "done":
-            # The read-back found it confirmed, and a confirmed check applies at once.
-            return ok(success=True, state="upgraded", **_kyc_state(user))
     if state == "ready":
         if apply_confirmed_tier(user, 2) < 2:
             # Confirmed by the bank, but Tier 1 is unfinished: never report an
             # upgrade the account did not get.
             return ok(success=True, state="needs_tier1", message=NEEDS_TIER1, **_kyc_state(user))
         return ok(success=True, state="upgraded", **_kyc_state(user))
+    if state == "done":
+        return ok(success=True, state="upgraded", **_kyc_state(user))
+    if state == "not_confirmed" and user.tier2_review == "rejected":
+        return ok(success=True, state="needs_review", **_kyc_state(user))
     return ok(success=True, state=state, **_kyc_state(user))
 
 

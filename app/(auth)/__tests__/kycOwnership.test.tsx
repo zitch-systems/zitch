@@ -64,6 +64,8 @@ jest.mock('@/components/design/ui', () => {
       Pressable, { accessibilityLabel: label, onPress, disabled }, ReactActual.createElement(Text, null, label)),
     Field: ({ value, onChangeText }: { value: string; onChangeText: (value: string) => void }) => ReactActual.createElement(
       TextInput, { value, onChangeText }),
+    Sheet: ({ open, children }: { open: boolean; children: ReactNode }) => (open ? ReactActual.createElement(View, null, children) : null),
+    NText: Text,
   };
 });
 
@@ -157,8 +159,10 @@ it('shows Tier 3 (the home address) to a Tier 2 account and opens its own page',
     address_verification_required: true, address_rail: 'wema', tier3_state: 'not_sent' });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Home address, Tier 3' }).props.onPress(); });
-  expect(mockPush).toHaveBeenCalledWith('/tier3');
+  mockApiJson.mockResolvedValueOnce({ success: true, state: 'not_confirmed', tier: 2 });   // the tap
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Home address, Tier 3' }).props.onPress(); });
+  expect(mockApiJson).toHaveBeenLastCalledWith(EP.kyc.claim, { tier: 3 });
+  expect(mockPush).toHaveBeenCalledWith('/tier3?from=kyc');
   await act(async () => tree.unmount());
 });
 
@@ -310,7 +314,7 @@ it('does not collect Tier 2 identity details or a selfie when live verification 
   act(() => tree.unmount());
 });
 
-it('shows a sent address as Tier 3 processing, with Check again, never the form', async () => {
+it('shows nothing about a sent address before the tap, then says it is still being checked', async () => {
   mockParams.verify_identity = '';
   mockApiJson.mockResolvedValue({ ...state, bvn_verified: true, nin_verified: true, face_verified: true,
     tier: 2, email_verified: true, account_provider: 'partnership', address_rail: 'wema',
@@ -318,14 +322,15 @@ it('shows a sent address as Tier 3 processing, with Check again, never the form'
     tier3_address_available: false, tier3_address_unavailable_reason: 'Contact support for address verification review.' });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  const output = JSON.stringify(tree.toJSON());
-  expect(output).toContain('Tier 3 is processing');
-  expect(output).toContain('Your address is with the bank. Tier 3 opens once the bank’s check can be confirmed. You don’t need to send it again.');
-  // never sent to Support, never asked for the address again
-  expect(output).not.toMatch(/Contact support|needs review|temporarily unavailable/);
+  let output = JSON.stringify(tree.toJSON());
+  // Zitch's own limiter: nothing sign-up sent is shown before the customer taps
+  expect(output).not.toMatch(/processing|Processing|Still checking|Contact support|needs review|temporarily unavailable/);
   expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
-  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Check again' }).props.onPress(); });
-  expect(mockApiJson).toHaveBeenCalledTimes(2);
+  mockApiJson.mockResolvedValueOnce({ success: true, state: 'processing', tier: 2 });
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Home address, Tier 3' }).props.onPress(); });
+  output = JSON.stringify(tree.toJSON());
+  expect(output).toContain('Still checking your address');
+  expect(mockPush).not.toHaveBeenCalled();
   act(() => tree.unmount());
 });
 
@@ -340,20 +345,29 @@ it('sends Tier 3 to its own page whatever the old address flag says, never to Su
   expect(output).not.toMatch(/temporarily unavailable|Contact support/);
   expect(output).not.toContain('Building number');
   expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
-  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Home address, Tier 3' }).props.onPress(); });
-  expect(mockPush).toHaveBeenCalledWith('/tier3');
+  mockApiJson.mockResolvedValueOnce({ success: true, state: 'needs_review', tier: 2 });
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Home address, Tier 3' }).props.onPress(); });
+  // a refusal opens the Details need review pop-up, and its button opens the Tier 3 page
+  expect(JSON.stringify(tree.toJSON())).toContain('Your details need review');
+  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Review details' }).props.onPress(); });
+  expect(mockPush).toHaveBeenCalledWith('/tier3?from=kyc&review=1');
   act(() => tree.unmount());
 });
 
-it('shows Tier 2 done only once the account is on Tier 2, and a bank-confirmed check as ready to move up', async () => {
+it('shows Tier 2 done only once the account is on Tier 2, and a bank-confirmed check applies on the tap', async () => {
   mockParams.verify_identity = '';
   mockApiJson.mockResolvedValue({ ...state, bvn_verified: true, nin_verified: true, face_verified: true,
     tier: 1, email_verified: true, account_provider: 'partnership', tier2_state: 'ready' });
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
-  const card = tree.root.findByProps({ accessibilityLabel: 'Face verification, Confirmed by your bank · move up to Tier 2' });
-  await act(async () => { card.props.onPress(); });
-  expect(mockPush).toHaveBeenCalledWith('/tier2');
+  // nothing says the bank confirmed it before the tap
+  expect(JSON.stringify(tree.toJSON())).not.toContain('Confirmed by your bank');
+  const card = tree.root.findByProps({ accessibilityLabel: 'Face verification, Tier 2' });
+  mockApiJson.mockResolvedValueOnce({ success: true, state: 'upgraded', tier: 2 });
+  await act(async () => { await card.props.onPress(); });
+  expect(mockApiJson).toHaveBeenCalledWith(EP.kyc.claim, { tier: 2 });
+  expect(JSON.stringify(tree.toJSON())).toContain('You’re now Tier 2');
+  expect(mockPush).not.toHaveBeenCalled();
   act(() => tree.unmount());
 });
 
@@ -511,8 +525,13 @@ it('sends a customer with no bank account yet to the Tier 2 page without using t
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Kyc />); });
   expect(JSON.stringify(tree.toJSON())).not.toContain('Prembly');
-  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Face verification, Tier 2' }).props.onPress(); });
-  expect(mockPush).toHaveBeenCalledWith('/tier2');
+  mockApiJson.mockImplementation(async (path: string) => {
+    if (path === EP.kyc.status) return verified;
+    if (path === EP.kyc.claim) return { success: true, state: 'not_confirmed', tier: 1 };
+    throw new Error(`Unexpected API call: ${path}`);
+  });
+  await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Face verification, Tier 2' }).props.onPress(); });
+  expect(mockPush).toHaveBeenCalledWith('/tier2?from=kyc&recheck=1');
   expect(mockApiJson.mock.calls.map(([path]) => path)).not.toContain(EP.wallet.wemaUpgradeTier2);
   await act(async () => tree.unmount());
 });

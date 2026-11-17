@@ -3537,10 +3537,20 @@ def _offer_tier_upgrade(user, msisdn: str) -> None:
 
         # Tier 3 is the address, sent to the bank as its own request, as in the
         # app. A refused one, or none saved, is entered in the app.
-        if tier3_claim_state(user) == "not_confirmed" or not saved_address_parts(user.address):
+        state3 = tier3_claim_state(user)
+        if state3 != "ready" and (state3 == "not_confirmed" or not saved_address_parts(user.address)):
             return reply(msisdn, status + "\n\n*Upgrade to Tier 3*\n" + (
-                "Your bank couldn't confirm the address you sent. " if tier3_claim_state(user) == "not_confirmed"
+                "Your address details need review. " if user.tier3_review == "rejected"
                 else "") + TIER3_IN_APP_TEXT)
+        if state3 == "ready":
+            # The bank verified the address. Zitch's own limiter: it applies on this tap.
+            pa = PendingAction.objects.create(
+                user=user, msisdn=msisdn, action_type="kyc", state=KYC_UPGRADE_STATE,
+                payload={}, expires_at=_flow_deadline("idle"),
+            )
+            _touch(pa, state=KYC_UPGRADE_STATE, payload=pa.payload)
+            return reply_buttons(msisdn, status + "\n\n*Upgrade to Tier 3*\nTap to move up to Tier 3.",
+                                 [("tier3", "Upgrade to Tier 3"), ("later", "Later")])
     pa = PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="kyc", state=KYC_UPGRADE_STATE,
         payload={}, expires_at=_flow_deadline("idle"),
@@ -3576,10 +3586,19 @@ TIER2_PROCESSING_TEXT = ("⏳ *Tier 2 is processing.*\n\n"
 
 
 def _send_tier3_from_chat(user, msisdn: str) -> None:
-    """Send the sign-up address as the Tier 3 request, the same way the app does."""
-    from accounts.views import saved_address_parts, send_tier3_address
+    """Send the sign-up address as the Tier 3 request, the same way the app does,
+    or apply Tier 3 when the bank already verified it (the tap is the trigger)."""
+    from accounts.views import (apply_confirmed_tier, saved_address_parts, send_tier3_address,
+                                tier3_claim_state)
 
     _clear_actions(msisdn)
+    if user.tier >= 2 and tier3_claim_state(user) == "ready":
+        # Already verified by the bank: this tap is what moves the account up.
+        if apply_confirmed_tier(user, 3) >= 3:
+            from accounts.models import User
+
+            return reply(msisdn, "✅ *You're now Tier 3.*\n\n"
+                         f"Up to {_money(User.DAILY_TRANSFER_LIMITS[3])} a day.")
     parts = saved_address_parts(user.address)
     if not parts:
         return reply(msisdn, TIER3_IN_APP_TEXT)
@@ -3590,7 +3609,7 @@ def _send_tier3_from_chat(user, msisdn: str) -> None:
     if state3 == "done":
         return reply(msisdn, "✅ You are already on Tier 3.")
     if state3 == "not_confirmed":
-        return reply(msisdn, "Your bank couldn't confirm that address. " + TIER3_IN_APP_TEXT)
+        return reply(msisdn, "Your address details need review. " + TIER3_IN_APP_TEXT)
     return reply(msisdn, "We couldn't send your address right now. Please try again later. "
                  "Your verification so far is saved.")
 

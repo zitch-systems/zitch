@@ -1286,8 +1286,10 @@ def wema_address_callback(request):
         waiting (send_tier3_address allows one at a time, so the callback can only
         be about that request);
       * the bank's own partner-account-kyc-status read-back shows Tier 3.
-    A refusal stops the wait so the customer can send the address again. The
-    customer is told in WhatsApp at once. Always answers 200.
+    Zitch's own limiter (17 Nov 2026): a verified address is recorded, but the
+    account moves to Tier 3 only when the customer taps Tier 3 (kyc_claim_tier).
+    A refusal stops the wait; the customer sees "details need review" when they
+    tap. Nothing is sent to the customer from here. Always answers 200.
     """
     body = request.wema_body
     outcome = address_callback_outcome(body)
@@ -1324,7 +1326,6 @@ def settle_address_verification(account: str, outcome: str) -> str:
         User.objects.filter(pk=user.pk).update(
             address_verification_pending=False, tier3_review="rejected",
             tier3_review_at=timezone.now())
-        _tell_whatsapp(user, ADDRESS_FAILED_TEXT)
         return "rejected"
     if outcome != "verified":
         return "unclear"
@@ -1339,9 +1340,12 @@ def settle_address_verification(account: str, outcome: str) -> str:
 
 def grant_tier3_once_bank_shows_it(user, wallet, status=None) -> str:
     """Wema's webhook said the address passed (``tier3_review`` is TIER3_BANK_OK).
-    Grant Tier 3 once the bank's own record shows it: "verified", or
-    "unconfirmed" while the record still lags. ``status`` is a read-back the
-    caller already has; otherwise the bank is read here."""
+    Record it as verified once the bank's own record shows Tier 3: "verified",
+    or "unconfirmed" while the record still lags. ``status`` is a read-back the
+    caller already has; otherwise the bank is read here.
+
+    The account stays below Tier 3 until the customer taps Tier 3: that tap
+    (kyc_claim_tier → apply_confirmed_tier) is what lifts the cap."""
     from accounts.models import User
     from wallet.address_verification import bank_tier_number
 
@@ -1365,16 +1369,13 @@ def grant_tier3_once_bank_shows_it(user, wallet, status=None) -> str:
         locked.address_verified = True
         locked.address_verification_pending = False
         locked.tier3_review, locked.tier3_review_at = "", None
-        # The bank confirmed Tier 3: no sign-up hold applies to it.
-        locked.tier_cap = max(locked.tier_cap, 3)
+        # Held below Tier 3 until the customer taps it, whatever the cap was before.
+        locked.tier_cap = min(locked.tier_cap, 2)
         locked.recompute_tier()
         locked.save(update_fields=["address_verified", "address_verification_pending",
                                    "tier3_review", "tier3_review_at", "tier_cap", "tier"])
         Wallet.objects.filter(pk=wallet.pk).update(bank_tier=3)
     log.info("wema_address_verified user=%s tier=%s", user.pk, locked.tier)
-    # Say "upgraded" only when it is: an address can pass before Tier 1 or
-    # Tier 2 is finished (sign-up sends both at once).
-    _tell_whatsapp(user, ADDRESS_DONE_TEXT if locked.tier >= 3 else ADDRESS_DONE_EARLY_TEXT)
     return "verified"
 
 
@@ -1382,24 +1383,3 @@ def grant_tier3_once_bank_shows_it(user, wallet, status=None) -> str:
 #: own record did not show Tier 3 yet. It does not expire: the bank answered.
 TIER3_BANK_OK = "bank_ok"
 
-
-ADDRESS_DONE_TEXT = ("✅ *Address verified.*\n\nYour bank has verified your address and "
-                     "upgraded your account. Reply *menu* to see your new limits.")
-ADDRESS_DONE_EARLY_TEXT = ("✅ *Address verified.*\n\nYour bank has verified your address. "
-                           "Tier 3 applies once the earlier steps are finished. "
-                           "Reply *menu* to see what's left.")
-ADDRESS_FAILED_TEXT = ("❌ *Your address wasn't verified.*\n\nNothing changed on your account. "
-                       "Reply *menu* to send your address again.")
-
-
-def _tell_whatsapp(user, text: str) -> None:
-    """One message to the customer's linked WhatsApp, if they have one."""
-    try:
-        from whatsapp.models import WhatsAppLink
-        from whatsapp.router import reply
-
-        link = WhatsAppLink.objects.filter(user=user, status=WhatsAppLink.ACTIVE).first()
-        if link is not None:
-            reply(link.wa_msisdn, text)
-    except Exception:  # noqa: BLE001 - the result is recorded; the app shows it
-        log.warning("wema_address_cb_notify_failed user=%s", user.pk, exc_info=True)

@@ -15,6 +15,8 @@ import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Tap } from '@/components/design/ui';
 import { EMPTY_ADDRESS as EMPTY_SIGNUP_ADDRESS, IdentityWaits, LaterLink, OnboardingHeading, OnboardingIdentity, StepTitle, ViaOption, type AddressValue, type SignupFace } from '@/components/kyc/Onboarding';
 import { useTheme, font } from '@/lib/theme';
+import { tierLadder, type LadderTier } from '@/lib/tierLadder';
+import { useTierClaim } from '@/components/kyc/TierClaim';
 
 type Status = {
   tier: number; transaction_limit: string;
@@ -57,6 +59,9 @@ type Status = {
   bank_upgrade_required?: boolean;
   // The customer's address as they gave it (sign-up saves it; nothing verified).
   address?: string;
+  /** The bank has opened the account number (sign-up sends Tier 2 and Tier 3 only then). */
+  has_wema_account?: boolean;
+  tier_ladder?: LadderTier[];
 };
 
 type Method = 'menu' | 'email' | 'bvn' | 'nin' | 'upgrade' | 'address';
@@ -296,15 +301,26 @@ const Kyc = () => {
   const hasTier1Identity = !!(status?.bvn_verified || status?.nin_verified);
   // Wema's Tier 2 upgrade takes the account number, BVN, NIN and a live selfie
   // in one request. Zitch keeps only hashes, so the customer always types both.
-  const faceOnly = status?.tier2_face_rail === 'wema';
   const askIdentity = true;
-  const tier2Pending = faceOnly && status?.tier2_face_pending === true;
   const needsBankUpgrade = !!status?.bank_upgrade_required || needsUpgrade;
   const tier2Unavailable = status?.tier2_face_available === false;
-  const addressPending = status?.address_verification_pending === true || status?.address_verification_state === 'pending';
   const addressVerificationAvailable = status?.account_provider === 'partnership'
     && status?.address_verification_required !== false
     && status?.address_rail !== 'none';
+  // Tapping Tier 2 or Tier 3 here does what it does on Account limits (Zitch's
+  // own limiter: nothing sign-up sent is shown or applied before this tap).
+  const { claim, busy: claimBusy, sheets: claimSheets } = useTierClaim({
+    ladder: tierLadder(status?.tier_ladder), address: status?.address, from: 'kyc',
+    onClosed: () => { void load(); },
+  });
+  // The bank's face route can verify the BVN a moment before the account number
+  // is in. Sign-up sends Tier 2 and Tier 3 only once it is, so check until then.
+  const waitingForAccount = onboarding && !!status?.bvn_verified && status?.has_wema_account === false;
+  useEffect(() => {
+    if (!waitingForAccount) return;
+    const timer = setInterval(() => { void load(); }, 3000);
+    return () => clearInterval(timer);
+  }, [waitingForAccount, load]);
 
   const startEmail = async () => {
     const target = (email || status?.email || '').trim().toLowerCase();
@@ -736,15 +752,6 @@ const Kyc = () => {
     <View style={{ marginTop: 12 }}><Btn label="Contact support" variant="ghost" onPress={() => router.push('/support')} /></View>
   </View>;
 
-  // Tier 3 is the address, sent to the bank as its own request (review, Nov
-  // 2026). Zitch never raises it from the bank's answer, so a sent address
-  // reads Processing here, as on Account limits.
-  const AddressPending = () => <View style={{ marginTop: 16, padding: 16, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
-    <Text style={{ color: c.ink1, fontFamily: font.bold, fontSize: 16 }}>Tier 3 is processing</Text>
-    <Text style={{ color: c.ink2, fontFamily: font.regular, lineHeight: 21, marginTop: 8 }}>Your address is with the bank. Tier 3 opens once the bank’s check can be confirmed. You don’t need to send it again.</Text>
-    <View style={{ marginTop: 12 }}><Btn label="Check again" variant="ghost" onPress={() => void load()} /></View>
-  </View>;
-
   if (loadingStatus || statusError || !status) {
     return <Screen>
       <Header title={title} onBack={onboarding ? undefined : () => router.back()} />
@@ -779,6 +786,7 @@ const Kyc = () => {
 
       {method === 'menu' && onboarding && status.bvn_verified && (
         <OnboardingIdentity savedAddress={status.address || ''} onDone={toSetup} bvn={bvn.length === 11 ? bvn : signupBvn}
+          accountReady={status.has_wema_account !== false}
           nin={signupNin} onNin={setSignupNin} face={signupFace} onStartFace={captureSignupFace}
           onFaceRefused={() => setSignupFace(null)} faceBusy={busy}
           address={signupAddress} onAddress={setSignupAddress} />
@@ -821,18 +829,16 @@ const Kyc = () => {
           {status.email_verified && hasTier1Identity && (tier2Unavailable && (needsBankUpgrade || !status.face_verified)
             ? <Tier2Unavailable /> : needsBankUpgrade
             ? <MethodCard id="upgrade" icon="user" color={C_SELFIE} title="Tier 2 · Face verification"
-                sub={tier2Pending ? 'Your bank is checking your face' : 'Your BVN and NIN, then a live face check'} />
-            // No bank account to upgrade yet: the Tier 2 page says what comes first.
-            // Done only when the account is on Tier 2: a check the bank confirmed
-            // at sign-up still waits for the customer to move up (the Tier 2 page).
+                sub="Your BVN and NIN, then a live face check" />
+            // Zitch's own limiter (17 Nov 2026): what sign-up sent the bank is not
+            // shown here. The tap asks where it stands (useTierClaim): confirmed
+            // applies now, refused opens "Details need review".
             : <MethodCard id="upgrade" icon="user" color={C_SELFIE} title="Face verification"
-                sub={status.tier2_state === 'ready' ? 'Confirmed by your bank · move up to Tier 2'
-                  : status.tier2_state === 'processing' ? 'Tier 2 · Processing' : 'Tier 2'}
-                done={(status.tier ?? 0) >= 2} onPress={() => router.push('/tier2')} />)}
-          {addressVerificationAvailable && status?.tier !== undefined && status.tier >= 2 && (status.tier3_state === 'processing' || (addressPending && status.tier3_state !== 'done')
-            ? <AddressPending />
-            : <MethodCard id="address" icon="home" color={C_BVN} title="Home address" sub="Tier 3" done={status.tier3_state === 'done' || status.tier >= 3}
-                onPress={() => router.push('/tier3')} />)}
+                sub={claimBusy === 2 ? 'Checking…' : 'Tier 2'}
+                done={(status.tier ?? 0) >= 2} onPress={() => { if ((status.tier ?? 0) < 2) void claim(2); }} />)}
+          {addressVerificationAvailable && status?.tier !== undefined && status.tier >= 2 && (
+            <MethodCard id="address" icon="home" color={C_BVN} title="Home address" sub={claimBusy === 3 ? 'Checking…' : 'Tier 3'}
+              done={status.tier >= 3} onPress={() => { if (status.tier < 3) void claim(3); }} />)}
           <Footer />
         </View>
       )}
@@ -1091,7 +1097,8 @@ const Kyc = () => {
         if (!upgradeCaptureOwner.current?.()) return;
         upgradeCaptureOwner.current = null;
         if (faceFor.current === 'signup') {
-          // Held for Continue, which sends it with the NIN as the Tier 2 request.
+          // Sign-up sends it with the BVN and NIN as the Tier 2 request, in the
+          // background, as soon as both are there (OnboardingIdentity).
           faceFor.current = 'upgrade';
           setUpgradeCameraOpen(false); setSignupFace(capture);
           return;
@@ -1103,6 +1110,7 @@ const Kyc = () => {
         if (!busy && (!askIdentity || (upBvn.length === 11 && upNin.length === 11))) void submitUpgrade(capture);
       }}
     />
+    {claimSheets}
     </>
   );
 };
