@@ -113,7 +113,8 @@ export const light: ThemeTokens = {
   surface2: '#F4F9F8',
   surface3: '#EAF3F1',
   line: '#E2EEEB',
-  ink1: '#06231F',
+  // Pure black for primary text on the light theme (review, 17 Nov 2026).
+  ink1: '#000000',
   ink2: '#3C4F4C',
   ink3: '#526863',
   inkOnBrand: '#FFFFFF',

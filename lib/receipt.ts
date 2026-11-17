@@ -257,7 +257,7 @@ export const qrPath = (text: string): { size: number; d: string } => {
 export const RECEIPT_COLORS = {
   paper: '#F4F9F8',
   card: '#FFFFFF',
-  ink: '#06231F',
+  ink: '#000000',   // pure black, as the app's text (17 Nov 2026)
   muted: '#526863',
   line: '#E2EEEB',
   tear: '#CDE0DC',
