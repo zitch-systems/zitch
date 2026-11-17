@@ -16,7 +16,7 @@ from whatsapp.models import AuditLog
 class WriteOffUnbackedTests(TestCase):
     def setUp(self):
         self.user, _ = make_user("08071240077", "writeoff@zitch.test")
-        credit(self.user, Decimal("459.00"), "Wallet funding", reference="OLD-9PSB-CR-1")
+        credit(self.user, Decimal("459.00"), "Wallet funding", reference="OLD-PROVIDER-CR-1")
         # Detached from its old provider: a balance with no Wema account behind it.
         Wallet.objects.filter(user=self.user).update(account_number="")
 

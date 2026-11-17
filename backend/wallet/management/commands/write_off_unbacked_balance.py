@@ -4,7 +4,7 @@
 for every wallet holding money without a Wema account. When that money is real
 customer money it is owed, and ``prepare_settlement_funding`` puts it into the
 customer's new account. When the wallet belongs to a test or staff user (the
-four wallets detached from 9PSB on 30 Oct 2026 were confirmed as such on
+four wallets detached from the retired provider on 30 Oct 2026 were confirmed as such on
 17 Nov 2026), nobody is owed it: the balance is a ledger entry with no money
 behind it, and the only correct action is to take it off the ledger, on the
 record, with who approved it.
