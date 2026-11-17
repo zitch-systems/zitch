@@ -5,19 +5,20 @@ import {
   TextInput,
   Pressable,
   ScrollView,
-  RefreshControl,
   Modal,
   ViewStyle,
   KeyboardAvoidingView,
   Platform,
   useWindowDimensions,
   StyleSheet,
+  type ScrollViewProps,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import ZIcon from '@/components/design/ZIcon';
 import AmbientBackground from '@/components/design/AmbientBackground';
 import { Loading, LoadingMark } from '@/components/design/Loading';
+import { CoilRefreshScrollView } from '@/components/design/CoilRefresh';
 import { Naira, NText } from '@/components/design/Naira';
 import { useTheme, font, radius, ICON_COLORS, iconTint } from '@/lib/theme';
 import { money as fmtMoney, moneyk as fmtMoneyk } from '@/lib/format';
@@ -79,6 +80,14 @@ const cardShadow = {
   elevation: 3,
 };
 
+// A screen that can be refreshed pulls down to the Zitch coil (17 Nov 2026);
+// any other scrolls as a plain ScrollView.
+const ScrollOrPull = ({ onRefresh, refreshing, children, ...scroll }: ScrollViewProps & {
+  onRefresh?: () => void; refreshing: boolean; children: React.ReactNode;
+}) => (onRefresh
+  ? <CoilRefreshScrollView {...scroll} refreshing={refreshing} onRefresh={onRefresh}>{children}</CoilRefreshScrollView>
+  : <ScrollView {...scroll}>{children}</ScrollView>);
+
 // ---- Layout shell ----
 // `tab` prevents a second safe-area inset being added beneath tab scenes. Expo
 // Router already lays those scenes out above the custom tab bar.
@@ -101,7 +110,8 @@ export const Screen = ({
   pad?: boolean;
   scroll?: boolean;
   tab?: boolean;
-  // Pass onRefresh to enable pull-to-refresh on the scroll view.
+  // Pass onRefresh to pull the scroll view down to refresh, with the Zitch coil
+  // as the indicator (CoilRefresh). The header stays where it is.
   onRefresh?: () => void;
   refreshing?: boolean;
 }) => {
@@ -135,25 +145,22 @@ export const Screen = ({
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         {headerBlock}
         {scroll ? (
-          <ScrollView
+          <ScrollOrPull
+            onRefresh={onRefresh}
+            refreshing={refreshing}
             showsVerticalScrollIndicator={false}
             keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
             // "handled" so the FIRST tap on a button while the keyboard is open
             // activates it, instead of being swallowed to just dismiss the keyboard
             // (which forced a double-tap on every form's submit button).
             keyboardShouldPersistTaps="handled"
-            refreshControl={
-              onRefresh
-                ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={c.brand} colors={[c.brand]} />
-                : undefined
-            }
             // Add the device's bottom safe-area inset so the last content (buttons,
             // PIN pad, list rows) clears the home indicator / gesture bar instead of
             // being cut off — fixes the "cut at the bottom" on installed builds.
             contentContainerStyle={{ paddingBottom: bottomPad + bottomInset, alignItems: 'center' }}
           >
             <View style={{ width: '100%', maxWidth: maxW, paddingHorizontal: px }}>{children}</View>
-          </ScrollView>
+          </ScrollOrPull>
         ) : (
           <View style={{ flex: 1, alignItems: 'center', paddingBottom: bottomInset }}>
             <View style={{ flex: 1, width: '100%', maxWidth: maxW, paddingHorizontal: px }}>{children}</View>

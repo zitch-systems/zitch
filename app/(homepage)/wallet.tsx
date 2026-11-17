@@ -46,80 +46,85 @@ const Wallet = () => {
   const groupedAccount = groupAccountNumber(accountNumber);
 
   return (
-    <Screen pad={false} tab refreshing={loading && hydrated} onRefresh={() => { void reload(); void reloadLinked(); }}>
-      <Text style={{ paddingHorizontal: 20, paddingTop: 6, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Wallet</Text>
+    // The title and the wallet card stay put (17 Nov 2026): only what is below
+    // them scrolls, and a pull there refreshes with the coil.
+    <Screen pad={false} tab refreshing={loading && hydrated} onRefresh={() => { void reload(); void reloadLinked(); }} header={(
+      <>
+        <Text style={{ paddingHorizontal: 20, paddingTop: 6, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Wallet</Text>
 
-      {/* Primary Zitch wallet card — uses its own distinct wallet gradient (NOT the
-          shared Hero/heroGradient) per the design hand-off. */}
-      <LinearGradient
-        colors={['#087F77', '#006D65', '#004D47']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={{ margin: 16, borderRadius: 22, padding: 18, overflow: 'hidden', shadowColor: '#004D47', shadowOpacity: 0.5, shadowRadius: 22, shadowOffset: { width: 0, height: 16 }, elevation: 6 }}
-      >
-        <View pointerEvents="none" style={{ position: 'absolute', right: -18, bottom: -22, opacity: 0.18 }}>
-          <ZCoil height={175} box={140} />
-        </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-          <Text style={{ fontSize: 11, color: 'rgba(255,255,255,.82)', fontFamily: font.bold, letterSpacing: 1.5 }}>ZITCH WALLET</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 3, paddingHorizontal: 9, borderRadius: 999, backgroundColor: 'rgba(255,255,255,.16)' }}>
-            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: c.cyan }} />
-            <Text style={{ fontSize: 10, color: '#fff', fontFamily: font.bold }}>Primary</Text>
+        {/* Primary Zitch wallet card — uses its own distinct wallet gradient (NOT the
+            shared Hero/heroGradient) per the design hand-off. */}
+        <LinearGradient
+          colors={['#087F77', '#006D65', '#004D47']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={{ margin: 16, borderRadius: 22, padding: 18, overflow: 'hidden', shadowColor: '#004D47', shadowOpacity: 0.5, shadowRadius: 22, shadowOffset: { width: 0, height: 16 }, elevation: 6 }}
+        >
+          <View pointerEvents="none" style={{ position: 'absolute', right: -18, bottom: -22, opacity: 0.18 }}>
+            <ZCoil height={175} box={140} />
           </View>
-        </View>
-        <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium, marginTop: 10 }}>Available balance</Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 }}>
-          <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.65} style={{ flexShrink: 1, fontSize: 27, fontFamily: font.extrabold, color: '#fff', fontVariant: ['tabular-nums'] }}>
-            {!balanceLoaded ? (hydrated ? 'Unavailable' : 'Loading…') : showBal ? money(balance) : '₦ ••••••'}
-          </NText>
-          <Pressable accessibilityRole="button" accessibilityLabel={showBal ? 'Hide balance' : 'Show balance'} onPress={() => setShowBal(!showBal)} hitSlop={8}>
-            <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
-          </Pressable>
-        </View>
-        {balanceLoaded && (totalBalance > balance) ? (
-          <View style={{ gap: 3, marginTop: 10 }}>
-            <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>Total balance: {showBal ? money(totalBalance) : '₦ ••••••'}</NText>
-            <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>Funds under review: {showBal ? money(totalBalance - balance) : '₦ ••••••'}</NText>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={{ fontSize: 11, color: 'rgba(255,255,255,.82)', fontFamily: font.bold, letterSpacing: 1.5 }}>ZITCH WALLET</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 3, paddingHorizontal: 9, borderRadius: 999, backgroundColor: 'rgba(255,255,255,.16)' }}>
+              <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: c.cyan }} />
+              <Text style={{ fontSize: 10, color: '#fff', fontFamily: font.bold }}>Primary</Text>
+            </View>
           </View>
-        ) : null}
-
-        {/* Two-line account chip — name over "{grouped number} · {bank}", tap to copy. */}
-        {accountNumber ? (
-          <View style={{ marginTop: 10, alignSelf: 'stretch' }}>
-            {copied && (
-              <View style={{ position: 'absolute', bottom: '100%', left: 0, marginBottom: 7, flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 5, paddingHorizontal: 10, borderRadius: 999, backgroundColor: c.ink1 }}>
-                <ZIcon name="check" size={12} color={c.cyan} stroke={2.6} />
-                <Text style={{ color: '#fff', fontSize: 11.5, fontFamily: font.semibold }}>Account number copied</Text>
-              </View>
-            )}
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Copy account number ${accountNumber}`}
-              onPress={copyAccount}
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 7, paddingHorizontal: 12, borderRadius: 16, backgroundColor: 'rgba(255,255,255,.16)' }}
-            >
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text numberOfLines={1} style={{ color: '#fff', fontSize: 12.5, fontFamily: font.bold }}>
-                  {fullName || firstName || 'Your account'}
-                </Text>
-                <NText numberOfLines={1} style={{ color: 'rgba(255,255,255,.82)', fontSize: 11.5, fontFamily: font.medium, marginTop: 1 }}>
-                  {groupedAccount} · Zitch account
-                </NText>
-              </View>
-              <ZIcon name="copy" size={15} color="rgba(255,255,255,.85)" />
+          <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium, marginTop: 10 }}>Available balance</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 }}>
+            <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.65} style={{ flexShrink: 1, fontSize: 27, fontFamily: font.extrabold, color: '#fff', fontVariant: ['tabular-nums'] }}>
+              {!balanceLoaded ? (hydrated ? 'Unavailable' : 'Loading…') : showBal ? money(balance) : '₦ ••••••'}
+            </NText>
+            <Pressable accessibilityRole="button" accessibilityLabel={showBal ? 'Hide balance' : 'Show balance'} onPress={() => setShowBal(!showBal)} hitSlop={8}>
+              <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
             </Pressable>
           </View>
-        ) : null}
+          {balanceLoaded && (totalBalance > balance) ? (
+            <View style={{ gap: 3, marginTop: 10 }}>
+              <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>Total balance: {showBal ? money(totalBalance) : '₦ ••••••'}</NText>
+              <NText style={{ color: 'rgba(255,255,255,.88)', fontSize: 12, fontFamily: font.medium }}>Funds under review: {showBal ? money(totalBalance - balance) : '₦ ••••••'}</NText>
+            </View>
+          ) : null}
 
-        <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Add money" onPress={() => router.push('/addmoney')} style={{ flex: 1, paddingVertical: 12, borderRadius: 14, backgroundColor: '#fff', alignItems: 'center' }}>
-            <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 14 }}>+ Add money</Text>
-          </Pressable>
-          <Pressable accessibilityRole="button" accessibilityLabel="Send money" onPress={() => router.push('/sendmoney')} style={{ flex: 1, paddingVertical: 12, borderRadius: 14, backgroundColor: 'rgba(255,255,255,.18)', borderWidth: 1, borderColor: 'rgba(255,255,255,.25)', alignItems: 'center' }}>
-            <Text style={{ color: '#fff', fontFamily: font.bold, fontSize: 14 }}>Send</Text>
-          </Pressable>
-        </View>
-      </LinearGradient>
+          {/* Two-line account chip — name over "{grouped number} · {bank}", tap to copy. */}
+          {accountNumber ? (
+            <View style={{ marginTop: 10, alignSelf: 'stretch' }}>
+              {copied && (
+                <View style={{ position: 'absolute', bottom: '100%', left: 0, marginBottom: 7, flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 5, paddingHorizontal: 10, borderRadius: 999, backgroundColor: c.ink1 }}>
+                  <ZIcon name="check" size={12} color={c.cyan} stroke={2.6} />
+                  <Text style={{ color: '#fff', fontSize: 11.5, fontFamily: font.semibold }}>Account number copied</Text>
+                </View>
+              )}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Copy account number ${accountNumber}`}
+                onPress={copyAccount}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 7, paddingHorizontal: 12, borderRadius: 16, backgroundColor: 'rgba(255,255,255,.16)' }}
+              >
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text numberOfLines={1} style={{ color: '#fff', fontSize: 12.5, fontFamily: font.bold }}>
+                    {fullName || firstName || 'Your account'}
+                  </Text>
+                  <NText numberOfLines={1} style={{ color: 'rgba(255,255,255,.82)', fontSize: 11.5, fontFamily: font.medium, marginTop: 1 }}>
+                    {groupedAccount} · Zitch account
+                  </NText>
+                </View>
+                <ZIcon name="copy" size={15} color="rgba(255,255,255,.85)" />
+              </Pressable>
+            </View>
+          ) : null}
+
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Add money" onPress={() => router.push('/addmoney')} style={{ flex: 1, paddingVertical: 12, borderRadius: 14, backgroundColor: '#fff', alignItems: 'center' }}>
+              <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 14 }}>+ Add money</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Send money" onPress={() => router.push('/sendmoney')} style={{ flex: 1, paddingVertical: 12, borderRadius: 14, backgroundColor: 'rgba(255,255,255,.18)', borderWidth: 1, borderColor: 'rgba(255,255,255,.25)', alignItems: 'center' }}>
+              <Text style={{ color: '#fff', fontFamily: font.bold, fontSize: 14 }}>Send</Text>
+            </Pressable>
+          </View>
+        </LinearGradient>
+      </>
+    )}>
       {balanceError ? <Text accessibilityRole="alert" style={{ color: c.amber, marginHorizontal: 16, marginBottom: 12, fontFamily: font.medium }}>{balanceLoaded ? 'Showing your last known balance. ' : ''}{balanceError} Pull down to retry.</Text> : null}
       {balanceError || historyError ? <View style={{ marginHorizontal: 16, marginBottom: 12 }}><Btn label="Refresh account" disabled={loading} onPress={() => { void reload(); void reloadLinked(); }} /></View> : null}
       {balanceLoaded && capabilityMessage ? (
