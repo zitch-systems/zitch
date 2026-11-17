@@ -63,21 +63,22 @@
       [
         "expo-image-picker",
         {
-          "cameraPermission": "Allow Zitch to use the camera to verify your identity (face check).",
+          "cameraPermission": "Allow Zitch to use the camera for your face check and to scan payment QR codes.",
+          "photosPermission": "Allow Zitch to use your photos to choose a profile picture and to save your transaction receipts.",
           "microphonePermission": false
         }
       ],
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Zitch to use the camera to scan QR codes for payments.",
+          "cameraPermission": "Allow Zitch to use the camera for your face check and to scan payment QR codes.",
           "recordAudioAndroid": false
         }
       ],
       [
         "expo-media-library",
         {
-          "photosPermission": "Allow Zitch to save transaction receipts to your photos.",
+          "photosPermission": "Allow Zitch to use your photos to choose a profile picture and to save your transaction receipts.",
           "savePhotosPermission": "Allow Zitch to save transaction receipts to your photos.",
           "isAccessMediaLocationEnabled": false
         }
