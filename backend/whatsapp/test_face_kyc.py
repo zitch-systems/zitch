@@ -267,6 +267,34 @@ class FaceCallbackNotifiesChatTests(TestCase):
         self.assertIn("needs review", reply.call_args.args[1])
         self.assertFalse(PendingAction.objects.filter(user=user).exists())
 
+    def test_existing_customer_is_not_sent_through_identity_and_face_again(self):
+        """The bank refuses a second account for an identity it already holds an
+        account for, so another BVN/face round can only be refused the same way."""
+        from datetime import timedelta
+
+        from django.core.cache import cache
+        from django.utils import timezone
+
+        user = _user()
+        WemaFaceSession.objects.create(
+            user=user, state="e" * 40, identity_type="bvn", identity_hash=user.bvn_hash,
+            status=WemaFaceSession.FAILED, account_state="review_required",
+            account_failure_category="existing_customer",
+            expires_at=timezone.now() + timedelta(minutes=20))
+        cache.delete(f"wema-existing-customer:{user.pk}")
+        with patch.object(router.wallet_views, "_wema_funding_enabled", return_value=True), \
+                patch.object(router, "attach_existing_bank_account",
+                             return_value=(None, "The bank did not return the existing account.")), \
+                patch.object(router, "reply") as reply, \
+                patch.object(router, "_send_identity_flow") as flow, \
+                patch("utility.alerts.alert") as alert:
+            router._start_add_account(user, MSISDN)
+        flow.assert_not_called()
+        self.assertIn("already holds an account for your BVN", reply.call_args.args[1])
+        self.assertFalse(PendingAction.objects.filter(user=user).exists())
+        alert.assert_called_once()
+        self.assertNotIn(VERIFIED_BVN, str(alert.call_args))
+
     def test_verified_face_without_account_pages_someone_to_review_it(self):
         """The chat promises a review; the page is what actually requests one.
 

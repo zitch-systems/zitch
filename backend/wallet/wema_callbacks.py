@@ -1092,6 +1092,17 @@ def wema_face_callback(request, state=""):
                 request.wema_action = "denied:provider_correlation_validation"
                 log.warning("wema_face_browser_correlation_rejected user=%s kind=%s",
                             user.id, kind)
+                # The bank already holds an account for an identity this customer
+                # proved BEFORE this callback. Nothing here is granted on the
+                # browser claim; the read-back needs that earlier proof and a
+                # matching holder name, and runs after commit, outside the locks.
+                if (provider_validated_account.get("failure_category") == "existing_customer"
+                        and getattr(user, flag_field, False)
+                        and hmac.compare_digest(getattr(user, hash_field, "") or "",
+                                                session.identity_hash)):
+                    user_id = user.id
+                    db_transaction.on_commit(
+                        lambda: _reconnect_existing_customer(user_id, kind))
                 return JsonResponse({"status": True}, status=200)
 
         # A successful face check may CLAIM an unverified identity, but it may not
@@ -1182,6 +1193,42 @@ def wema_face_callback(request, state=""):
         account_failed=account_failed,
     )
     return JsonResponse({"status": True}, status=200)
+
+
+def _reconnect_existing_customer(user_id: int, kind: str) -> None:
+    """Attach the account the bank already holds for a verified customer.
+
+    Without this the customer is left on a failed face check with no message, and
+    replying 6 sends them through BVN and face again for the same refusal.
+    """
+    from accounts.models import User
+    from whatsapp.models import PendingAction, WhatsAppLink
+
+    from .services import attach_existing_bank_account, notify_funding_account_reconnected
+
+    try:
+        user = User.objects.get(pk=user_id)
+        wallet, detail = attach_existing_bank_account(user, using_bvn=kind == "bvn")
+    except Exception:  # noqa: BLE001 - the repair sweep retries this read-back
+        log.warning("wema_face_existing_reconnect_failed user=%s", user_id, exc_info=True)
+        return
+    if wallet is not None and wallet.account_number:
+        log.info("wema_face_existing_account_reconnected user=%s kind=%s", user_id, kind)
+        notify_funding_account_reconnected(user)
+        return
+    log.warning("wema_face_existing_account_unresolved user=%s kind=%s detail=%s",
+                user_id, kind, str(detail or "")[:160])
+    try:
+        PendingAction.objects.filter(user=user, action_type="add_account").delete()
+        msisdn = (WhatsAppLink.objects
+                  .filter(user=user, status=WhatsAppLink.ACTIVE)
+                  .exclude(wa_msisdn="")
+                  .values_list("wa_msisdn", flat=True).first())
+        if msisdn:
+            from whatsapp.router import EXISTING_ACCOUNT_RECONNECT_MESSAGE, reply
+            reply(msisdn, EXISTING_ACCOUNT_RECONNECT_MESSAGE.format(kind=kind.upper()))
+    except Exception:  # noqa: BLE001
+        log.warning("wema_face_existing_notify_failed user=%s", user_id, exc_info=True)
 
 
 def _tell_whatsapp_face_passed(user, identity_type: str,
