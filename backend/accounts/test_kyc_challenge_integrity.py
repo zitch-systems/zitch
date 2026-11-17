@@ -79,7 +79,7 @@ class KycChallengeIntegrityTests(TestCase):
         self.assertEqual(self.user.tier, 3)
 
     def test_revoked_contact_verification_is_observed_before_tier_save(self):
-        User.objects.filter(pk=self.user.pk).update(email_verified=False)
+        User.objects.filter(pk=self.user.pk).update(phone_verified=False)
         self.assertTrue(views._save_verified_identity(self.user, "bvn", self.raw))
         self.user.refresh_from_db()
         self.assertTrue(self.user.bvn_verified)

@@ -1295,10 +1295,12 @@ class FirstSpendVerificationTests(TestCase):
         self.assertIn("app", str(ctx.exception).lower())
 
     def test_the_refusal_names_every_missing_check_not_just_the_first(self):
-        self._unverify("bvn_verified", "nin_verified", "email_verified")
+        self._unverify("bvn_verified", "nin_verified", "phone_verified", "email_verified")
         msg = unverified_error(self.user) or ""
         self.assertIn("BVN", msg)
-        self.assertIn("email", msg)
+        self.assertIn("phone", msg)
+        # No spending check needs the email (17 Nov 2026).
+        self.assertNotIn("email", msg)
 
     def test_an_unverified_nin_does_not_block_spending(self):
         """NIN has no unattended verification path until the Prembly lookup is

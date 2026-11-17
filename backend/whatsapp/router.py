@@ -3256,7 +3256,7 @@ def _do_support(msisdn: str) -> None:
 # --------------------------------------------------------------------------- #
 # The identity slot defaults to BVN, but either proven BVN or NIN completes it.
 # Both identifiers are required only for the bank's Tier 2 upgrade.
-_KYC_STEPS = ("phone", "email", "bvn")
+_KYC_STEPS = ("phone", "bvn")
 
 
 #: PendingAction.state while the face step is waiting for an identity number that
@@ -3393,7 +3393,6 @@ def _kyc_status_lines(user) -> str:
     identity = "BVN" if user.bvn_verified else "NIN" if user.nin_verified else "BVN or NIN"
     return "\n".join([
         f"{mark(user.phone_verified)} Phone number",
-        f"{mark(user.email_verified)} Email address",
         f"{mark(identity_complete)} {identity}",
     ])
 

@@ -40,8 +40,8 @@ def active_account_recovery(user, *, identity_type=None, identity_hash=None):
 def _eligible(user, kind):
     if not user.is_active or not partnership_new_business_allowed(user):
         raise ValueError("Account is not eligible for Partnership setup.")
-    if not user.email_verified or not user.phone_verified:
-        raise ValueError("Verified contact details are required.")
+    if not user.phone_verified:
+        raise ValueError("A verified phone number is required.")
     identity_hash = getattr(user, f"{kind}_hash", "")
     if not getattr(user, f"{kind}_verified", False) or not identity_hash:
         raise ValueError("The selected identity must already be verified.")

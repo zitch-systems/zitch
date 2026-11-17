@@ -140,7 +140,7 @@ class TierClaimTests(TestCase):
         self.assertFalse(status["tier2_face_pending"], "the Tier 2 page must ask again, not wait")
 
     def test_a_confirmed_check_never_reads_as_tier_2_while_tier_1_is_unfinished(self):
-        User.objects.filter(pk=self.user.pk).update(email_verified=False, tier=0)
+        User.objects.filter(pk=self.user.pk).update(phone_verified=False, tier=0)
         self._signup_send({"success": True, "raw": {"message": "ok"}}, BANK_TIER_2)
         r = self._claim(bank_state=BANK_TIER_2)
         self.assertEqual(r.json()["state"], "needs_tier1")

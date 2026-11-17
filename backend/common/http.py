@@ -222,7 +222,6 @@ def daily_kind_for(service: str) -> str:
 #: the other identity and provider-verified liveness. Keep the spending floor
 #: aligned with account creation so a verified NIN account can actually be used.
 _FIRST_SPEND_CHECKS = (
-    ("email_verified", "email address"),
     ("phone_verified", "phone number"),
     ("tier1_identity_verified", "BVN or NIN"),
 )

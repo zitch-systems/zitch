@@ -229,7 +229,7 @@ class BankUpgradeContractsTests(TestCase):
             content_type="application/json")
 
     def test_address_prerequisites_apply_to_bank_and_document_rails_and_shared_service(self):
-        for field in ("identity", "face_verified", "email_verified", "phone_verified"):
+        for field in ("identity", "face_verified", "phone_verified"):
             for live in (True, False):
                 with self.subTest(field=field, bank=live), \
                         patch("utility.wema.address_verify_live", return_value=live), \
@@ -888,11 +888,13 @@ class IdentityTierModelTests(SimpleTestCase):
                             nin_verified=nin, face_verified=face, address_verified=address)
                 user.recompute_tier()
                 self.assertEqual(user.tier, expected)
-                for contact in ("email_verified", "phone_verified"):
-                    setattr(user, contact, False)
-                    user.recompute_tier()
-                    self.assertEqual(user.tier, 0)
-                    setattr(user, contact, True)
+                # The phone is required for every tier; the email never is.
+                user.email_verified = False
+                user.recompute_tier()
+                self.assertEqual(user.tier, expected)
+                user.phone_verified = False
+                user.recompute_tier()
+                self.assertEqual(user.tier, 0)
 
 
 class TrustedIdentityRehydrationTests(TestCase):

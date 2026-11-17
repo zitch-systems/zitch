@@ -3147,7 +3147,7 @@ def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "
         raise PayoutError(
             "source_missing", "Finish your account setup before sending money. No money was taken.")
     if (not recipient.is_active or not recipient.tier1_identity_verified
-            or not recipient.phone_verified or not recipient.email_verified
+            or not recipient.phone_verified
             or recipient_wallet is None
             or not re.fullmatch(r"\d{10}", recipient_wallet.account_number or "")
             or is_demo_account(recipient_wallet)):
@@ -3170,7 +3170,7 @@ def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "
             pk=recipient_wallet.pk, user_id=recipient.pk,
             account_number=recipient_wallet.account_number,
             user__is_active=True,
-            user__phone_verified=True, user__email_verified=True).filter(
+            user__phone_verified=True).filter(
                 Q(user__bvn_verified=True) | Q(user__nin_verified=True)).exists():
         raise PayoutError(
             "recipient_unavailable", "This recipient's account changed. Review it again before sending. No money was taken.")

@@ -534,17 +534,13 @@ class KycTierTests(TestCase):
         self.user.recompute_tier()
         self.assertEqual(self.user.tier, 1)
 
-    def test_unverified_email_holds_the_tier_at_zero(self):
-        # BVN + NIN complete, email not confirmed: the ladder must not move —
-        # Tier 1 requires all three, however the account signed up.
+    def test_an_unverified_email_does_not_hold_the_tier(self):
+        # No tier needs the email (17 Nov 2026): a verified phone and a BVN
+        # reach Tier 1 with the email still unconfirmed, on either channel.
         self.user.email_verified = False
         self.user.save(update_fields=["email_verified"])
         self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
         res, body = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
-        self.assertEqual(body["tier"], 0)
-        with patch("accounts.views._otp_code", return_value="909090"):
-            self.post("/api/email/verify/start/", {"access_token": self.token})
-        body = self.post("/api/email/verify/confirm/", {"access_token": self.token, "otp": "909090"})[1]
         self.assertEqual(body["tier"], 1)
 
     def test_email_can_be_set_while_unverified(self):
@@ -921,13 +917,9 @@ class FullJourneyE2ETests(TestCase):
         # money cannot leave an account that has not proved who owns it, so this
         # step comes before the first spend rather than after it.
         self.post("/api/kyc/bvn/", access_token=tok, bvn="12345678901")
-        # BVN+NIN alone no longer promote: Tier 1 also requires the verified email.
-        self.assertEqual(self.post("/api/kyc/nin/", access_token=tok, nin="10987654321")[1]["tier"], 0)
-        with patch("accounts.views._otp_code", return_value="909090"), \
-             patch("accounts.views._otp_on_cooldown", return_value=False):
-            self.post("/api/email/verify/start/", access_token=tok)
-        body = self.post("/api/email/verify/confirm/", access_token=tok, otp="909090")[1]
-        self.assertEqual(body["tier"], 1)  # email was the last piece; confirm recomputes
+        # The phone was verified at sign-up, so the identity alone reaches Tier 1;
+        # no tier needs the email.
+        self.assertEqual(self.post("/api/kyc/nin/", access_token=tok, nin="10987654321")[1]["tier"], 1)
 
         # --- spend + history shape the app depends on ---
         # Model the owned bank source behind the mocked funding above. Bill
