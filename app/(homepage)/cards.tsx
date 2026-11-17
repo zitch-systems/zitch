@@ -1,19 +1,21 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AppState, View, Text, Pressable } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { acquireSpendAttempt, clearSpendAttempt } from '@/lib/pendingSpend';
 import { classifySpendResponse, isRecoveredSpendResponse } from '@/lib/spendOutcome';
 import { cardsService, type VirtualCard } from '@/lib/services/cards';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, Btn, Field, Sheet, PinPad, money, Naira } from '@/components/design/ui';
+import { Screen, Btn, Field, Sheet, PinPad, TxnRow, money, Naira, type Txn } from '@/components/design/ui';
+import { SectionLabel } from '@/components/design/widgets';
+import { whenLabel } from '@/lib/format';
 import { QuickAmounts } from '@/components/design/flowkit';
 import { ZCoil } from '@/components/design/Loading';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { usePinScreenProtection } from '@/lib/screenCapture';
-import { useWallet } from '@/lib/wallet';
+import { mapTxn, transactionParams, useWallet } from '@/lib/wallet';
 
 type Reveal = { pan: string; cvv: string; expiry: string; holder: string };
 type CardAction = {
@@ -29,6 +31,9 @@ const Cards = () => {
   const { c } = useTheme();
   const { reload: reloadWallet } = useWallet();
   const [card, setCard] = useState<VirtualCard | null>(null);
+  // The card's own activity, under the card (17 Nov 2026). null until first loaded.
+  const [activity, setActivity] = useState<Txn[] | null>(null);
+  const [activityError, setActivityError] = useState('');
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -48,6 +53,17 @@ const Cards = () => {
   const [issuancePending, setIssuancePending] = useState(false);
   const [issuanceReference, setIssuanceReference] = useState('');
 
+  const loadActivity = useCallback(async (cardId: number) => {
+    try {
+      const res = await cardsService.transactions(cardId);
+      if (res.success !== true) throw new Error('unavailable');
+      setActivity((res.transactions || []).map(mapTxn));
+      setActivityError('');
+    } catch {
+      setActivityError('Could not load card activity. Pull down to try again.');
+    }
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -59,6 +75,8 @@ const Cards = () => {
       setLoadError('');
       const nextCard = res.cards?.[0] ?? null;
       setCard(nextCard);
+      if (nextCard) void loadActivity(nextCard.id);
+      else { setActivity(null); setActivityError(''); }
       setIssuancePending(Boolean(!nextCard && res.issuance?.pending));
       setIssuanceReference(!nextCard ? String(res.issuance?.reference || '') : '');
       return nextCard;
@@ -68,7 +86,7 @@ const Cards = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadActivity]);
 
   useFocusEffect(useCallback(() => { screenActive.current = true; void load(); return () => { screenActive.current = false; setReveal(null); }; }, [load]));
   usePinScreenProtection(!!reveal);
@@ -398,6 +416,25 @@ const Cards = () => {
                 : 'This card cannot be topped up after creation. Blocking it is permanent and cannot be undone.')
               : `${canFund ? 'Fund it from your wallet; ' : 'In-app funding is unavailable for this card. ' }tap Details to reveal the number. Merchant and currency acceptance depend on the issuer.`}
           </Text>
+
+          {/* The card's own activity, below the card (17 Nov 2026); each row opens its receipt. */}
+          <View style={{ paddingHorizontal: 18, paddingTop: 18 }}>
+            <SectionLabel action={activity && activity.length ? 'See all' : undefined} onAction={() => router.push('/history')}>Card activity</SectionLabel>
+            {activityError ? <Text accessibilityRole="alert" style={{ color: c.amber, marginBottom: 8, fontFamily: font.medium }}>{activityError}</Text> : null}
+            {activity === null ? (
+              activityError ? null : <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>Loading card activity…</Text>
+            ) : activity.length === 0 ? (
+              <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>No card activity yet. Money you load onto this card shows here.</Text>
+            ) : activity.slice(0, 10).map((x, i) => (
+              <TxnRow
+                key={x.id}
+                txn={x}
+                when={x.ts != null ? whenLabel(x.ts) : undefined}
+                last={i === Math.min(9, activity.length - 1)}
+                onPress={() => router.push({ pathname: '/txndetail', params: transactionParams(x) })}
+              />
+            ))}
+          </View>
         </>
       ) : (
         /* empty state */

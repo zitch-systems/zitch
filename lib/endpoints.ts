@@ -82,6 +82,8 @@ export const EP = {
     details: '/api/cards/details/',
     fund: '/api/cards/fund/',
     freeze: '/api/cards/freeze/',
+    // this card's own activity (its loads), newest first (17 Nov 2026)
+    transactions: '/api/cards/transactions/',
   },
   savings: {
     rates: '/api/savings/rates/',
