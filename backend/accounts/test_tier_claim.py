@@ -91,7 +91,7 @@ class TierClaimTests(TestCase):
         self.assertEqual(self.user.tier, 2)
         self.assertEqual(self.user.tier2_review, "")
 
-    def test_a_check_the_bank_took_but_has_not_finished_is_processing_and_kept_for_two_days(self):
+    def test_a_check_the_bank_took_but_has_not_finished_is_processing_and_kept_for_24_hours(self):
         # The usual case: the bank accepts the submission and finishes later.
         r = self._signup_send({"success": True, "raw": {"message": "ok"}}, BANK_TIER_1)
         self.assertEqual(r.json()["tier2_state"], "pending")
@@ -99,7 +99,8 @@ class TierClaimTests(TestCase):
         self.assertEqual(self.user.tier2_review, "pending", "Verify Tier 2 must say Processing, not ask again")
         marker = cache.get(_TIER2_PENDING_KEY.format(self.user.pk))
         self.assertTrue(marker["signup"])
-        self.assertGreater(marker["until"] - time.time(), 47 * 3600)
+        self.assertGreater(marker["until"] - time.time(), 23 * 3600)
+        self.assertLessEqual(marker["until"] - time.time(), 24 * 3600)
         # Verify reads the bank back; the read-back keeps the sign-up marker and its NIN
         self.assertEqual(self._claim(bank_state=BANK_TIER_1).json()["state"], "processing")
         again = cache.get(_TIER2_PENDING_KEY.format(self.user.pk))

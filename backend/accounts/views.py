@@ -1522,7 +1522,7 @@ def _kyc_state(user) -> dict:
         "tier2_requires_nin": False,
         "tier2_requires_identity": True,
         # Only while the check is still worth waiting for: a sign-up check past
-        # its two days is "not confirmed", and the Tier 2 page then asks again.
+        # its 24 hours is "not confirmed", and the Tier 2 page then asks again.
         "tier2_face_pending": (not user.face_verified and tier2_face_pending(user)
                                and tier2_claim_state(user) == "processing"),
         "tier2_face_available": tier2_face_available(),
@@ -1637,7 +1637,10 @@ def transaction_limits(request):
 #: A Tier 2 check the bank has not answered for this long is treated as not
 #: confirmed: the customer is offered the NIN and face check again rather than
 #: "Processing" for ever.
-TIER2_REVIEW_PATIENCE = timedelta(hours=48)
+TIER2_REVIEW_PATIENCE = timedelta(hours=24)
+#: The same for a Tier 3 address check: five days, then "not confirmed" and the
+#: customer may send the address again.
+TIER3_REVIEW_PATIENCE = timedelta(days=5)
 
 
 def apply_confirmed_tier(user, tier: int) -> int:
@@ -1687,8 +1690,16 @@ def tier3_claim_state(user) -> str:
     if user.tier3_review == "rejected":
         return "not_confirmed"
     if user.address_verification_pending or user.tier3_review == "pending":
+        if _tier3_review_expired(user):
+            return "not_confirmed"
         return "processing"
     return "not_sent"
+
+
+def _tier3_review_expired(user) -> bool:
+    """A Tier 3 address check the bank has not answered within five days."""
+    at = user.tier3_review_at or user.address_verification_requested_at
+    return bool(at and timezone.now() - at > TIER3_REVIEW_PATIENCE)
 
 
 @api
@@ -2687,7 +2698,8 @@ def send_tier3_address(user, house, street, state, lga):
     cannot be tied to this address, so a sent address shows Processing."""
     with db_transaction.atomic():
         user = User.objects.select_for_update().get(pk=user.pk)
-        if user.address_verified or user.address_verification_pending:
+        if user.address_verified or (user.address_verification_pending
+                                     and not _tier3_review_expired(user)):
             return False, tier3_claim_state(user), user.address
         user.set_address(f"{house} {street}, {lga}, {state}")
         user.save(update_fields=["address"])

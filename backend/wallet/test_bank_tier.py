@@ -187,12 +187,17 @@ class SyncBankTierTests(TestCase):
         self.assertEqual(sync_bank_tier(self.wallet), 1)
         self.assertEqual(Wallet.objects.get(user=self.user).bank_tier, 1)
 
-    def test_only_a_label_ending_in_one_tier_digit_counts(self):
+    def test_any_label_naming_one_tier_counts(self):
+        """The bank's documentation does not list accountTier's values, so any
+        form that names exactly one tier is read as that tier."""
         from wallet.address_verification import bank_tier_number
-        for label, tier in (("Tier 3", 3), ("tier2", 2), ("1", 1),
-                            ("Partnership Accounts – Tier 2", 2),
-                            ("Tier 12", 0), ("Tier 1 (restricted)", 0), ("Level 2", 0),
-                            ("Retier 2", 0), ("", 0), (None, 0)):
+        for label, tier in (("Tier 3", 3), ("tier2", 2), ("1", 1), (2, 2),
+                            ("Partnership Accounts – Tier 2", 2), ("TIER_2", 2),
+                            ("tier-3", 3), ("Level 2", 2), ("Tier 1 (restricted)", 1),
+                            ("KYC Level: 3", 3), ("Tier Two", 2), ("Tier III", 3),
+                            ("Tier 2 account opened 2024", 2),
+                            ("Tier 12", 0), ("Tier 4", 0), ("Tier 1 to 2", 0),
+                            ("unclassified", 0), ("", 0), (None, 0)):
             with self.subTest(label=label):
                 self.assertEqual(bank_tier_number(label), tier)
 
