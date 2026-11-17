@@ -979,6 +979,11 @@ def upgrade_wema_identity(user, data, *, checked=None):
             return _signup_tier2_sent(user, "pending")
         return response
     if not res.get("success"):
+        # The bank's own reason was never recorded, so a refusal could not be told
+        # apart from an outage. Status and message only: no identity or photo.
+        log.warning("wema_tier2_refused user=%s http_status=%s category=%s message=%r",
+                    user.pk, res.get("http_status") or (res.get("diagnostic") or {}).get("http_status"),
+                    res.get("failure_category", ""), str(res.get("message") or "")[:200])
         _set_tier2_review(user, "rejected")
         if at_signup:
             return _signup_tier2_sent(user, "rejected")
