@@ -870,7 +870,10 @@ TIER2_FACE_UNAVAILABLE = ("Tier 2 face verification is temporarily unavailable. 
 #: check (app) and the WhatsApp worker finish it with a read-back, without the
 #: customer sending a second photo. Losing it only means taking a new selfie.
 _TIER2_PENDING_KEY = "wema_tier2_face_pending:{}"
-_TIER2_PENDING_SECONDS = 2 * 60 * 60
+#: The bank's documentation names no callback and no rejected state for the
+#: Tier 2 upgrade: a rejection only shows as the tier never changing. So a
+#: check is read back for 24 hours before it is reported as not confirmed.
+_TIER2_PENDING_SECONDS = 24 * 60 * 60
 
 
 def tier2_face_available() -> bool:
@@ -982,7 +985,7 @@ def upgrade_wema_identity(user, data, *, checked=None):
         if user.face_verified:
             return _signup_tier2_sent(user, "confirmed")
         # The bank took it but has not finished: the usual case. Verify Tier 2
-        # shows Processing and reads the bank back, for up to two days.
+        # shows Processing and reads the bank back, for up to 24 hours.
         _set_tier2_review(user, "pending")
         _keep_signup_marker(user)
         return _signup_tier2_sent(user, "pending")
@@ -1000,7 +1003,7 @@ def _set_tier2_review(user, state):
 #: How long a sign-up Tier 2 check the bank is still processing is read back
 #: (accounts.views.TIER2_REVIEW_PATIENCE): the marker keeps the NIN hash that
 #: is recorded when the bank confirms, so it must live as long.
-_TIER2_SIGNUP_PENDING_SECONDS = 48 * 60 * 60
+_TIER2_SIGNUP_PENDING_SECONDS = _TIER2_PENDING_SECONDS
 #: A sign-up check is read back in the background (the status call), at most
 #: this often per customer, so the app's status polls don't each call the bank.
 _TIER2_READBACK_SECONDS = 120
@@ -1062,8 +1065,10 @@ def refresh_tier2_face(user) -> bool:
     if user.face_verified or not tier2_face_pending(user):
         return bool(user.face_verified)
     marker = cache.get(_TIER2_PENDING_KEY.format(user.pk))
-    if (isinstance(marker, dict) and marker.get("signup")
-            and not cache.add(f"wema_tier2_readback:{user.pk}", 1, _TIER2_READBACK_SECONDS)):
+    # Read back at most every couple of minutes per customer: over a 24-hour
+    # window the app's status polls and the WhatsApp sweep would otherwise each
+    # call the bank.
+    if not cache.add(f"wema_tier2_readback:{user.pk}", 1, _TIER2_READBACK_SECONDS):
         return False
     hashed = {k: v for k, v in marker.items() if k in ("bvn", "nin")} if isinstance(marker, dict) else {}
     response = confirm_wema_tier2(user, hashed=hashed)
@@ -1085,9 +1090,11 @@ def confirm_wema_tier2(user, *, bvn="", nin="", ref="wema_tier2", account_number
     # A successful submission is not proof that the bank completed its upgrade.
     # Read back the same account before raising either local or bank-side limits.
     bank_state = wema_provider.get_kyc_status(confirmed_account_number)
-    confirmed_tier = str(bank_state.get("tier") or "").strip().casefold()
+    from wallet.address_verification import bank_tier_number
+
+    confirmed_tier = bank_tier_number(bank_state.get("tier"))
     if (not bank_state.get("success") or bank_state.get("mock")
-            or confirmed_tier not in {"2", "tier 2", "tier2", "3", "tier 3", "tier3"}):
+            or confirmed_tier not in (2, 3)):
         return _tier2_pending(user, bvn, nin, hashed)
     if (not bank_state.get("name")
             or wema_provider.holder_name_mismatch(user.get_full_name(), bank_state["name"])):

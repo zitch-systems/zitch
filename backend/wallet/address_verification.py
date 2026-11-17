@@ -22,14 +22,25 @@ def tier3_address_capability():
     }
 
 
-def bank_tier_number(value):
-    """Accept one explicit tier, never concatenate digits from an unknown label.
+_TIER_WORDS = {"one": 1, "two": 2, "three": 3, "i": 1, "ii": 2, "iii": 3}
 
-    The bank's label may name the product first ("Partnership Accounts – Tier 1",
-    observed 2026-11-13); only a label that ENDS in a single tier digit counts.
+
+def bank_tier_number(value):
+    """The tier in the bank's label, in whatever form it comes: "2", "Tier 2",
+    "TIER_2", "tier-2", "Level 2", "Partnership Accounts – Tier 2", "Tier Two".
+
+    The bank's documentation does not list the values ``accountTier`` takes, so
+    any label that names exactly one tier (a lone 1, 2 or 3, not part of a
+    longer number such as a year) is read as that tier. A label naming none, or
+    two different ones, is 0: unknown, never a guess.
     """
-    match = re.fullmatch(r"(?:.*?\btier[\s_-]*)?([123])", str(value or "").strip(), re.I)
-    return int(match.group(1)) if match else 0
+    text = str(value or "").strip().lower()
+    found = {int(d) for d in re.findall(r"(?<![0-9])([123])(?![0-9])", text)}
+    if not found:
+        # A label that spells it out ("Tier Two", "Tier II") but carries no digit.
+        found = {_TIER_WORDS[w] for w in re.findall(
+            r"(?:tier|level|kyc)[\s_:-]*(one|two|three|iii|ii|i)\b", text)}
+    return found.pop() if len(found) == 1 else 0
 
 
 def refresh_address_verification(user, wallet=None, result=None) -> bool:

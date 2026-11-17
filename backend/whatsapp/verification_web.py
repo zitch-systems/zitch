@@ -828,7 +828,10 @@ def notify_face_results(limit: int = FACE_SWEEP_LIMIT) -> int:
     sent again. Returns how many customers were notified."""
     from wallet.views import refresh_tier2_face, tier2_face_pending
 
-    since = timezone.now() - timedelta(hours=2)
+    # The read-back runs for the 24 hours the bank may take (wallet.views
+    # _TIER2_PENDING_SECONDS); the extra hour lets a check that ran out be
+    # reported as not confirmed instead of dropping out of the sweep silently.
+    since = timezone.now() - timedelta(hours=25)
     actions = (PendingAction.objects
                .filter(action_type=ACTION_TYPE, created__gte=since, state=FACE_PENDING)
                .exclude(payload__has_key="face_notified")

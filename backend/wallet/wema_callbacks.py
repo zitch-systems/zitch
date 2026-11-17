@@ -346,6 +346,17 @@ def wema_account_callback(request):
     Always answers 200 — a non-2xx invites a retry of an already recorded event.
     """
     body = request.wema_body
+    # The address-verification result has this callback's envelope. Wema may send
+    # it here; an account that is already ours is never "provisioned" again, so
+    # without this it would vanish as a no-op.
+    if is_address_callback(body):
+        raw = body.get("data") if isinstance(body.get("data"), dict) else {}
+        account = re.sub(r"\D", "", str(raw.get("nuban") or ""))
+        from .models import Wallet as _Wallet
+        if account and _Wallet.objects.filter(account_number=account).exists():
+            request.wema_action = "address:" + settle_address_verification(
+                account, address_callback_outcome(body))
+            return JsonResponse(ADDRESS_CB_RESPONSE, status=200)
     # Treat a malformed ``data`` value as an empty object.  The callback is an
     # untrusted network boundary; calling ``.get`` on a list/string here would turn
     # a bad bank payload into a 500 and retry storm instead of quarantining it.
@@ -1219,3 +1230,143 @@ def _tell_whatsapp_face_passed(user, identity_type: str,
                       + account_note)
     except Exception:  # noqa: BLE001
         log.warning("wa_face_notify_failed user=%s", user.id, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Tier 3 address verification callback
+# ---------------------------------------------------------------------------
+#: What Wema asked us to answer with (17 Nov 2026).
+ADDRESS_CB_RESPONSE = {
+    "title": "Account Upgraded Successfully",
+    "message": ("Address has been verified and account upgraded successfully for the "
+                "account with details below"),
+}
+_ADDRESS_FAILED_WORDS = re.compile(
+    r"\b(fail(ed|ure)?|reject(ed)?|declin(ed|e)|unsuccessful|not\s+(verified|found|successful)|"
+    r"unverified|mismatch|invalid|denied)\b", re.I)
+_ADDRESS_DONE_WORDS = re.compile(r"\b(upgraded|verified|successful(ly)?|approved|completed?)\b", re.I)
+
+
+def address_callback_outcome(body: dict) -> str:
+    """"verified", "rejected" or "" (says neither) from an address callback's
+    title and message. A failure word wins over a success word."""
+    text = " ".join(str(body.get(key) or "") for key in ("title", "message"))
+    if _ADDRESS_FAILED_WORDS.search(text):
+        return "rejected"
+    return "verified" if _ADDRESS_DONE_WORDS.search(text) else ""
+
+
+def is_address_callback(body: dict) -> bool:
+    """An address-verification result: it talks about the address or an upgrade.
+    The account-opening callback has the same envelope (requestType 2, data.nuban),
+    so this is how the two are told apart when Wema sends one to the other's URL."""
+    text = " ".join(str(body.get(key) or "") for key in ("title", "message"))
+    return bool(re.search(r"\b(address|upgrade[ds]?)\b", text, re.I))
+
+
+@wema_callback("address")
+def wema_address_callback(request):
+    """Wema reports the result of a Tier 3 address verification
+    (partner-account-upgrade-tier3).
+
+    Payload, as Wema gave it on 17 Nov 2026:
+        {title, message, data: {email, nuban, nubanName, type, nubanStatus,
+         phoneNumber}, requestType: 2}
+    with title "Account Upgraded Successfully" and message "Address has been
+    verified and account upgraded successfully ..." when it passes, and title
+    "Address verification failed" / message "Address verification failed for
+    customer with details below" when it fails. We answer with the success
+    title and message. Wema calls from 135.236.18.76 and 74.178.162.156
+    (DEFAULT_CALLBACK_IPS).
+
+    Tier 3 is granted only when all of these hold:
+      * the call passed the path key and source-IP checks (the decorator);
+      * data.nuban is a Zitch wallet's account;
+      * that customer has an address sent to the bank for THAT account and still
+        waiting (send_tier3_address allows one at a time, so the callback can only
+        be about that request);
+      * the bank's own partner-account-kyc-status read-back shows Tier 3.
+    A refusal stops the wait so the customer can send the address again. The
+    customer is told in WhatsApp at once. Always answers 200.
+    """
+    body = request.wema_body
+    outcome = address_callback_outcome(body)
+    data = body.get("data") if isinstance(body.get("data"), dict) else {}
+    account = re.sub(r"\D", "", str(data.get("nuban") or data.get("accountNumber")
+                                     or body.get("nuban") or body.get("accountNumber") or ""))
+    log.info("wema_address_cb account=%s outcome=%s ip=%s",
+             _fingerprint(account) if account else "-", outcome or "unclear", request.wema_ip)
+    request.wema_action = "address:" + settle_address_verification(account, outcome)
+    return JsonResponse(ADDRESS_CB_RESPONSE, status=200)
+
+
+def settle_address_verification(account: str, outcome: str) -> str:
+    """Apply an address-verification result to the customer behind `account`.
+    Returns what happened, for the webhook record."""
+    from accounts.models import User
+    from wallet.address_verification import bank_tier_number
+
+    from .models import Wallet
+
+    if len(account) != 10:
+        return "no_account"
+    wallet = Wallet.objects.filter(account_number=account).select_related("user").first()
+    if wallet is None:
+        return "unknown_account"
+    user = wallet.user
+    if user.address_verified:
+        return "already_verified"
+    waiting = (user.address_verification_pending or user.tier3_review == "pending")
+    if not waiting or (user.address_verification_account_number
+                       and user.address_verification_account_number != account):
+        log.warning("wema_address_cb_no_request user=%s outcome=%s", user.pk, outcome)
+        return "no_pending_request"
+    if outcome == "rejected":
+        User.objects.filter(pk=user.pk).update(
+            address_verification_pending=False, tier3_review="rejected",
+            tier3_review_at=timezone.now())
+        _tell_whatsapp(user, ADDRESS_FAILED_TEXT)
+        return "rejected"
+    if outcome != "verified":
+        return "unclear"
+    status = wema_provider.get_kyc_status(account)
+    if (not isinstance(status, dict) or status.get("success") is not True or status.get("mock")
+            or bank_tier_number(status.get("tier")) < 3):
+        # The callback says done but the bank's own record does not show Tier 3
+        # yet. Keep waiting; the next callback, or the customer's Verify, reads it again.
+        log.warning("wema_address_cb_unconfirmed user=%s tier=%r", user.pk,
+                    status.get("tier") if isinstance(status, dict) else None)
+        return "unconfirmed"
+    with db_transaction.atomic():
+        locked = User.objects.select_for_update().get(pk=user.pk)
+        if locked.address_verified:
+            return "already_verified"
+        locked.address_verified = True
+        locked.address_verification_pending = False
+        locked.tier3_review, locked.tier3_review_at = "", None
+        locked.recompute_tier()
+        locked.save(update_fields=["address_verified", "address_verification_pending",
+                                   "tier3_review", "tier3_review_at", "tier"])
+        Wallet.objects.filter(pk=wallet.pk).update(bank_tier=3)
+    log.info("wema_address_verified user=%s tier=%s", user.pk, locked.tier)
+    _tell_whatsapp(user, ADDRESS_DONE_TEXT)
+    return "verified"
+
+
+ADDRESS_DONE_TEXT = ("✅ *Address verified.*\n\nYour bank has verified your address and "
+                     "upgraded your account. Reply *menu* to see your new limits.")
+ADDRESS_FAILED_TEXT = ("❌ *Your address wasn't verified.*\n\nNothing changed on your account. "
+                       "Reply *menu* to send your address again.")
+
+
+def _tell_whatsapp(user, text: str) -> None:
+    """One message to the customer's linked WhatsApp, if they have one."""
+    try:
+        from whatsapp.models import WhatsAppLink
+        from whatsapp.router import reply
+
+        link = WhatsAppLink.objects.filter(user=user, status=WhatsAppLink.ACTIVE).first()
+        if link is not None:
+            reply(link.wa_msisdn, text)
+    except Exception:  # noqa: BLE001 - the result is recorded; the app shows it
+        log.warning("wema_address_cb_notify_failed user=%s", user.pk, exc_info=True)

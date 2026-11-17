@@ -784,15 +784,16 @@ class WemaCallbacksDiagnoseTests(TestCase):
         r = self.client.get("/wema-callbacks-diagnose", {"token": "diag-secret"})
         self.assertEqual(r.status_code, 403)
 
-    def test_lists_all_four_urls_and_they_all_resolve(self):
+    def test_lists_all_five_urls_and_they_all_resolve(self):
         body = self._body()
-        self.assertEqual(len(body["routes"]), 4)
+        self.assertEqual(len(body["routes"]), 5)
         for route in body["routes"]:
             self.assertTrue(route["resolves"], route)
             self.assertIn("<WEMA_CALLBACK_TOKEN>", route["url_template"])
         handlers = {r["handler"] for r in body["routes"]}
         self.assertEqual(handlers, {"wema_account_callback", "wema_authenticate_callback",
-                                    "wema_transaction_callback", "wema_notification_callback"})
+                                    "wema_transaction_callback", "wema_notification_callback",
+                                    "wema_address_callback"})
 
     def test_reports_ready_when_configured(self):
         body = self._body()
