@@ -105,6 +105,14 @@ Existing ones are listed with where each balance came from and what resolves it:
   --operator-reference '<who approved>'`, and Zitch makes the one transfer it names.
   It is matched to the account, not credited twice.
 
+* A test or staff wallet (nobody is owed the money; for example the four wallets
+  detached from 9PSB on 30 Oct 2026, confirmed as test accounts on 17 Nov 2026):
+  write the balance off on the record. `python manage.py write_off_unbacked_balance`
+  lists each one with its exact command; run it with `--apply`, the wallet's current
+  balance as `--amount` and who approved it as `--operator-reference`. One audited
+  debit per wallet, posted once; refused for a wallet with a Wema account, a balance
+  that moved, or a Pending transaction.
+
 The alerts stop when `unbacked_balances` reports none.
 
 ### When the customer's old account still holds the money
