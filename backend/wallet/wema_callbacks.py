@@ -1219,3 +1219,96 @@ def _tell_whatsapp_face_passed(user, identity_type: str,
                       + account_note)
     except Exception:  # noqa: BLE001
         log.warning("wa_face_notify_failed user=%s", user.id, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Tier 2 account upgrade callback
+# ---------------------------------------------------------------------------
+_UPGRADE_FAILED_WORDS = re.compile(
+    r"\b(fail(ed|ure)?|reject(ed)?|declin(ed|e)|unsuccessful|not\s+(verified|matched|successful)|"
+    r"mismatch|invalid|denied)\b", re.I)
+
+
+def _ci_get(holder: dict, key: str):
+    lowered = key.lower()
+    for k, v in holder.items():
+        if str(k).lower() == lowered:
+            return v
+    return None
+
+
+def _first(holders, *keys):
+    for holder in holders:
+        if not isinstance(holder, dict):
+            continue
+        for key in keys:
+            value = _ci_get(holder, key)
+            if value not in (None, ""):
+                return value
+    return None
+
+
+@wema_callback("upgrade")
+def wema_upgrade_callback(request):
+    """Wema reports the result of a Tier 2 account upgrade
+    (partner-account-upgrade-tier2), which it completes at once.
+
+    The payload is not in Wema's published documentation, so it is read
+    loosely: the account from accountNumber / nuban / account (top level or
+    under data), the tier from accountTier / tier / newTier, and the outcome from
+    status / success / message.
+
+    The callback only PROMPTS: Tier 2 is granted when the bank's own
+    partner-account-kyc-status read-back shows Tier 2 (wallet.views
+    .finish_tier2_from_bank), so a forged or garbled call raises nobody. A
+    refusal is taken from the callback, because all it does is stop the wait.
+    The customer is told in WhatsApp at once either way. Always answers 200 so
+    the bank does not retry something already recorded.
+    """
+    from wallet.address_verification import bank_tier_number
+    from wallet.views import finish_tier2_from_bank
+
+    from .models import Wallet
+
+    body = request.wema_body
+    data = body.get("data") if isinstance(body.get("data"), dict) else {}
+    holders = (body, data)
+    account = re.sub(r"\D", "", str(_first(holders, "accountNumber", "nuban", "account",
+                                             "accountNo") or ""))
+    tier = bank_tier_number(_first(holders, "accountTier", "tier", "newTier", "currentTier"))
+    status = _first(holders, "status", "success", "isSuccessful", "successful", "upgradeStatus")
+    message = " ".join(str(v) for v in (
+        _first(holders, "message", "responseMessage", "statusMessage", "description"),
+        status if isinstance(status, str) else "") if v)
+    said_no = bool(status is False
+                   or (isinstance(status, str) and _UPGRADE_FAILED_WORDS.search(status))
+                   or (tier < 2 and _UPGRADE_FAILED_WORDS.search(message)))
+    log.info("wema_upgrade_cb account=%s tier=%s status=%s refused=%s ip=%s",
+             _fingerprint(account) if account else "-", tier,
+             status if isinstance(status, bool) else str(status or "")[:40], said_no,
+             request.wema_ip)
+
+    wallet = (Wallet.objects.filter(account_number=account).select_related("user").first()
+              if len(account) == 10 else None)
+    if wallet is None:
+        request.wema_action = "unknown_account"
+        return JsonResponse({"status": True}, status=200)
+    outcome = finish_tier2_from_bank(wallet.user, account_number=account,
+                                     bank_says_rejected=said_no and tier < 2)
+    request.wema_action = f"tier2:{outcome}"
+    if outcome in ("verified", "rejected"):
+        _tell_whatsapp_tier2(wallet.user, outcome)
+    return JsonResponse({"status": True}, status=200)
+
+
+def _tell_whatsapp_tier2(user, outcome: str) -> None:
+    """Finish the customer's WhatsApp face check, if one is waiting: one message."""
+    try:
+        from whatsapp.models import PendingAction
+        from whatsapp.verification_web import ACTION_TYPE, FACE_PENDING, FACE_PROCESSING, _finish_face
+
+        for pa in PendingAction.objects.filter(user=user, action_type=ACTION_TYPE,
+                                               state__in=(FACE_PENDING, FACE_PROCESSING)):
+            _finish_face(pa, "verified" if outcome == "verified" else "failed")
+    except Exception:  # noqa: BLE001 - the tier is recorded; the sweep still reports it
+        log.warning("wema_upgrade_cb_notify_failed user=%s", user.pk, exc_info=True)

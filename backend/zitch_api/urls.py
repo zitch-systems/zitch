@@ -666,7 +666,8 @@ def wema_callbacks_diagnose(request):
     for label, segment in (("Account Creation Callback URL", "account"),
                            ("Authentication Callback URL", "authorize"),
                            ("Transaction Callback URL", "transaction"),
-                           ("Transaction Notification URL (production only)", "notification")):
+                           ("Transaction Notification URL (production only)", "notification"),
+                           ("Tier 2 Account Upgrade Callback URL", "upgrade")):
         probe_fragment = f"/webhooks/wema/{segment}/{token or 'SET-WEMA_CALLBACK_TOKEN'}"
         public_fragment = f"/webhooks/wema/{segment}/<WEMA_CALLBACK_TOKEN>"
         try:

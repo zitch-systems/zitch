@@ -1078,6 +1078,38 @@ def refresh_tier2_face(user) -> bool:
     return bool(user.face_verified)
 
 
+def finish_tier2_from_bank(user, *, account_number="", bank_says_rejected=False) -> str:
+    """Wema's Tier 2 upgrade callback arrived: settle this customer's check now.
+
+    The callback is a prompt, never proof. The tier is read back from the bank
+    (confirm_wema_tier2) exactly as the status check does, so a forged or garbled
+    callback cannot raise anyone. Only a REFUSAL is taken from the callback
+    itself, and all a refusal does is stop waiting: nothing is raised, and the
+    customer may simply try again.
+
+    Returns "verified", "rejected" or "pending".
+    """
+    from django.core.cache import cache
+
+    user.refresh_from_db()
+    if user.face_verified:
+        return "verified"
+    key = _TIER2_PENDING_KEY.format(user.pk)
+    marker = cache.get(key)
+    hashed = ({k: v for k, v in marker.items() if k in ("bvn", "nin")}
+              if isinstance(marker, dict) else {})
+    response = confirm_wema_tier2(user, account_number=account_number, hashed=hashed)
+    user.refresh_from_db()
+    if user.face_verified:
+        cache.delete(key)
+        return "verified"
+    if bank_says_rejected or response.status_code not in (200, 202):
+        cache.delete(key)
+        _set_tier2_review(user, "rejected")
+        return "rejected"
+    return "pending"
+
+
 def confirm_wema_tier2(user, *, bvn="", nin="", ref="wema_tier2", account_number="", hashed=None):
     """Read the bank's tier back and only then raise Tier 2 locally.
 
