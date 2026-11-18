@@ -315,3 +315,25 @@ it('shows the Tier 3 limits when the address check had already come through', as
   expect(output.match(/₦5000000/g)?.length).toBeGreaterThanOrEqual(4);
   act(() => tree.unmount());
 });
+
+it('opens the Transaction limit page, where the customer sets their own lower limit', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state
+    : { success: true, provider: 'partnership', account_number: '0454243073', account_name: 'Current Account', has_account: true, available: true, can_fund: true, account_setup_state: 'ready' });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  expect(JSON.stringify(tree.toJSON())).toContain('Set your own lower limit per payment');
+  const row = tree.root.findByProps({ accessibilityLabel: 'Transaction limit, set your own lower limit' });
+  await act(async () => { row.props.onPress(); });
+  expect(router.push).toHaveBeenCalledWith('/limits');
+  act(() => tree.unmount());
+});
+
+it('does not offer the Transaction limit page while the account is under review', async () => {
+  mockApiJson.mockImplementation(async (path: string) => path === '/api/kyc/status/' ? state : {
+    success: true, provider: 'partnership', legacy_funding_review: true, account_setup_state: 'legacy_funding_review',
+  });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<AccountLimits />); });
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Transaction limit, set your own lower limit' })).toHaveLength(0);
+  act(() => tree.unmount());
+});

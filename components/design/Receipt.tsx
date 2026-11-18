@@ -11,6 +11,7 @@ import { NText } from '@/components/design/Naira';
 import { flash, notifyError } from '@/components/design/Notify';
 import ReceiptExport, { ExportAction } from '@/components/design/ReceiptExport';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
+import BioPayOffer from '@/components/design/BioPayOffer';
 import { BANK_WHATSAPP_DISPLAY, SUPPORT_EMAIL } from '@/components/configFiles/links';
 import {
   RECEIPT_COLORS as C,
@@ -408,6 +409,9 @@ const Receipt = ({
       <View style={{ paddingBottom: 16, paddingTop: 10 }}>
         <Btn label="Back to Dashboard" onPress={onDone} />
       </View>
+
+      {/* Paid with the typed PIN: offer the fingerprint for next time (at most once in five days). */}
+      <BioPayOffer show={/^success/i.test(status)} />
     </View>
   );
 };
