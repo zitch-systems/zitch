@@ -718,9 +718,25 @@ def _face_post(request, token):
     # BVN/NIN problem keeps the checked photo; anything else needs a new one.
     PendingAction.objects.filter(pk=pa.pk, state=FACE_PROCESSING).update(state=pa.state)
     own = response.status_code in (400, 409, 429)
+    if not own and _bank_ids_mismatch(body.get("message")):
+        # The selfie passed; the bank says the NIN and BVN do not belong to the
+        # same person. A new photo cannot fix that, so ask for the numbers.
+        return _json(422, status="retry", field="ids", code="ids_mismatch",
+                     message=FACE_IDS_MISMATCH_TEXT)
     message = (body.get("message") if own else "") or FACE_RETRY_TEXT
     field = "ids" if own and re.search(r"\b(BVN|NIN)\b", message) else "face"
     return _json(response.status_code if own else 422, status="retry", field=field, message=message)
+
+
+FACE_IDS_MISMATCH_TEXT = ("Your bank says this NIN does not match your BVN. Your photo is fine. "
+                          "Check both numbers and enter the NIN registered to the same name "
+                          "and date of birth as your BVN.")
+
+
+def _bank_ids_mismatch(text):
+    """True when the bank refused because the NIN and BVN records differ."""
+    text = str(text or "").lower()
+    return "mismatch" in text and "nin" in text and "bvn" in text
 
 
 def _ack_face_pending(pa):
