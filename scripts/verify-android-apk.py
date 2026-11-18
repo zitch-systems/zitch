@@ -25,9 +25,9 @@ def sdk_tool(name):
     raise ValueError(f'Android SDK tool is missing: {name}')
 
 
-def verify_manifest(badging, xmltree, expo):
+def verify_manifest(badging, xmltree, expo, package=None):
     match = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging, re.M)
-    expected = (expo['android']['package'], str(expo['android']['versionCode']), expo['version'])
+    expected = (package or expo['android']['package'], str(expo['android']['versionCode']), expo['version'])
     if not match or match.groups() != expected:
         raise ValueError('APK package/version does not match app.json')
     if 'application-debuggable' in badging or re.search(
@@ -117,7 +117,11 @@ def main():
     parser.add_argument('--signing', required=True, choices=('preview', 'upload'))
     parser.add_argument('--revision', required=True)
     parser.add_argument('--metadata', required=True, type=Path)
+    # A sideload test build is its own app (com.zitch.app.test) so it installs beside the store app.
+    parser.add_argument('--package', help='expected package of a preview build, if not the store package')
     args = parser.parse_args()
+    if args.package and (args.signing != 'preview' or not re.fullmatch(r'com\.zitch\.app\.[a-z]+', args.package)):
+        raise ValueError('Only a preview build may use another package, and it must be com.zitch.app.<variant>')
     if not re.fullmatch(r'[0-9a-f]{40}', args.revision):
         raise ValueError('A full source commit SHA is required')
     expo = json.loads(args.config.read_text())['expo']
@@ -128,7 +132,7 @@ def main():
     aapt = sdk_tool('aapt')
     badging = subprocess.check_output([aapt, 'dump', 'badging', str(args.apk)], text=True)
     manifest = subprocess.check_output([aapt, 'dump', 'xmltree', str(args.apk), 'AndroidManifest.xml'], text=True)
-    permissions = verify_manifest(badging, manifest, expo)
+    permissions = verify_manifest(badging, manifest, expo, args.package)
     target = target_sdk(badging)
     if args.signing == 'upload' and target < 36:
         raise ValueError(f'Google Play release must target API 36 or later, APK targets {target}')
@@ -156,7 +160,7 @@ def main():
         for chunk in iter(lambda: apk_file.read(1024 * 1024), b''):
             digest.update(chunk)
     metadata = {
-        'package': expo['android']['package'],
+        'package': args.package or expo['android']['package'],
         'version': expo['version'],
         'version_code': expo['android']['versionCode'],
         'target_sdk': target,
