@@ -1692,7 +1692,11 @@ def upgrade_tier2(account_number: str, *, bvn: str = "", nin: str = "", live_ima
         resp = _post("upgrade", path, body)
         return _upgrade_response(resp)
     except requests.RequestException as exc:
-        return _unreachable(exc)
+        # A read timeout means the bank has the request and may still upgrade
+        # the account (it often takes longer than our timeout): that is not a
+        # refusal. Only a request that never left counts as a failure.
+        sent = isinstance(exc, requests.ReadTimeout)
+        return _unreachable(exc, pending=sent)
     except ValueError:
         return {"success": False, "message": "Invalid bank response"}
 
