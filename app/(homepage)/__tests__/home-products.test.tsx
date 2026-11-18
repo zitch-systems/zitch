@@ -83,7 +83,9 @@ it('keeps savings and loans out while the server has them off', async () => {
   expect(labels(tree)).not.toContain('Loan');
   expect(labels(tree)).not.toContain('Fixed Save');
   expect(text(tree)).not.toContain('Bank on WhatsApp');
-  expect(text(tree)).toContain('Zitch account');
+  // the account's own bank beside its number (17 Nov 2026: "wema bank not zitch account")
+  expect(text(tree)).toContain('Wema Bank');
+  expect(text(tree)).not.toContain('Zitch account');
   act(() => tree.unmount());
 });
 
