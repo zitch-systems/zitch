@@ -8,6 +8,8 @@ import type { VirtualCard } from '@/lib/services/cards';
 
 const mockList = jest.fn();
 const mockFreeze = jest.fn();
+const mockTransactions = jest.fn();
+const mockPush = jest.fn();
 const mockNotify = jest.fn();
 
 jest.mock('@/lib/services/cards', () => ({
@@ -17,6 +19,7 @@ jest.mock('@/lib/services/cards', () => ({
     create: jest.fn(),
     fund: jest.fn(),
     details: jest.fn(),
+    transactions: (...args: unknown[]) => mockTransactions(...args),
   },
 }));
 jest.mock('@/lib/secureStore', () => ({ getToken: jest.fn().mockResolvedValue('token') }));
@@ -27,11 +30,21 @@ jest.mock('@/lib/pendingSpend', () => ({
 jest.mock('@/components/design/Notify', () => ({
   notify: (...args: unknown[]) => mockNotify(...args),
 }));
-jest.mock('@/lib/wallet', () => ({ useWallet: () => ({ reload: jest.fn() }) }));
+jest.mock('@/lib/wallet', () => ({
+  useWallet: () => ({ reload: jest.fn() }),
+  mapTxn: (raw: { reference: string; service: string; amount: number }, i: number) => ({ id: raw.reference || String(i), type: raw.service, amount: raw.amount, reference: raw.reference }),
+  transactionParams: (t: { reference: string }) => ({ reference: t.reference }),
+}));
+jest.mock('@/components/design/widgets', () => {
+  const ReactActual = jest.requireActual<typeof import('react')>('react');
+  const { Text } = jest.requireActual<typeof import('react-native')>('react-native');
+  return { SectionLabel: ({ children }: { children: string }) => ReactActual.createElement(Text, null, children) };
+});
 jest.mock('expo-router', () => {
   const ReactActual = jest.requireActual<typeof import('react')>('react');
   return {
     useFocusEffect: (effect: () => void | (() => void)) => ReactActual.useEffect(effect, [effect]),
+    router: { push: (...args: unknown[]) => mockPush(...args) },
   };
 });
 jest.mock('expo-linear-gradient', () => {
@@ -69,6 +82,8 @@ jest.mock('@/components/design/ui', () => {
       open ? ReactActual.createElement(View, null, children) : null,
     PinPad: () => null,
     Naira: () => null,
+    TxnRow: ({ txn, onPress }: { txn: { type: string; reference: string }; onPress: () => void }) =>
+      ReactActual.createElement(Pressable, { accessibilityLabel: `${txn.type} ${txn.reference}`, onPress }, ReactActual.createElement(Text, null, txn.type)),
     money: (amount: number) => `₦${amount}`,
   };
 });
@@ -97,6 +112,8 @@ describe('card provider capabilities', () => {
     mockList.mockReset();
     mockFreeze.mockReset();
     mockNotify.mockReset();
+    mockPush.mockReset();
+    mockTransactions.mockReset().mockResolvedValue({ success: true, transactions: [] });
     jest.spyOn(Alert, 'alert').mockImplementation(() => {});
   });
 
@@ -200,6 +217,36 @@ describe('card provider capabilities', () => {
     await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Retry loading cards' }).props.onPress(); });
     expect(tree.root.findByProps({ accessibilityLabel: 'Block' }).props.disabled).toBe(false);
     expect(JSON.stringify(tree.toJSON())).not.toContain('Showing previously loaded card details');
+    act(() => tree.unmount());
+  });
+
+  // 17 Nov 2026: "transaction history on card should show below".
+  it("lists the card's own activity under the card, each row opening its receipt", async () => {
+    mockList.mockResolvedValueOnce({ success: true, cards: [card(wemaCapabilities)] });
+    mockTransactions.mockResolvedValueOnce({ success: true, transactions: [
+      { reference: 'CF-2', service: 'Card funding', amount: 2500 },
+      { reference: 'CF-1', service: 'Card funding', amount: 5000 },
+    ] });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Cards />); });
+    expect(mockTransactions).toHaveBeenCalledWith(7);
+    expect(JSON.stringify(tree.toJSON())).toContain('Card activity');
+    const rows = tree.root.findAll((n) => typeof n.props.accessibilityLabel === 'string' && n.props.accessibilityLabel.startsWith('Card funding') && typeof n.props.onPress === 'function');
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    await act(async () => { rows[0].props.onPress(); });
+    expect(mockPush).toHaveBeenCalledWith({ pathname: '/txndetail', params: { reference: 'CF-2' } });
+    act(() => tree.unmount());
+  });
+
+  it('says so when the card has no activity yet, and when it cannot load', async () => {
+    mockList.mockResolvedValue({ success: true, cards: [card(wemaCapabilities)] });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => { tree = renderer.create(<Cards />); });
+    expect(JSON.stringify(tree.toJSON())).toContain('No card activity yet');
+    act(() => tree.unmount());
+    mockTransactions.mockRejectedValueOnce(new Error('offline'));
+    await act(async () => { tree = renderer.create(<Cards />); });
+    expect(JSON.stringify(tree.toJSON())).toContain('Could not load card activity');
     act(() => tree.unmount());
   });
 

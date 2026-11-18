@@ -27,7 +27,7 @@ from utility.providers import (
     card_set_status,
 )
 from wallet.services import (DuplicateTransaction, InsufficientFunds, LimitExceeded,
-                             existing_for_key)
+                             customer_visible_transactions, existing_for_key)
 
 from .issuance import claim_card_issuance, finalize_card_issuance
 from .models import CardIssuance, VirtualCard
@@ -107,6 +107,31 @@ def list_cards(request):
     issuance = ({"pending": True, "reference": active.reference,
                  "status": "pending"} if active else None)
     return ok(cards=[_card_dict(c) for c in user.cards.all()], issuance=issuance)
+
+
+@api
+@require_user
+def card_transactions(request):
+    """POST /api/cards/transactions/ {access_token, card_id?} -> {success, card_id, transactions: [...]}
+
+    This card's own activity, newest first, for the list under the card on the
+    Cards tab (17 Nov 2026): every wallet ledger row that names this card (its
+    loads), in the same shape as /api/user-transaction-history/ so each row opens
+    the same receipt. Only this customer's own card is ever read.
+    """
+    from wallet.views import _transaction_reviews, _txn_row
+
+    user = request.user_obj
+    card_id = request.data.get("card_id")
+    try:
+        card = user.cards.filter(id=int(card_id)).first() if card_id not in (None, "") else user.cards.first()
+    except (TypeError, ValueError):
+        return fail("No card found", status=404)
+    if card is None:
+        return fail("No card found", status=404)
+    txns = list(customer_visible_transactions(user.transactions.filter(meta__card=card.id))[:50])
+    reviews = _transaction_reviews(txns)
+    return ok(success=True, card_id=card.id, transactions=[_txn_row(t, reviews.get(t.pk)) for t in txns])
 
 
 @api

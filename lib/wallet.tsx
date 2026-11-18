@@ -55,6 +55,7 @@ export const mapTxn = (raw: any, i: number): Txn => {
   else if (/cable|tv|dstv|gotv|startime/.test(s)) icon = 'tv';
   else if (/elect|power|disco/.test(s)) icon = 'bills';
   else if (/transfer|send|withdraw/.test(s)) icon = 'send';
+  else if (/card/.test(s)) icon = 'card';
   else if (/fund|deposit|add/.test(s)) icon = 'deposit';
   const when = String(raw?.date ?? raw?.created_at ?? raw?.time ?? '');
   const underReview = raw?.under_review === true;
