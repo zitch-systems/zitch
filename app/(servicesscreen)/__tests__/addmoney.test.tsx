@@ -215,6 +215,10 @@ describe('AddMoney face fallback', () => {
     expect(mockApiJson).toHaveBeenLastCalledWith('/api/wallet/account/');
     expect(JSON.stringify(tree.toJSON())).toContain('Fund by bank transfer');
     expect(JSON.stringify(tree.toJSON())).not.toContain('Get my account');
+    // the bank a sender picks in their bank app, above the number (17 Nov 2026)
+    const page = JSON.stringify(tree.toJSON());
+    expect(page).toContain('Wema Bank');
+    expect(page.indexOf('Wema Bank')).toBeLessThan(page.indexOf('045 424 3073') >= 0 ? page.indexOf('045 424 3073') : page.indexOf('0454243073'));
     act(() => tree.unmount());
   });
 

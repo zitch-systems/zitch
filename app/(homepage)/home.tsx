@@ -40,19 +40,25 @@ const T = {
   more: { label: 'More', icon: 'more', color: '#6E8B86', more: true },
 } satisfies Record<string, Tile>;
 
-const MORE = [
-  { label: 'Electricity', icon: 'bills', go: () => router.push('/buyelectricity') },
-  { label: 'Send money', icon: 'send', go: () => router.push('/sendmoney') },
+// More (17 Nov 2026): a pop-up, not a page, with the money actions from the top
+// of Home and every bill payment. Tapping one closes the pop-up and opens it.
+type MoreItem = { label: string; icon: string; go: () => void; badge?: string };
+export const MORE_MONEY: MoreItem[] = [
+  { label: 'Transfer', icon: 'send', go: () => router.push('/sendmoney') },
+  { label: 'History', icon: 'history', go: () => router.push('/history') },
+  { label: 'Statement', icon: 'download', go: () => router.push('/statement') },
+];
+export const MORE_BILLS: MoreItem[] = [
   { label: 'Airtime', icon: 'airtime', go: () => router.push('/buyairtime') },
   { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
   { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
+  { label: 'Electricity', icon: 'bills', go: () => router.push('/buyelectricity') },
   { label: 'Betting', icon: 'dice', go: () => router.push('/betting') },
   { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
-  { label: 'Insurance', icon: 'insurance', go: () => router.push('/insurance') },
+  { label: 'Water', icon: 'water', go: () => router.push('/water'), badge: 'Soon' },
   { label: 'Remita', icon: 'remita', go: () => router.push('/remita') },
-  { label: 'Movie', icon: 'movie', go: () => router.push('/movies') },
-  { label: 'Convert', icon: 'convert', go: () => router.push('/convert') },
-  { label: 'Invite', icon: 'invite', go: () => router.push('/invite') },
+  { label: 'Movies', icon: 'movie', go: () => router.push('/movies') },
+  { label: 'Insurance', icon: 'insurance', go: () => router.push('/insurance') },
 ];
 
 const greeting = (hour: number) => (hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening');
@@ -179,7 +185,7 @@ ActivityRow.displayName = 'ActivityRow';
 
 const Home = () => {
   const { c } = useTheme();
-  const { balance, totalBalance, firstName, fullName, avatar, accountNumber, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, reloadLinked, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
+  const { balance, totalBalance, firstName, fullName, avatar, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, reloadLinked, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
   const capabilityMessage = walletCapabilityMessage({ billPaymentsAvailable, transfersAvailable });
   const products = useHomeProducts();
   const loadProducts = products.load;
@@ -295,7 +301,7 @@ const Home = () => {
                   style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   <ZIcon name="bank" size={14} color="rgba(255,255,255,0.85)" />
                   <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85} style={{ flexShrink: 1, fontSize: 12.5, fontFamily: fontA.bodySemi, color: '#fff', fontVariant: ['tabular-nums'] }}>
-                    {groupedAccount} · Zitch account
+                    {groupedAccount} · {bankName || 'Zitch account'}
                   </NText>
                   <ZIcon name="copy" size={14} color="rgba(255,255,255,0.85)" />
                 </Pressable>
@@ -365,15 +371,20 @@ const Home = () => {
         ) : txns.slice(0, 4).map((x, i) => <ActivityRow key={x.id} txn={x} first={i === 0} onSelect={openTxn} />)}
       </View>
 
-      {/* all services */}
+      {/* all services: More opens this pop-up, not a page */}
       <Sheet open={more} onClose={() => setMore(false)} title="All services">
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
-          {MORE.map((s) => (
-            <View key={s.label} style={{ width: '25%', alignItems: 'center', marginBottom: 18 }}>
-              <ServiceTile icon={s.icon} label={s.label} onPress={() => { setMore(false); setTimeout(() => s.go(), 240); }} />
+        {([['Money', MORE_MONEY], ['Pay a bill', MORE_BILLS]] as const).map(([heading, items], g) => (
+          <View key={heading} style={{ marginTop: g ? 6 : 0 }}>
+            <Text style={{ fontSize: 12, fontFamily: fontA.bodyBold, color: c.ink1, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>{heading}</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+              {items.map((s) => (
+                <View key={s.label} style={{ width: '25%', alignItems: 'center', marginBottom: 16 }}>
+                  <ServiceTile icon={s.icon} label={s.label} badge={s.badge} onPress={() => { setMore(false); setTimeout(() => s.go(), 240); }} />
+                </View>
+              ))}
             </View>
-          ))}
-        </View>
+          </View>
+        ))}
       </Sheet>
 
       {/* the balance card's "…" */}

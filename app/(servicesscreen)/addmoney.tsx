@@ -350,10 +350,17 @@ const AddMoney = () => {
             </Text>
             {capabilityMessage ? <Text style={{ color: c.ink2, fontFamily: font.semibold, lineHeight: 20, marginTop: 12 }}>{capabilityMessage} {fundingState?.migration_message}</Text> : null}
             <View style={{ height: 1, backgroundColor: c.line, marginVertical: 14 }} />
-            {/* Top to bottom: label, grouped number, account name. The partner bank
-                is not named here (review, Nov 2026); Bank transfer details has it. */}
+            {/* Top to bottom: the bank, then the grouped number and the account name,
+                which is what a sender's bank app asks for, in that order (17 Nov 2026:
+                "add wema bank here"). The bank comes from the account details. */}
+            {account.bank_name ? (
+              <>
+                <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Bank</Text>
+                <Text style={{ fontSize: 17, color: c.ink1, fontFamily: font.bold, marginTop: 3, marginBottom: 12 }}>{account.bank_name}</Text>
+              </>
+            ) : null}
             <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>
-              Zitch account number
+              {account.bank_name ? 'Account number' : 'Zitch account number'}
             </Text>
             <Text style={{ fontSize: 26, color: c.ink1, fontFamily: font.extrabold, letterSpacing: 1.5, marginTop: 6, marginBottom: 2, fontVariant: ['tabular-nums'] }}>
               {grouped(account.account_number)}

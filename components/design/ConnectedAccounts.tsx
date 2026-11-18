@@ -240,7 +240,7 @@ export const ConnectedAccounts = () => {
   const closeAfter = (fn: () => void) => { setManageFor(null); setTimeout(fn, 260); };
 
   return (
-    <View style={{ paddingTop: 22 }}>
+    <View style={{ paddingTop: 16 }}>
       <View style={{ paddingHorizontal: 18 }}>
         <SectionLabel action={accts.length ? 'Add' : undefined} onAction={accts.length ? () => router.push('/linkbank') : undefined}>
           Connected accounts
@@ -248,13 +248,14 @@ export const ConnectedAccounts = () => {
       </View>
       {accts.length === 0 ? (
         <Pressable onPress={() => router.push('/linkbank')} style={{ marginHorizontal: 16 }}>
-          <Card style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-            <View style={{ width: 42, height: 42, borderRadius: 13, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>
-              <ZIcon name="bank" size={22} color={c.brand} />
+          {/* A compact row (17 Nov 2026: "reduce the heights and optimise the space"). */}
+          <Card pad={0} style={{ flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 9, paddingHorizontal: 12, borderRadius: 14 }}>
+            <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>
+              <ZIcon name="bank" size={18} color={c.brand} />
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1 }}>Connect a bank</Text>
-              <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>See balances & move money in — via Mono</Text>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ fontSize: 13.5, fontFamily: font.bold, color: c.ink1 }}>Connect a bank</Text>
+              <Text numberOfLines={1} style={{ fontSize: 12, color: c.ink3, fontFamily: font.regular }}>See balances & move money in — via Mono</Text>
             </View>
             <ZIcon name="right" size={18} color={c.ink3} />
           </Card>

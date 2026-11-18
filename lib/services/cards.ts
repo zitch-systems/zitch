@@ -44,4 +44,7 @@ export const cardsService = {
     apiJson<CardResult>(EP.cards.fund, { card_id: cardId, amount, transaction_pin: pin, idempotency_key: idempotencyKey }),
   details: (cardId: number | string, pin: string) =>
     apiJson<CardResult>(EP.cards.details, { card_id: cardId, transaction_pin: pin }),
+  /** The card's own activity, in the transaction-history row shape (map with mapTxn). */
+  transactions: (cardId: number | string) =>
+    apiJson<ApiResult<{ card_id?: number; transactions?: unknown[] }>>(EP.cards.transactions, { card_id: cardId }),
 };

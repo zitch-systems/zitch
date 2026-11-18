@@ -103,7 +103,8 @@ export const ServiceTile = ({
         </View>
         {badge && <Badge label={badge} hot={hot} />}
       </View>
-      <Text style={{ fontSize: 12, lineHeight: 18, fontFamily: font.medium, color: c.ink2, textAlign: 'center', flexShrink: 1 }}>{label}</Text>
+      {/* Labels in the ink (pure black in light, 17 Nov 2026), not a grey. */}
+      <Text style={{ fontSize: 12, lineHeight: 18, fontFamily: font.medium, color: c.ink1, textAlign: 'center', flexShrink: 1 }}>{label}</Text>
     </Tap>
   );
 };

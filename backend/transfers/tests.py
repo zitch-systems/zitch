@@ -1037,3 +1037,87 @@ class BankShortFormTests(TestCase):
         self.assertIn("guaranty trust bank", rows["gtb"]["aliases"])
         # Additive: everything a shipped build reads is still there.
         self.assertEqual(rows["gtb"]["name"], "GTBank")
+
+
+class RankAccountMatchesTests(TestCase):
+    """When an account number is real at more than one bank, the most probable
+    bank comes first (17 Nov 2026)."""
+
+    def setUp(self):
+        self.user, self.token = make_user("08010000091", "rank@zitch.test", balance="0")
+        self.other, _ = make_user("08010000092", "other@zitch.test", balance="0")
+        self.third, _ = make_user("08010000093", "third@zitch.test", balance="0")
+        self.acc = Bank.objects.create(code="acc", name="Access Bank", bank_code="044")
+        self.gtb = Bank.objects.create(code="gtb", name="GTBank", bank_code="058")
+        self.zen = Bank.objects.create(code="zen", name="Zenith Bank", bank_code="057")
+
+    def matches(self):
+        return [{"bank": "acc", "bank_name": "Access Bank", "name": "ADA EZE"},
+                {"bank": "gtb", "bank_name": "GTBank", "name": "OBI OKAFOR"},
+                {"bank": "zen", "bank_name": "Zenith Bank", "name": "TUNDE BELLO"}]
+
+    def rank(self, account, user=None):
+        from transfers.services import rank_account_matches
+        return rank_account_matches(user or self.user, account, self.matches())
+
+    def test_a_bank_this_customer_has_paid_comes_first(self):
+        Beneficiary.objects.create(user=self.user, name="TUNDE BELLO", account_number="1000000000",
+                                   bank_name="Zenith Bank", bank_code="057", transfer_count=2)
+        ranked = self.rank("1000000000")
+        self.assertEqual([m["bank"] for m in ranked], ["zen", "acc", "gtb"])
+        self.assertTrue(ranked[0]["likely"])
+        self.assertNotIn("likely", ranked[1])
+
+    def test_more_transfers_wins_between_two_paid_banks(self):
+        Beneficiary.objects.create(user=self.user, name="ADA EZE", account_number="1000000000",
+                                   bank_name="Access Bank", bank_code="044", transfer_count=1)
+        Beneficiary.objects.create(user=self.user, name="OBI OKAFOR", account_number="1000000000",
+                                   bank_name="GTBank", bank_code="058", transfer_count=5)
+        self.assertEqual([m["bank"] for m in self.rank("1000000000")], ["gtb", "acc", "zen"])
+
+    def test_the_check_digit_wins_when_there_is_no_history(self):
+        # 1000000008 passes the NUBAN check digit for GTBank (058) only.
+        ranked = self.rank("1000000008")
+        self.assertEqual(ranked[0]["bank"], "gtb")
+        self.assertTrue(ranked[0]["likely"])
+
+    def test_where_other_customers_send_it_breaks_a_tie(self):
+        # 1000000000 passes the check digit for none of the three banks.
+        for u in (self.other, self.third):
+            Beneficiary.objects.create(user=u, name="TUNDE BELLO", account_number="1000000000",
+                                       bank_name="Zenith Bank", bank_code="057", transfer_count=1)
+        Beneficiary.objects.create(user=self.other, name="OBI OKAFOR", account_number="1000000000",
+                                   bank_name="GTBank", bank_code="058", transfer_count=9)
+        ranked = self.rank("1000000000")
+        self.assertEqual([m["bank"] for m in ranked], ["zen", "gtb", "acc"])
+        # Only the order changes: no other customer's details come back.
+        self.assertEqual(set(ranked[0]), {"bank", "bank_name", "name", "likely"})
+
+    def test_own_history_beats_the_check_digit_and_other_customers(self):
+        Beneficiary.objects.create(user=self.other, name="OBI OKAFOR", account_number="1000000008",
+                                   bank_name="GTBank", bank_code="058", transfer_count=40)
+        Beneficiary.objects.create(user=self.user, name="ADA EZE", account_number="1000000008",
+                                   bank_name="Access Bank", bank_code="044", transfer_count=1)
+        self.assertEqual([m["bank"] for m in self.rank("1000000008")], ["acc", "gtb", "zen"])
+
+    def test_no_signal_keeps_the_order_and_claims_nothing(self):
+        ranked = self.rank("1000000000")
+        self.assertEqual([m["bank"] for m in ranked], ["acc", "gtb", "zen"])
+        self.assertFalse(any(m.get("likely") for m in ranked))
+
+    def test_a_single_match_is_left_alone(self):
+        from transfers.services import rank_account_matches
+        one = [{"bank": "gtb", "bank_name": "GTBank", "name": "OBI OKAFOR"}]
+        self.assertEqual(rank_account_matches(self.user, "1000000008", one), one)
+
+    def test_resolve_returns_the_most_probable_bank_first(self):
+        Beneficiary.objects.create(user=self.user, name="TUNDE BELLO", account_number="1000000000",
+                                   bank_name="Zenith Bank", bank_code="057", transfer_count=3)
+        with patch("transfers.views.detect_account_banks", return_value=self.matches()):
+            res = Client().post("/api/transfers/resolve/", data=json.dumps(
+                {"access_token": self.token, "account_number": "1000000000"}), content_type="application/json")
+        body = res.json()
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual([m["bank"] for m in body["matches"]], ["zen", "acc", "gtb"])
+        self.assertEqual(body["bank"], "zen")
+        self.assertEqual(body["name"], "TUNDE BELLO")

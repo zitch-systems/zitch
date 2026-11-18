@@ -253,6 +253,83 @@ def detect_account_banks(account_number: str) -> list[dict]:
     return matches
 
 
+def rank_account_matches(user, account_number: str, matches: list[dict]) -> list[dict]:
+    """The banks an account number matched, most probable first.
+
+    A number can be a real account at more than one bank (different holders).
+    The send screen lists them all and the customer picks, so the order is the
+    guess. Best signal first:
+
+    1. this customer has paid this exact account at that bank before (more
+       transfers, then the most recent, wins);
+    2. the number passes the NUBAN check digit for that bank's code;
+    3. other Zitch customers pay this account at that bank (how many of them);
+    4. the bank is one of the high-volume ones, then the original order.
+
+    Only the order changes: nothing is dropped and no other customer's details
+    are returned. The first row carries ``likely: True`` when a signal actually
+    sets it apart, so the app can say "Most likely" without overclaiming.
+    """
+    from django.db.models import Count
+
+    if len(matches) < 2:
+        return matches
+    from .nuban import nuban_valid
+
+    slugs = [m.get("bank") for m in matches]
+    banks = {b.code: b for b in Bank.objects.filter(code__in=slugs)}
+
+    def keys(bank):
+        out = set()
+        if bank is None:
+            return out
+        if bank.bank_code:
+            out.add(("code", bank.bank_code))
+        if bank.name:
+            out.add(("name", bank.name.strip().lower()))
+        return out
+
+    rows = Beneficiary.objects.filter(account_number=account_number)
+    mine, crowd = {}, {}
+    if user is not None and getattr(user, "pk", None):
+        for r in rows.filter(user=user).only("bank_code", "bank_name", "transfer_count", "last_sent_at", "saved"):
+            for k in (("code", r.bank_code), ("name", (r.bank_name or "").strip().lower())):
+                if k[1]:
+                    mine[k] = r
+        rows = rows.exclude(user=user)
+    for k_field, value_field in (("code", "bank_code"), ("name", "bank_name")):
+        for row in rows.values(value_field).annotate(n=Count("user", distinct=True)):
+            value = (row[value_field] or "").strip()
+            if value:
+                k = (k_field, value.lower() if k_field == "name" else value)
+                crowd[k] = max(crowd.get(k, 0), row["n"])
+
+    def score(item):
+        index, m = item
+        bank = banks.get(m.get("bank"))
+        ks = keys(bank)
+        own = next((mine[k] for k in ks if k in mine), None)
+        paid = own is not None and (own.transfer_count or own.saved)
+        last = own.last_sent_at.timestamp() if own is not None and own.last_sent_at else 0
+        return (
+            1 if paid else 0,
+            (own.transfer_count or 0) if own is not None else 0,
+            last,
+            1 if bank is not None and nuban_valid(account_number, bank.bank_code) else 0,
+            max((crowd.get(k, 0) for k in ks), default=0),
+            1 if bank is not None and bank.popular else 0,
+            -index,
+        )
+
+    scored = sorted(enumerate(matches), key=score, reverse=True)
+    ranked = [dict(m) for _, m in scored]
+    for m in ranked:
+        m.pop("likely", None)
+    if score(scored[0])[:-1] > score(scored[1])[:-1]:
+        ranked[0]["likely"] = True
+    return ranked
+
+
 class PayoutError(Exception):
     """A payout could not be completed.
 

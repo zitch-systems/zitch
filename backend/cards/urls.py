@@ -8,4 +8,5 @@ urlpatterns = [
     path("freeze/", views.toggle_freeze),
     path("details/", views.card_details),
     path("fund/", views.fund_card),
+    path("transactions/", views.card_transactions),
 ]

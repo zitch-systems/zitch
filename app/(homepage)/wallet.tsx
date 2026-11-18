@@ -16,7 +16,7 @@ import { walletCapabilityMessage } from '@/lib/services/wallet';
 
 const Wallet = () => {
   const { c } = useTheme();
-  const { balance, totalBalance, fullName, firstName, accountNumber, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, reloadLinked, loading, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
+  const { balance, totalBalance, fullName, firstName, accountNumber, bankName, billPaymentsAvailable, transfersAvailable, fundingMessage, txns, showBal, setShowBal, reload, reloadLinked, loading, hydrated, balanceLoaded, balanceError, historyError } = useWallet();
   const capabilityMessage = walletCapabilityMessage({ billPaymentsAvailable, transfersAvailable });
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -106,7 +106,7 @@ const Wallet = () => {
                     {fullName || firstName || 'Your account'}
                   </Text>
                   <NText numberOfLines={1} style={{ color: 'rgba(255,255,255,.82)', fontSize: 11.5, fontFamily: font.medium, marginTop: 1 }}>
-                    {groupedAccount} · Zitch account
+                    {groupedAccount} · {bankName || 'Zitch account'}
                   </NText>
                 </View>
                 <ZIcon name="copy" size={15} color="rgba(255,255,255,.85)" />
@@ -133,14 +133,15 @@ const Wallet = () => {
         </Text>
       ) : null}
 
-      <View style={{ flexDirection: 'row', gap: 12, marginHorizontal: 16 }}>
+      {/* Money in and out on one compact strip (17 Nov 2026: "reduce the heights"). */}
+      <View testID="money-in-out" style={{ flexDirection: 'row', marginHorizontal: 16, borderRadius: 14, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, paddingVertical: 9 }}>
         {[
           { k: 'Money in', v: moneyIn, color: c.lime, sign: '+' },
           { k: 'Money out', v: moneyOut, color: c.ink1, sign: '-' },
-        ].map((s) => (
-          <View key={s.k} style={{ flex: 1, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, padding: 16 }}>
-            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{s.k}</Text>
-            <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.65} style={{ fontSize: 18, fontFamily: font.extrabold, color: s.color, marginTop: 4, fontVariant: ['tabular-nums'] }}>
+        ].map((s, i) => (
+          <View key={s.k} style={{ flex: 1, minWidth: 0, paddingHorizontal: 14, borderLeftWidth: i ? 1 : 0, borderLeftColor: c.line }}>
+            <Text style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.regular }}>{s.k}</Text>
+            <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.65} style={{ fontSize: 16, fontFamily: font.extrabold, color: s.color, marginTop: 1, fontVariant: ['tabular-nums'] }}>
               {historyError ? 'Unavailable' : !hydrated ? 'Loading…' : showBal ? `${s.sign}${money(s.v)}` : '₦ ••••••'}
             </Text>
           </View>
@@ -150,7 +151,7 @@ const Wallet = () => {
       {/* Connected external bank accounts (Mono open-banking) */}
       <ConnectedAccounts />
 
-      <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
+      <View style={{ paddingHorizontal: 18, paddingTop: 16 }}>
         <SectionLabel action="See all" onAction={() => router.push('/history')}>Recent activity</SectionLabel>
         {historyError && txns.length > 0 ? <Text accessibilityRole="alert" style={{ color: c.amber, marginBottom: 10 }}>Showing previously loaded activity. {historyError} Pull down to retry.</Text> : null}
         {txns.length === 0 ? (

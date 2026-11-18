@@ -371,6 +371,35 @@ describe('SendMoney recipient response binding', () => {
     act(() => tree.unmount());
   });
 
+  it('lists several bank matches most probable first, tagging only the top one', async () => {
+    jest.useFakeTimers();
+    loadBankCatalogue();
+    mockResolveBank.mockResolvedValue({
+      success: true,
+      matches: [
+        { bank: 'bank-b', bank_name: 'Bank B', name: 'Likely Holder', likely: true },
+        { bank: 'bank-a', bank_name: 'Bank A', name: 'Other Holder' },
+      ],
+    });
+    let tree!: renderer.ReactTestRenderer;
+    await act(async () => {
+      tree = renderer.create(<SendMoney />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => { control(tree, 'Account number').props.onChangeText('0123456789'); });
+    await act(async () => { jest.advanceTimersByTime(600); await Promise.resolve(); await Promise.resolve(); });
+    expect(mockResolveBank).toHaveBeenCalledWith('0123456789');
+    const names = tree.root.findAllByType(Text).map((n) => n.props.children)
+      .filter((t) => t === 'Bank B' || t === 'Bank A');
+    expect(names[0]).toBe('Bank B');
+    const tags = tree.root.findAll((n) => n.props.testID === 'bank-match-likely' && typeof n.type === 'string');
+    expect(tags).toHaveLength(1);
+    await act(async () => { pressText(tree, 'Likely Holder'); });
+    expect(tree.root.findAll((n) => n.props.testID === 'bank-match-likely')).toHaveLength(0);
+    act(() => tree.unmount());
+  });
+
   it('keeps bank transfer disabled when manual holder-name verification fails', async () => {
     jest.useFakeTimers();
     loadBankCatalogue();

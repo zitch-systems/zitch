@@ -162,12 +162,15 @@ export const ICON_COLORS: Record<string, string> = {
   dice: '#F5A623',     // betting
   tv: '#7A5CFF',       // cable
   fixed: '#1EA05E',    // save
+  water: '#0EA5E9',
   loan: '#E8590C',
   jamb: '#F5760A',     // exams
   bills: '#F59E0B',    // electricity
   send: '#0FA295',     // transfer
   withdraw: '#16A34A',
   insurance: '#16A34A',
+  // Password in Security Center (17 Nov 2026): a teal tile like its neighbours, not a blank one.
+  shield: '#0FA295',
   remita: '#2D7FF9',
   movie: '#D6336C',
   convert: '#0CA5B8',

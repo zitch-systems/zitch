@@ -544,3 +544,51 @@ class CardTests(TestCase):
         self.assertTrue(body["pending"])
         card.refresh_from_db()
         self.assertFalse(card.frozen)
+
+
+class CardTransactionsTests(TestCase):
+    """The list under the card on the Cards tab (17 Nov 2026): this card's own activity."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08020000091", "ada.card@zitch.test", balance="50000")
+        self.other, self.other_token = make_user("08020000092", "obi.card@zitch.test", balance="50000")
+        self.card = VirtualCard.objects.create(user=self.user, card_token="tok-1", brand="Verve", last4="4821", expiry="08/29", holder="ADA")
+        self.theirs = VirtualCard.objects.create(user=self.other, card_token="tok-3", brand="Verve", last4="1111", expiry="10/29", holder="OBI")
+
+        def row(user, ref, card, service="Card funding", amount="5000"):
+            meta = {"card": card.id, "card_funding": True} if card else {}
+            return Transaction.objects.create(user=user, service=service, amount=Decimal(amount), direction=Transaction.OUT,
+                                              transaction_status=Transaction.SUCCESS, reference=ref, meta=meta)
+        row(self.user, "CF-1", self.card, amount="5000")
+        row(self.user, "CF-2", self.card, amount="2500")
+        row(self.user, "AT-1", None, service="Airtime - MTN", amount="1000")
+        row(self.other, "CF-9", self.theirs, amount="7000")
+
+    def post(self, payload):
+        res = self.client.post("/api/cards/transactions/", data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    def test_lists_only_this_cards_activity_newest_first(self):
+        res, body = self.post({"access_token": self.token, "card_id": self.card.id})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["card_id"], self.card.id)
+        refs = [t["reference"] for t in body["transactions"]]
+        self.assertEqual(sorted(refs), ["CF-1", "CF-2"])
+        self.assertEqual(body["transactions"][0]["service"], "Card funding")
+
+    def test_defaults_to_the_first_card(self):
+        _res, body = self.post({"access_token": self.token})
+        self.assertEqual(body["card_id"], self.card.id)
+        self.assertEqual(len(body["transactions"]), 2)
+
+    def test_never_reads_another_customers_card(self):
+        res, body = self.post({"access_token": self.token, "card_id": self.theirs.id})
+        self.assertEqual(res.status_code, 404)
+        self.assertNotIn("transactions", body)
+        res, _ = self.post({"access_token": self.token, "card_id": "not-a-number"})
+        self.assertEqual(res.status_code, 404)
+
+    def test_needs_a_session(self):
+        res, _ = self.post({"card_id": self.card.id})
+        self.assertIn(res.status_code, (401, 403))

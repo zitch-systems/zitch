@@ -82,11 +82,13 @@ const cardShadow = {
 
 // A screen that can be refreshed pulls down to the Zitch coil (17 Nov 2026);
 // any other scrolls as a plain ScrollView.
-const ScrollOrPull = ({ onRefresh, refreshing, children, ...scroll }: ScrollViewProps & {
-  onRefresh?: () => void; refreshing: boolean; children: React.ReactNode;
+// With onRefresh the still part at the top goes inside the pull's area, so a
+// downward drag on it refreshes too (17 Nov 2026); it still never scrolls.
+const ScrollOrPull = ({ onRefresh, refreshing, children, top, ...scroll }: ScrollViewProps & {
+  onRefresh?: () => void; refreshing: boolean; children: React.ReactNode; top?: React.ReactNode;
 }) => (onRefresh
-  ? <CoilRefreshScrollView {...scroll} refreshing={refreshing} onRefresh={onRefresh}>{children}</CoilRefreshScrollView>
-  : <ScrollView {...scroll}>{children}</ScrollView>);
+  ? <CoilRefreshScrollView {...scroll} top={top} refreshing={refreshing} onRefresh={onRefresh}>{children}</CoilRefreshScrollView>
+  : <>{top}<ScrollView {...scroll}>{children}</ScrollView></>);
 
 // ---- Layout shell ----
 // `tab` prevents a second safe-area inset being added beneath tab scenes. Expo
@@ -139,13 +141,17 @@ export const Screen = ({
     <LinearGradient colors={c.bgGradient} style={{ flex: 1 }}>
       <AmbientBackground />
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+        {/* Where the device reports no top inset (web, some Android builds), keep a
+            status bar's worth of room so headers never touch the top edge. */}
+        <View testID="screen-top-gap" style={{ height: topGap(insets.top) }} />
         {/* Lift content above the keyboard on iOS so a focused field / its submit
             button is never hidden behind it (Android handles this via the OS
             softInputMode). */}
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        {headerBlock}
+        {scroll ? null : headerBlock}
         {scroll ? (
           <ScrollOrPull
+            top={headerBlock}
             onRefresh={onRefresh}
             refreshing={refreshing}
             showsVerticalScrollIndicator={false}
@@ -172,6 +178,12 @@ export const Screen = ({
   );
 };
 
+export const HEADER_TOP = 12;
+/** The extra room above a screen when the device's own top inset is smaller
+ *  than a status bar. Real phones (insets of 20+) get nothing extra. */
+export const MIN_TOP_GAP = 24;
+export const topGap = (insetTop: number) => Math.max(0, MIN_TOP_GAP - (insetTop || 0));
+
 export const Header = ({
   title,
   sub,
@@ -185,7 +197,8 @@ export const Header = ({
 }) => {
   const { c } = useTheme();
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingTop: 6, paddingBottom: 16 }}>
+    // 12, not 6: the back arrow and title sat too tight under the top edge (17 Nov 2026).
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingTop: HEADER_TOP, paddingBottom: 16 }}>
       {onBack && (
         <Pressable
           onPress={onBack}
@@ -438,6 +451,11 @@ export const ZItem = ({
 };
 
 // ---- Field ----
+// The browser draws its own focus outline around a focused <input> on web. Our
+// fields already show a ring on the whole box, so that inner square goes.
+export const webOutlineOff = (os: string = Platform.OS): any => (os === 'web' ? { outlineStyle: 'none', outlineWidth: 0 } : null);
+export const NO_WEB_OUTLINE: any = webOutlineOff();
+
 export const Field = ({
   label,
   value,
@@ -506,11 +524,25 @@ export const Field = ({
   const isEmail = keyboardType === 'email-address';
   const capitalize = autoCapitalize ?? (secureTextEntry || isEmail ? 'none' : undefined);
   const correct = autoCorrect ?? (secureTextEntry || isEmail ? false : undefined);
+  // The whole box is the typing area: a tap anywhere on it (padding, prefix,
+  // the empty space after short text) focuses the input, not just a tap on the
+  // text line itself. Keep the caller's ref working alongside ours.
+  const own = React.useRef<TextInput | null>(null);
+  const setRef = React.useCallback((node: TextInput | null) => {
+    own.current = node;
+    if (typeof inputRef === 'function') inputRef(node);
+    else if (inputRef && typeof inputRef === 'object') (inputRef as React.MutableRefObject<TextInput | null>).current = node;
+  }, [inputRef]);
+  const tapToType = editable && !loading && pointerEvents !== 'none';
+  const Box: any = tapToType ? Pressable : View;
+  const boxProps = tapToType
+    ? { testID: 'field-box', onPress: () => own.current?.focus(), accessible: false, focusable: false }
+    : { pointerEvents };
   return (
     <View>
       {label && <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2, letterSpacing: 0.2, marginBottom: 8 }}>{label}</Text>}
-      <View
-        pointerEvents={pointerEvents}
+      <Box
+        {...boxProps}
         style={{
           flexDirection: 'row',
           alignItems: 'center',
@@ -536,7 +568,7 @@ export const Field = ({
           </View>
         ) : (
         <TextInput
-          ref={inputRef}
+          ref={setRef}
           editable={editable}
           value={value}
           onChangeText={onChangeText}
@@ -556,7 +588,9 @@ export const Field = ({
           textContentType={textContentType}
           returnKeyType={returnKeyType}
           onSubmitEditing={onSubmitEditing}
-          style={{ flex: 1, minWidth: 0, paddingVertical: 0, fontSize: 16, color: c.ink1, fontFamily: font.medium }}
+          // No inner square on web: the browser's focus outline drew a box around
+          // just the text line. The whole field shows the brand ring instead.
+          style={[{ flex: 1, minWidth: 0, paddingVertical: 0, fontSize: 16, color: c.ink1, fontFamily: font.medium }, NO_WEB_OUTLINE]}
         />
         )}
         {secureTextEntry ? (
@@ -570,7 +604,7 @@ export const Field = ({
             <ZIcon name={show ? 'eyeoff' : 'eye'} size={20} color={c.ink3} />
           </Pressable>
         ) : suffix}
-      </View>
+      </Box>
       {error ? <Text accessibilityRole="alert" accessibilityLiveRegion="polite" style={{ color: c.red, fontSize: 13, fontFamily: font.medium, marginTop: 6 }}>{error}</Text> : null}
     </View>
   );

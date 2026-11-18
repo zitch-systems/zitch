@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { router } from 'expo-router';
-import { Screen, Header, ZItem, Toggle } from '@/components/design/ui';
+import { Screen, Header, Card, ZItem, Toggle } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
 import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
 import AuthGuard from '@/components/AuthGuard';
@@ -55,16 +55,20 @@ const SecuritySetup = () => {
 
   return (
     <Screen>
-      <Header title="Security" sub="Your account security details" onBack={() => router.back()} />
+      {/* Named as the rows that open it (17 Nov 2026), and laid out like Settings:
+          the three rows on one card, each icon on its own tinted tile. */}
+      <Header title="Security Center" sub="Password, transaction PIN and biometrics" onBack={() => router.back()} />
       {/* Password + PIN route to their CHANGE screens, which require the current
           password / PIN before setting a new one. */}
-      <ZItem icon="shield" title="Password" sub="Change your account password"
-             onPress={() => router.push('/setpassword?change=1' as any)} />
-      <ZItem icon="lock" title="Transaction PIN" sub="Update your payment PIN"
-             onPress={() => router.push('/resetpin')} />
-      <ZItem icon="fingerprint" title="Biometrics" sub="Face ID / fingerprint sign-in" last
-             onPress={() => router.push('/setthumbprint')}
-             right={<Toggle accessibilityLabel="Biometric sign-in" on={bio} onChange={toggleBio} disabled={busy} />} />
+      <Card pad={0} style={{ paddingHorizontal: 16 }}>
+        <ZItem icon="shield" title="Password" sub="Change your account password"
+               onPress={() => router.push('/setpassword?change=1' as any)} />
+        <ZItem icon="lock" title="Transaction PIN" sub="Update your 6-digit payment PIN"
+               onPress={() => router.push('/resetpin')} />
+        <ZItem icon="fingerprint" title="Biometrics" sub="Face ID / fingerprint sign-in" last
+               onPress={() => router.push('/setthumbprint')}
+               right={<Toggle accessibilityLabel="Biometric sign-in" on={bio} onChange={toggleBio} disabled={busy} />} />
+      </Card>
     </Screen>
   );
 };

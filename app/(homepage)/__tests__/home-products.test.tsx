@@ -1,5 +1,6 @@
 import React, { type ReactNode } from 'react';
 import renderer, { act } from 'react-test-renderer';
+import { Text as RNText } from 'react-native';
 import Home from '@/app/(homepage)/home';
 import { EP } from '@/lib/endpoints';
 
@@ -45,7 +46,10 @@ jest.mock('@/lib/theme', () => ({
 jest.mock('@/components/design/widgets', () => {
   const ReactActual = jest.requireActual<typeof import('react')>('react');
   const { View } = jest.requireActual<typeof import('react-native')>('react-native');
-  return { Hero: ({ children }: { children: ReactNode }) => ReactActual.createElement(View, null, children), SectionLabel: () => null, ServiceTile: () => null };
+  const { Pressable } = jest.requireActual<typeof import('react-native')>('react-native');
+  return { Hero: ({ children }: { children: ReactNode }) => ReactActual.createElement(View, null, children), SectionLabel: () => null,
+    ServiceTile: ({ label, badge, onPress }: { label: string; badge?: string; onPress: () => void }) =>
+      ReactActual.createElement(Pressable, { accessibilityLabel: [label, badge].filter(Boolean).join(', '), onPress, testID: 'service-tile' }) };
 });
 jest.mock('@/components/design/ui', () => {
   const ReactActual = jest.requireActual<typeof import('react')>('react');
@@ -55,7 +59,10 @@ jest.mock('@/components/design/ui', () => {
   const Screen = ({ header, children, onRefresh }: { header?: ReactNode; children: ReactNode; onRefresh?: () => void }) => ReactActual.createElement(View, null,
     ReactActual.createElement(View, { testID: 'frozen-top' }, header),
     ReactActual.createElement(View, { testID: 'scrolls', ...({ onRefresh } as object) }, children));
-  return { Screen, Card: Container, NText: Text, Sheet: () => null, TxnRow: () => null,
+  // A sheet shows its title and contents only while open, as the app's pop-up does.
+  const Sheet = ({ open, title, children }: { open: boolean; title?: string; children: ReactNode }) => open
+    ? ReactActual.createElement(View, { testID: 'sheet' }, ReactActual.createElement(Text, null, title), children) : null;
+  return { Screen, Card: Container, NText: Text, Sheet, TxnRow: () => null,
     Btn: ({ label, ...props }: any) => ReactActual.createElement(Pressable, { ...props, accessibilityLabel: label }),
     money: (value: number) => `₦${value}`, settledTransactionTotal: () => 0 };
 });
@@ -76,7 +83,9 @@ it('keeps savings and loans out while the server has them off', async () => {
   expect(labels(tree)).not.toContain('Loan');
   expect(labels(tree)).not.toContain('Fixed Save');
   expect(text(tree)).not.toContain('Bank on WhatsApp');
-  expect(text(tree)).toContain('Zitch account');
+  // the account's own bank beside its number (17 Nov 2026: "wema bank not zitch account")
+  expect(text(tree)).toContain('Wema Bank');
+  expect(text(tree)).not.toContain('Zitch account');
   act(() => tree.unmount());
 });
 
@@ -116,4 +125,33 @@ it('keeps the greeting, balance card and quick actions still, and scrolls and re
   // and the part that scrolls is the one that pulls down to refresh
   expect(typeof tree.root.findByProps({ testID: 'scrolls' }).props.onRefresh).toBe('function');
   act(() => tree.unmount());
+});
+
+it('opens More as a pop-up of Transfer, History, Statement and every bill payment, not a page', async () => {
+  jest.useFakeTimers();
+  const { router } = jest.requireMock('expo-router');
+  mockApiJson.mockImplementation(async (path: string) => path === EP.savings.rates
+    ? { product_available: false, rates: [] } : { product_available: false });
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Home />); });
+  router.push.mockClear();
+  expect(tree.root.findAllByProps({ testID: 'sheet' })).toHaveLength(0);
+  await act(async () => { tree.root.findAll((n) => n.props.accessibilityLabel === 'More' && typeof n.props.onPress === 'function')[0].props.onPress(); });
+  expect(router.push).not.toHaveBeenCalled();
+  const sheets = tree.root.findAll((n) => n.props.testID === 'sheet' && typeof n.type === 'string');
+  expect(sheets).toHaveLength(1);
+  const inSheet = sheets[0].findAll((n) => n.props.testID === 'service-tile' && typeof n.type === 'string').map((n) => n.props.accessibilityLabel);
+  expect(inSheet.slice(0, 3)).toEqual(['Transfer', 'History', 'Statement']);
+  expect(inSheet).toEqual(expect.arrayContaining(['Airtime', 'Data', 'Cable TV', 'Electricity', 'Betting', 'Exams', 'Water, Soon', 'Remita', 'Movies', 'Insurance']));
+  expect(JSON.stringify(sheets[0].findAllByType(RNText).map((n) => n.props.children))).toContain('Pay a bill');
+  // the headings are in the ink (pure black in light), not a grey (17 Nov 2026)
+  const heading = sheets[0].findAllByType(RNText).find((n) => n.props.children === 'Pay a bill')!;
+  expect(heading.props.style.color).toBe('#111');
+  // a tap closes the pop-up, then opens the service
+  await act(async () => { sheets[0].findAll((n) => n.props.accessibilityLabel === 'Transfer' && typeof n.props.onPress === 'function')[0].props.onPress(); });
+  expect(tree.root.findAll((n) => n.props.testID === 'sheet')).toHaveLength(0);
+  await act(async () => { jest.advanceTimersByTime(300); });
+  expect(router.push).toHaveBeenCalledWith('/sendmoney');
+  act(() => tree.unmount());
+  jest.useRealTimers();
 });

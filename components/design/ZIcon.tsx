@@ -258,6 +258,8 @@ const P: Record<string, (color: string) => React.ReactNode> = {
     <Path key="b" d="M2 10h20" />,
     <Path key="c" d="M6 15h4" />,
   ],
+  // a water drop, for Water bills in the All services pop-up (17 Nov 2026)
+  water: () => [<Path key="a" d="M12 3.2C10.2 5.4 6 10.2 6 14.2a6 6 0 0 0 12 0c0-4-4.2-8.8-6-11Z" />],
   fixed: () => [
     <Rect key="a" x={3} y={8} width={18} height={13} rx={2.5} />,
     <Path key="b" d="M8 8V6a4 4 0 0 1 8 0v2" />,

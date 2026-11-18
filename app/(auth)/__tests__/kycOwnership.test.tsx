@@ -588,6 +588,13 @@ describe('the email from sign-up (Verify me, 17 Nov 2026)', () => {
     await act(async () => { field.props.onChangeText('ada.new@example.com'); });
     await act(async () => { await tree.root.findByProps({ accessibilityLabel: 'Send email code' }).props.onPress(); });
     expect(mockApiJson).toHaveBeenCalledWith(EP.auth.emailVerifyStart, { email: 'ada.new@example.com' });
+    // Then the same page asks for the code: it says where the code went, and
+    // the box for it, with the way back to change the email or resend.
+    const page = JSON.stringify(tree.toJSON());
+    expect(page).toContain('Enter the 6-digit code we sent to ada.new@example.com.');
+    expect(page).not.toContain('We’ll send a 6-digit code to your inbox');
+    expect(tree.root.findAll((n) => n.props.label === 'Email verification code' && n.props.keyboardType === 'number-pad')).toHaveLength(1);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Change email or resend code' }).length).toBeGreaterThan(0);
     act(() => tree.unmount());
   });
 

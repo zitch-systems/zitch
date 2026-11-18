@@ -92,6 +92,20 @@ it('lays the menu straight on the page: no white cards, only the WhatsApp card k
   act(() => tree.unmount());
 });
 
+it('links Security Center once and does not list the transaction PIN again beside it', async () => {
+  mockGetStatus.mockResolvedValueOnce({ success: true, tier: 2 });
+  const ui = jest.requireMock('@/components/design/ui');
+  let tree!: renderer.ReactTestRenderer;
+  await act(async () => { tree = renderer.create(<Me />); });
+  const titles = tree.root.findAll((n) => n.type === ui.ZItem).map((r) => r.props.title);
+  expect(new Set(titles).size).toBe(titles.length);
+  expect(titles.filter((t) => t === 'Security Center')).toHaveLength(1);
+  expect(titles).not.toContain('Change Transaction PIN');
+  const security = tree.root.findAll((n) => n.type === ui.ZItem && n.props.title === 'Security Center')[0];
+  expect(security.props.sub).toBe('Password, transaction PIN and biometrics');
+  act(() => tree.unmount());
+});
+
 it('does not present an invalid or unsuccessful tier response as verified', async () => {
   mockGetStatus.mockResolvedValueOnce({ success: false, tier: 3 });
   let tree!: renderer.ReactTestRenderer;

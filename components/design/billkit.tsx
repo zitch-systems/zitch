@@ -7,7 +7,7 @@ import { View, Text, Pressable, Image, TextInput, ScrollView } from 'react-nativ
 import { LinearGradient } from 'expo-linear-gradient';
 import ZIcon from '@/components/design/ZIcon';
 import { Naira } from '@/components/design/Naira';
-import { money } from '@/components/design/ui';
+import { money, NO_WEB_OUTLINE } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 import { providerInitials } from '@/lib/format';
 
@@ -189,7 +189,7 @@ export const RecentField = ({
             textContentType={autoComplete === 'tel' ? 'telephoneNumber' : undefined}
             maxLength={maxLength}
             accessibilityLabel={accessibilityLabel || label}
-            style={{ flexShrink: 1, minWidth: 60, paddingVertical: 0, fontSize: 15.5, color: c.ink1, fontFamily: font.bold, fontVariant: ['tabular-nums'] }}
+            style={[{ flexShrink: 1, minWidth: 60, paddingVertical: 0, fontSize: 15.5, color: c.ink1, fontFamily: font.bold, fontVariant: ['tabular-nums'] }, NO_WEB_OUTLINE]}
           />
           {tag && value && !focused ? (
             <View style={{ paddingVertical: 3, paddingHorizontal: 8, borderRadius: 999, backgroundColor: 'rgba(6,110,102,0.12)' }}>
@@ -330,7 +330,9 @@ export const PillTabs = ({ options, value, onChange }: { options: { v: string; l
   );
 };
 
-/** Data plans as a 2-across grid: size, validity, price. */
+/** Data plans as a compact 3-across grid: size, validity, price (17 Nov 2026:
+ *  "these tabs are too big, optimise them" — was 2 across with 19pt sizes). */
+export const PLANS_PER_ROW = 3;
 export const PlanGrid = ({ plans, value, onPick }: {
   plans: { id: string; label: string; sub?: string; price: number }[];
   value: string;
@@ -339,9 +341,9 @@ export const PlanGrid = ({ plans, value, onPick }: {
   const { c } = useTheme();
   const tint = useFieldTint();
   return (
-    <View style={{ gap: 10 }}>
-      {rowsOf(plans, 2).map((row, r) => (
-        <View key={r} style={{ flexDirection: 'row', gap: 10 }}>
+    <View style={{ gap: 8 }}>
+      {rowsOf(plans, PLANS_PER_ROW).map((row, r) => (
+        <View key={r} style={{ flexDirection: 'row', gap: 8 }}>
           {row.map((p) => {
             const on = p.id === value;
             return (
@@ -351,20 +353,20 @@ export const PlanGrid = ({ plans, value, onPick }: {
                 accessibilityRole="radio"
                 accessibilityLabel={`${p.label}${p.sub ? ` for ${p.sub}` : ''}, ${money(p.price)}`}
                 accessibilityState={{ selected: on }}
-                style={{ flex: 1, paddingVertical: 14, paddingHorizontal: 16, borderRadius: 18, backgroundColor: on ? c.brand : tint }}
+                style={{ flex: 1, minWidth: 0, paddingVertical: 10, paddingHorizontal: 11, borderRadius: 14, backgroundColor: on ? c.brand : tint }}
               >
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
-                  <Text numberOfLines={1} style={{ flexShrink: 1, fontSize: 19, fontFamily: font.extrabold, color: on ? c.inkOnBrand : c.ink1 }}>{p.label}</Text>
-                  {on ? <Tick size={18} bg="rgba(255,255,255,0.25)" /> : null}
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
+                  <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75} style={{ flexShrink: 1, fontSize: 15.5, fontFamily: font.extrabold, color: on ? c.inkOnBrand : c.ink1 }}>{p.label}</Text>
+                  {on ? <Tick size={15} bg="rgba(255,255,255,0.25)" /> : null}
                 </View>
-                {p.sub ? <Text numberOfLines={1} style={{ fontSize: 12, marginTop: 2, fontFamily: font.medium, color: on ? 'rgba(255,255,255,0.8)' : c.ink3 }}>{p.sub}</Text> : null}
-                <Text style={{ fontSize: 14.5, marginTop: 8, fontFamily: font.extrabold, color: on ? c.inkOnBrand : c.brand, fontVariant: ['tabular-nums'] }}>
+                {p.sub ? <Text numberOfLines={1} style={{ fontSize: 11, marginTop: 1, fontFamily: font.medium, color: on ? 'rgba(255,255,255,0.8)' : c.ink3 }}>{p.sub}</Text> : null}
+                <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8} style={{ fontSize: 13, marginTop: 4, fontFamily: font.extrabold, color: on ? c.inkOnBrand : c.brand, fontVariant: ['tabular-nums'] }}>
                   <Naira />{p.price.toLocaleString()}
                 </Text>
               </Pressable>
             );
           })}
-          {row.length < 2 ? <View style={{ flex: 1 }} /> : null}
+          {Array.from({ length: PLANS_PER_ROW - row.length }, (_, k) => <View key={`pad-${k}`} style={{ flex: 1 }} />)}
         </View>
       ))}
     </View>

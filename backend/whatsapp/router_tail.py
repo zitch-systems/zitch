@@ -223,20 +223,13 @@ def nuban_bank_candidates(account: str, banks=None) -> list:
     which is why this SUGGESTS an ordering and never picks silently when more
     than one matches: a wrong guess is money at the wrong institution.
     """
+    from transfers.nuban import nuban_valid
+
     digits = "".join(ch for ch in str(account or "") if ch.isdigit())
     if len(digits) != 10:
         return []
-    serial, check = digits[:9], int(digits[9])
-    out = []
-    for bank in (banks if banks is not None else Bank.objects.filter(active=True)):
-        code = "".join(ch for ch in (bank.bank_code or "") if ch.isdigit())
-        if not code:
-            continue
-        seq = code + serial
-        total = sum(int(c) * (3, 7, 3)[i % 3] for i, c in enumerate(seq))
-        if (10 - total % 10) % 10 == check:
-            out.append(bank)
-    return out
+    return [bank for bank in (banks if banks is not None else Bank.objects.filter(active=True))
+            if nuban_valid(digits, bank.bank_code)]
 
 
 def _resolve_and_confirm(pa: PendingAction, user, msisdn: str, bank) -> None:
