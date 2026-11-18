@@ -231,6 +231,23 @@ const AccountLimits = () => {
           ))}
         </View>
         <Text style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3, lineHeight: 17, marginTop: 10 }}>Your own limit and bank rules also apply.</Text>
+        {/* Your own limit (18 Nov 2026): the Transaction limit page, where a
+            lower limit per payment can be set or removed, opens from here. */}
+        <Pressable
+          onPress={() => router.push('/limits')}
+          accessibilityRole="button"
+          accessibilityLabel="Transaction limit, set your own lower limit"
+          style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: c.line, opacity: pressed ? 0.7 : 1 })}
+        >
+          <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: tint, alignItems: 'center', justifyContent: 'center' }}>
+            <ZIcon name="shield" size={18} color={c.brand} />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={{ fontSize: 14.5, fontFamily: font.bold, color: c.ink1 }}>Transaction limit</Text>
+            <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: c.ink3, marginTop: 2 }}>Set your own lower limit per payment</Text>
+          </View>
+          <ZIcon name="right" size={17} color={c.ink3} />
+        </Pressable>
       </Card>
 
       {/* The tier ladder: what each tier needs and allows, where you are, and the next step. */}

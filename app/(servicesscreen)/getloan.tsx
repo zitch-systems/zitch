@@ -324,6 +324,10 @@ const GetLoan = () => {
         total={amount}
         balance={available}
         rows={[['Amount', money(amount)], ['Estimated interest', money(interest)], ['Tenure', `${tenure} days`], ['Estimated repayment', money(repay)]]}
+        // A loan is received, not paid (18 Nov 2026): the button and the wallet card say so.
+        cta={`Get ${money(amount)}`}
+        methodTitle="Sent to"
+        methodSub={`Your credit available: ${money(available)}`}
         onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 

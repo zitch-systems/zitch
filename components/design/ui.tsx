@@ -25,6 +25,7 @@ import { money as fmtMoney, moneyk as fmtMoneyk } from '@/lib/format';
 import { isBiometricTxnEnabled, isBiometricAvailable, biometricLabel } from '@/lib/biometrics';
 import { getTransactionPin, hasTransactionPin } from '@/lib/secureStore';
 import { TRANSACTION_PIN_LENGTH } from '@/lib/transactionPin';
+import { noteApproval, takeKeypadFirst } from '@/lib/payApproval';
 import { usePinScreenProtection } from '@/lib/screenCapture';
 import {
   txnState,
@@ -690,8 +691,12 @@ export const Sheet = ({
 };
 
 // ---- PIN entry ----
-export const PinPad = ({ onComplete, length = TRANSACTION_PIN_LENGTH, busy = false, error, autoBiometric = true }: { onComplete?: (pin: string, viaBiometric?: boolean) => void; length?: number; busy?: boolean; error?: string; autoBiometric?: boolean }) => {
+export const PinPad = ({ onComplete, length = TRANSACTION_PIN_LENGTH, busy = false, error, autoBiometric: autoBiometricProp = true }: { onComplete?: (pin: string, viaBiometric?: boolean) => void; length?: number; busy?: boolean; error?: string; autoBiometric?: boolean }) => {
   const { c } = useTheme();
+  // "Use Payment PIN" on the confirm sheet (18 Nov 2026): this one pad opens on
+  // the keypad, with the scan still a key away. Read once, as the pad opens.
+  const [keypadFirst] = useState(takeKeypadFirst);
+  const autoBiometric = autoBiometricProp && !keypadFirst;
   const [pin, setPin] = useState('');
   // Biometric "pay" shortcut: shown only when the user enabled biometrics, the
   // device has them, and a PIN is cached in the keychain to submit on success.
@@ -775,6 +780,7 @@ export const PinPad = ({ onComplete, length = TRANSACTION_PIN_LENGTH, busy = fal
       if (storedPin && mounted.current && !busyRef.current && !pinCompleted.current) {
         bioCompleted.current = true;
         pinCompleted.current = true;
+        noteApproval('biometric');
         onCompleteRef.current && onCompleteRef.current(storedPin, true);
       }
     } catch {
@@ -821,6 +827,8 @@ export const PinPad = ({ onComplete, length = TRANSACTION_PIN_LENGTH, busy = fal
         pinCompleted.current = true;
         completionTimer.current = setTimeout(() => {
           completionTimer.current = null;
+          // A payment approved by typing offers the fingerprint on its receipt.
+          noteApproval('pin');
           onCompleteRef.current?.(np, false);
           setPin('');
         }, 120);

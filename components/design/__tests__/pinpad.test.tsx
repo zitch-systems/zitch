@@ -133,4 +133,72 @@ describe('PinPad submission guard', () => {
     act(() => tree.unmount());
   });
 
+
+  describe('fingerprint first (18 Nov 2026)', () => {
+    const fingerprintOn = () => {
+      const bio = require('@/lib/biometrics');
+      const store = require('@/lib/secureStore');
+      bio.isBiometricTxnEnabled.mockResolvedValue(true);
+      bio.isBiometricAvailable.mockResolvedValue(true);
+      bio.biometricLabel.mockResolvedValue('fingerprint');
+      store.hasTransactionPin.mockResolvedValue(true);
+      store.getTransactionPin.mockResolvedValue(null);
+      return store;
+    };
+    beforeEach(() => require('@/lib/payApproval').__resetPayApproval());
+
+    it('opens on the fingerprint when it is on for payments', async () => {
+      const store = fingerprintOn();
+      let tree!: renderer.ReactTestRenderer;
+      await act(async () => { tree = renderer.create(<PinPad onComplete={jest.fn()} />); });
+      expect(tree.root.findAllByProps({ accessibilityLabel: 'Approve with fingerprint' }).length).toBeGreaterThan(0);
+      expect(store.getTransactionPin).toHaveBeenCalledTimes(1);
+      act(() => tree.unmount());
+    });
+
+    it('opens on the keypad after Use Payment PIN, with the fingerprint still a key away', async () => {
+      const store = fingerprintOn();
+      require('@/lib/payApproval').preferKeypadOnce();
+      let tree!: renderer.ReactTestRenderer;
+      await act(async () => { tree = renderer.create(<PinPad onComplete={jest.fn()} />); });
+      expect(tree.root.findAllByProps({ accessibilityLabel: 'Digit 1' }).length).toBeGreaterThan(0);
+      expect(tree.root.findAllByProps({ accessibilityLabel: 'Use biometric approval' }).length).toBeGreaterThan(0);
+      expect(store.getTransactionPin).not.toHaveBeenCalled();
+      act(() => tree.unmount());
+      // only that one pad: the next opens on the fingerprint again
+      await act(async () => { tree = renderer.create(<PinPad onComplete={jest.fn()} />); });
+      expect(store.getTransactionPin).toHaveBeenCalledTimes(1);
+      act(() => tree.unmount());
+    });
+
+    it('records a typed PIN, so the receipt can offer the fingerprint', async () => {
+      const approval = require('@/lib/payApproval');
+      const spy = jest.spyOn(approval, 'noteApproval');
+      const onComplete = jest.fn();
+      let tree!: renderer.ReactTestRenderer;
+      await act(async () => { tree = renderer.create(<PinPad onComplete={onComplete} autoBiometric={false} />); });
+      for (const digit of ['1', '2', '3', '4', '5', '6']) {
+        await act(async () => { tree.root.findByProps({ accessibilityLabel: `Digit ${digit}` }).props.onPress(); });
+      }
+      act(() => { jest.advanceTimersByTime(150); });
+      expect(onComplete).toHaveBeenCalledWith('123456', false);
+      expect(spy).toHaveBeenLastCalledWith('pin');
+      spy.mockRestore();
+      act(() => tree.unmount());
+    });
+
+    it('records a scan as a scan', async () => {
+      const store = fingerprintOn();
+      store.getTransactionPin.mockResolvedValue('654321');
+      const approval = require('@/lib/payApproval');
+      const spy = jest.spyOn(approval, 'noteApproval');
+      const onComplete = jest.fn();
+      let tree!: renderer.ReactTestRenderer;
+      await act(async () => { tree = renderer.create(<PinPad onComplete={onComplete} />); });
+      expect(onComplete).toHaveBeenCalledWith('654321', true);
+      expect(spy).toHaveBeenLastCalledWith('biometric');
+      spy.mockRestore();
+      act(() => tree.unmount());
+    });
+  });
 });
