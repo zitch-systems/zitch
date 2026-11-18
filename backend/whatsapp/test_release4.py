@@ -509,6 +509,35 @@ class SignupBvnTests(FlowContractMixin, TestCase):
         self.assertFalse(resp["data"]["code_sent"])
         self.assertIn("Tap Next to get a new code", resp["data"]["error"])
 
+    def test_an_expired_code_on_the_retry_page_sends_a_new_one_and_stays(self):
+        """SIGNUP_BVN_RETRY routes only forward, so a spent attempt there cannot
+        go back to SIGNUP_BVN: the same BVN goes to the bank again for a new code
+        and the page stays. The BVN is held encrypted, never in plain text."""
+        with patch("whatsapp.router._account_submit_identity", side_effect=_otp):
+            self.submit(bvn="22345678901")
+        self.ob.refresh_from_db()
+        self.assertNotIn("22345678901", str(self.ob.payload))
+        with patch("wallet.views.complete_wema_provisioning",
+                   return_value=({"message": "Invalid OTP."}, 422)):
+            self.submit(code="000000")
+        with patch("wallet.views.complete_wema_provisioning",
+                   return_value=({"message": "OTP expired."}, 400)), \
+             patch("whatsapp.router._account_submit_identity", side_effect=_otp) as again:
+            resp = self.submit(standing_on=flows.SIGNUP_BVN_RETRY, code="123456")
+        self.assertEqual(resp["screen"], flows.SIGNUP_BVN_RETRY)
+        self.assertEqual(again.call_args.args[3], "22345678901")
+        self.assertIn("new code", resp["data"]["summary"])
+        later = self.submit(standing_on=flows.SIGNUP_BVN_RETRY, later=True)
+        self.assertEqual(later["screen"], flows.SIGNUP_BVN_RETRY)
+        self.assertIn("can't be skipped", later["data"]["error"])
+        with patch("wallet.views.complete_wema_provisioning", return_value=({"success": True}, 200)), \
+             patch("whatsapp.router.customer_funding_account",
+                   return_value={"account_number": "0123456789", "account_name": "NGOZI ADE"}):
+            page = self.submit(standing_on=flows.SIGNUP_BVN_RETRY, code="654321")
+        self.assertEqual(page["screen"], flows.SIGNUP_ADDRESS)
+        self.ob.refresh_from_db()
+        self.assertNotIn("bvn_sealed", self.ob.payload)
+
     def test_the_address_is_kept_as_the_app_keeps_it_then_the_pin(self):
         page = self.to_address()
         self.assertEqual(page["data"]["lgas"], [{"id": "choose", "title": "Choose your state first"}])
