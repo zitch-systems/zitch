@@ -79,7 +79,7 @@ const TxnDetail = () => {
   const card = useRef<View>(null);
   const [action, setAction] = useState<ExportAction | null>(null);
   const [busy, setBusy] = useState(false);
-  const { accountName, firstName, accountNumber } = useWallet();
+  const { accountName, firstName, accountNumber, bankName } = useWallet();
   const p = useLocalSearchParams<{
     type?: string; amount?: string; status?: string; dir?: string; detail?: string; reference?: string; icon?: string;
     narration?: string; underReview?: string; statusMessage?: string; reviewKind?: string;
@@ -246,7 +246,7 @@ const TxnDetail = () => {
   const from = inflow ? [] : senderRows({
     name: accountName || firstName,
     account: accountNumber,
-    bank: accountNumber ? 'Zitch account' : undefined,
+    bank: accountNumber ? (bankName || 'Zitch account') : undefined,
   });
   const rows: ReceiptRow[] = [
     ['Amount', absAmount || formattedAmount, true],

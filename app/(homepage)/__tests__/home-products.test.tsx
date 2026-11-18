@@ -144,6 +144,9 @@ it('opens More as a pop-up of Transfer, History, Statement and every bill paymen
   expect(inSheet.slice(0, 3)).toEqual(['Transfer', 'History', 'Statement']);
   expect(inSheet).toEqual(expect.arrayContaining(['Airtime', 'Data', 'Cable TV', 'Electricity', 'Betting', 'Exams', 'Water, Soon', 'Remita', 'Movies', 'Insurance']));
   expect(JSON.stringify(sheets[0].findAllByType(RNText).map((n) => n.props.children))).toContain('Pay a bill');
+  // 18 Nov 2026: the services that had no way in open from here too; the ones not live yet say Soon
+  expect(inSheet.slice(-4)).toEqual(['Convert', 'USSD', 'Junior, Soon', 'BizPayment, Soon']);
+  expect(JSON.stringify(sheets[0].findAllByType(RNText).map((n) => n.props.children))).toContain('More from Zitch');
   // the headings are in the ink (pure black in light), not a grey (17 Nov 2026)
   const heading = sheets[0].findAllByType(RNText).find((n) => n.props.children === 'Pay a bill')!;
   expect(heading.props.style.color).toBe('#111');

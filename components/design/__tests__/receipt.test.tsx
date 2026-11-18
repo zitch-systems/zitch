@@ -63,7 +63,7 @@ it('lays out a transfer as the WhatsApp receipt does', () => {
   expect(all.filter((t) => t === '₦5,000.00')).toHaveLength(1);
   expect(all).toEqual(expect.arrayContaining([
     'Successful', 'Recipient', 'BOLA JOHNSON', 'Access Bank · 0123456789',
-    'Sender', 'ADA EZE', 'Zitch account · 0100****23',
+    'Sender', 'ADA EZE', 'Wema Bank · 0100****23',
     'Bank fee', '₦10.75', 'Total debited', '₦5,010.75', 'Reference', 'ZT-TRF-1',
   ]));
   // The payer's own account is masked: the receipt gets forwarded.

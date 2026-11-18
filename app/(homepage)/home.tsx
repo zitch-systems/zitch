@@ -60,6 +60,13 @@ export const MORE_BILLS: MoreItem[] = [
   { label: 'Movies', icon: 'movie', go: () => router.push('/movies') },
   { label: 'Insurance', icon: 'insurance', go: () => router.push('/insurance') },
 ];
+// 18 Nov 2026: the services that had no way in. Not live yet: marked Soon, as Water is.
+export const MORE_OTHER: MoreItem[] = [
+  { label: 'Convert', icon: 'convert', go: () => router.push('/convert') },
+  { label: 'USSD', icon: 'phone', go: () => router.push('/ussd') },
+  { label: 'Junior', icon: 'gift', go: () => router.push('/junior'), badge: 'Soon' },
+  { label: 'BizPayment', icon: 'link', go: () => router.push('/bizpayment'), badge: 'Soon' },
+];
 
 const greeting = (hour: number) => (hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening');
 
@@ -373,7 +380,7 @@ const Home = () => {
 
       {/* all services: More opens this pop-up, not a page */}
       <Sheet open={more} onClose={() => setMore(false)} title="All services">
-        {([['Money', MORE_MONEY], ['Pay a bill', MORE_BILLS]] as const).map(([heading, items], g) => (
+        {([['Money', MORE_MONEY], ['Pay a bill', MORE_BILLS], ['More from Zitch', MORE_OTHER]] as const).map(([heading, items], g) => (
           <View key={heading} style={{ marginTop: g ? 6 : 0 }}>
             <Text style={{ fontSize: 12, fontFamily: fontA.bodyBold, color: c.ink1, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>{heading}</Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
