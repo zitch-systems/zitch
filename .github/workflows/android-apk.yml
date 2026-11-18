@@ -89,6 +89,10 @@ jobs:
         run: python3 -m unittest discover -s scripts/__tests__ -p 'test_android*.py'
 
       - name: Expo prebuild (generate the native android/ project)
+        # Test builds are their own app, "Zitch Test" (com.zitch.app.test), so they
+        # install beside the Play Store app instead of failing with "App not installed".
+        env:
+          ZITCH_ANDROID_VARIANT: test
         run: npx expo prebuild --platform android --clean
 
       - name: Build release APK
@@ -104,7 +108,7 @@ jobs:
           cp android/app/build/outputs/apk/release/app-release.apk release-apk/Zitch.apk
           python3 scripts/verify-android-apk.py \
             --apk release-apk/Zitch.apk \
-            --keystore android/app/debug.keystore --signing preview \
+            --keystore android/app/debug.keystore --signing preview --package com.zitch.app.test \
             --revision "$GITHUB_SHA" --metadata release-apk/build-info.json
           cd release-apk
           sha256sum Zitch.apk > SHA256SUMS.txt
@@ -149,7 +153,7 @@ jobs:
           script: |
             cd release-apk && sha256sum -c SHA256SUMS.txt && cd ..
             adb install release-apk/Zitch.apk
-            python3 scripts/android-release-smoke.py --package com.zitch.app --output-dir android-smoke-results
+            python3 scripts/android-release-smoke.py --package com.zitch.app.test --output-dir android-smoke-results
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
