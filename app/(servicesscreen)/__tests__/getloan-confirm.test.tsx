@@ -1,5 +1,4 @@
 import React, { type ReactNode } from 'react';
-import { Text } from 'react-native';
 import renderer, { act } from 'react-test-renderer';
 import GetLoan from '@/app/(servicesscreen)/getloan';
 
