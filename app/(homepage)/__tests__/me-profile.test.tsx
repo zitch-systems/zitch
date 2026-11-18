@@ -139,35 +139,6 @@ it('bounds profile logout and clears the device after an offline response with d
   act(() => tree.unmount());
 });
 
-it('allows only one biometric scan and disables the toggle until it completes', async () => {
-  let resolve!: (value: boolean) => void;
-  mockAuthenticate.mockReturnValueOnce(new Promise<boolean>(done => { resolve = done; }));
-  let tree!: renderer.ReactTestRenderer;
-  await act(async () => { tree = renderer.create(<Me />); });
-  const toggle = tree.root.findByProps({ accessibilityLabel: 'Biometric sign-in' });
-  await act(async () => { toggle.props.onPress(); toggle.props.onPress(); });
-  expect(mockAuthenticate).toHaveBeenCalledTimes(1);
-  expect(tree.root.findByProps({ accessibilityLabel: 'Biometric sign-in' }).props.disabled).toBe(true);
-  await act(async () => { resolve(true); });
-  expect(mockSetBiometricEnabled).toHaveBeenCalledTimes(1);
-  expect(mockSetBiometricEnabled).toHaveBeenCalledWith(true);
-  expect(tree.root.findByProps({ accessibilityLabel: 'Biometric sign-in' }).props.accessibilityState).toEqual({ checked: true, disabled: false });
-  act(() => tree.unmount());
-});
-
-it.each(['account changes', 'screen unmounts'] as const)('ignores a delayed biometric result after the %s', async (change) => {
-  let resolve!: (value: boolean) => void;
-  mockAuthenticate.mockReturnValueOnce(new Promise<boolean>(done => { resolve = done; }));
-  let tree!: renderer.ReactTestRenderer;
-  await act(async () => { tree = renderer.create(<Me />); });
-  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Biometric sign-in' }).props.onPress(); });
-  if (change === 'screen unmounts') act(() => tree.unmount());
-  else mockGeneration += 1;
-  await act(async () => { resolve(true); });
-  expect(mockSetBiometricEnabled).not.toHaveBeenCalled();
-  if (change !== 'screen unmounts') act(() => tree.unmount());
-});
-
 it.each(['resolve', 'reject'] as const)('does not clear a newer account when an old logout request later %ss', async (outcome) => {
   let resolve!: (value: unknown) => void;
   let reject!: (reason: Error) => void;
@@ -211,18 +182,12 @@ it('does not redirect a new login that arrives during old-session storage cleanu
   act(() => tree.unmount());
 });
 
-it('does not enable biometrics while the same account is signing out', async () => {
-  let resolveScan!: (value: boolean) => void;
-  let resolveLogout!: (value: unknown) => void;
-  mockAuthenticate.mockReturnValueOnce(new Promise<boolean>(done => { resolveScan = done; }));
-  (apiPost as jest.Mock).mockReturnValueOnce(new Promise(done => { resolveLogout = done; }));
+it('repeats no setting on Me: biometrics and dark mode live in Security Center and Settings', async () => {
   let tree!: renderer.ReactTestRenderer;
   await act(async () => { tree = renderer.create(<Me />); });
-  await act(async () => { tree.root.findByProps({ accessibilityLabel: 'Biometric sign-in' }).props.onPress(); });
-  await act(async () => { void tree.root.findByProps({ accessibilityLabel: 'Log out' }).props.onPress(); });
-  await act(async () => { resolveScan(true); });
-  expect(mockSetBiometricEnabled).not.toHaveBeenCalled();
-  await act(async () => { resolveLogout({ ok: true }); });
-  expect(clearSession).toHaveBeenCalledTimes(1);
+  expect(tree.root.findAll((n) => n.props.accessibilityRole === 'switch')).toHaveLength(0);
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Biometric sign-in' })).toHaveLength(0);
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Dark mode' })).toHaveLength(0);
+  expect(tree.root.findAllByProps({ accessibilityLabel: 'Settings' }).length).toBeGreaterThan(0);
   act(() => tree.unmount());
 });

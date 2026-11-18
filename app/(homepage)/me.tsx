@@ -6,25 +6,13 @@ import { EP } from '@/lib/endpoints';
 import { kycService } from '@/lib/services/kyc';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
-import { Screen, Card, ZItem, money, NText, BARE_TILE } from '@/components/design/ui';
+import { Screen, Card, ZItem, money, NText } from '@/components/design/ui';
 import { Hero } from '@/components/design/widgets';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 import { clearSession, getSessionGeneration, getToken } from '@/lib/secureStore';
-import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
-
-const Toggle = ({ on, onChange, label, disabled = false }: { on: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) => {
-  const { c, theme } = useTheme();
-  // Off, the track is a shade darker than the mint page it now sits on.
-  const off = theme === 'dark' ? c.surface3 : '#CEE0DB';
-  return (
-    <Pressable accessibilityRole="switch" accessibilityLabel={label} accessibilityState={{ checked: on, disabled }} disabled={disabled} hitSlop={10} onPress={disabled ? undefined : () => onChange(!on)} style={{ width: 46, height: 28, borderRadius: 999, padding: 3, backgroundColor: on ? c.brand : off, justifyContent: 'center', opacity: disabled ? 0.5 : 1 }}>
-      <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', transform: [{ translateX: on ? 18 : 0 }] }} />
-    </Pressable>
-  );
-};
 
 const RowBadge = ({ label, hot }: { label: string; hot?: boolean }) => {
   const { c, theme } = useTheme();
@@ -36,26 +24,20 @@ const RowBadge = ({ label, hot }: { label: string; hot?: boolean }) => {
 };
 
 const Me = () => {
-  const { c, theme, setTheme } = useTheme();
+  const { c } = useTheme();
   const { totalBalance, firstName, avatar, showBal, setShowBal, balanceLoaded, balanceError, hydrated, reload: reloadWallet } = useWallet();
-  const [biometrics, setBiometrics] = useState(false);
   const [tier, setTier] = useState<number | null>(null);
   const [tierLoading, setTierLoading] = useState(true);
   const [tierError, setTierError] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-  const [biometricBusy, setBiometricBusy] = useState(false);
   const logoutLock = useRef(false);
-  const biometricLock = useRef(false);
   const mounted = useRef(true);
   const screenGeneration = useRef(getSessionGeneration()).current;
 
   useEffect(() => {
     mounted.current = true;
-    isBiometricEnabled().then(value => {
-      if (mounted.current && screenGeneration === getSessionGeneration()) setBiometrics(value);
-    }).catch(() => {});
     return () => { mounted.current = false; };
-  }, [screenGeneration]);
+  }, []);
 
   // Reflect the real KYC tier (was hardcoded "Tier 3"); refresh on focus so it
   // updates after the user completes a KYC step.
@@ -81,34 +63,6 @@ const Me = () => {
       return () => { active = false; };
     }, [reloadWallet])
   );
-
-  // Enabling requires a live biometric scan; disabling is immediate.
-  const toggleBio = async (v: boolean) => {
-    const current = () => mounted.current && screenGeneration === getSessionGeneration() && !logoutLock.current;
-    if (!current() || biometricLock.current) return;
-    biometricLock.current = true;
-    setBiometricBusy(true);
-    try {
-      if (v) {
-        const available = await isBiometricAvailable();
-        if (!current()) return;
-        if (!available) {
-          notify('Biometrics unavailable', 'Set up Face ID or a fingerprint in your device settings first.');
-          return;
-        }
-        const ok = await authenticate('Enable biometric sign-in');
-        if (!current() || !ok) return;
-      }
-      if (!current()) return;
-      await setBiometricEnabled(v);
-      if (current()) setBiometrics(v);
-    } catch {
-      if (current()) notify('Could not update biometrics', 'Please try again.');
-    } finally {
-      biometricLock.current = false;
-      if (mounted.current) setBiometricBusy(false);
-    }
-  };
 
   const handleLogout = async () => {
     let logoutGeneration = screenGeneration;
@@ -241,26 +195,8 @@ const Me = () => {
       <Group items={grp1} />
       <Group items={grp2} />
 
-      {/* biometrics */}
-      <View style={{ marginHorizontal: 16, marginTop: 14, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 15 }}>
-        <View style={[{ width: 40, height: 40, borderRadius: 12, backgroundColor: c.surface, alignItems: 'center', justifyContent: 'center' }, BARE_TILE]}>
-          <ZIcon name="fingerprint" size={20} color={c.brand} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={{ fontFamily: font.semibold, color: c.ink1 }}>Face ID / Fingerprint</Text>
-          <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Use biometrics to sign in</Text>
-        </View>
-        <Toggle label="Biometric sign-in" on={biometrics} onChange={toggleBio} disabled={biometricBusy || loggingOut} />
-      </View>
-
-      {/* dark mode */}
-      <View style={{ marginHorizontal: 16, marginTop: 14, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 15 }}>
-        <View style={[{ width: 40, height: 40, borderRadius: 12, backgroundColor: c.surface, alignItems: 'center', justifyContent: 'center' }, BARE_TILE]}>
-          <ZIcon name="spark" size={20} color={c.brand} />
-        </View>
-        <Text style={{ flex: 1, fontFamily: font.semibold, color: c.ink1 }}>Dark mode</Text>
-        <Toggle label="Dark mode" on={theme === 'dark'} onChange={(v) => setTheme(v ? 'dark' : 'light')} />
-      </View>
+      {/* Face ID and Dark mode live in one place each (18 Nov 2026): biometrics in
+          Security Center, the theme in Settings. Me links to both and repeats neither. */}
 
       {/* logout */}
       <View style={{ paddingHorizontal: 16, paddingTop: 16 }}>

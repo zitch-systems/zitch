@@ -11,7 +11,6 @@ const ServicesScreenLayout = () => {
         <Stack.Screen name="buydata" />
         <Stack.Screen name="buyairtime" />
         <Stack.Screen name="buycable" />
-        <Stack.Screen name="utility" />
         <Stack.Screen name="buyelectricity" />
         <Stack.Screen name="sendmoney" />
         <Stack.Screen name="getloan" />
@@ -35,7 +34,6 @@ const ServicesScreenLayout = () => {
         <Stack.Screen name="movies" />
         <Stack.Screen name="water" />
         <Stack.Screen name="scan" />
-        <Stack.Screen name="comingsoon" />
       </Stack>
     </AuthGuard>
   );

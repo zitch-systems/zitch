@@ -47,7 +47,7 @@ jest.mock('@/lib/receipt', () => ({
 }));
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn().mockResolvedValue(undefined) }));
 jest.mock('@react-native-async-storage/async-storage', () => ({ getItem: jest.fn(async () => null), setItem: jest.fn(async () => {}) }));
-jest.mock('@/lib/wallet', () => ({ useWallet: () => ({ accountName: 'WILLIAM ADEYEMI', firstName: 'William', accountNumber: '0123456789' }) }));
+jest.mock('@/lib/wallet', () => ({ useWallet: () => ({ accountName: 'WILLIAM ADEYEMI', firstName: 'William', accountNumber: '0123456789', bankName: 'Wema Bank' }) }));
 jest.mock('@/components/design/Loading', () => ({ LoadingMark: () => null, ZCoil: () => null }));
 jest.mock('@/components/design/WhatsAppGlyph', () => ({ WhatsAppGlyph: () => null }));
 jest.mock('@/components/design/ZIcon', () => () => null);
@@ -318,7 +318,7 @@ describe('the receipt from history is the new receipt design', () => {
     let tree!: renderer.ReactTestRenderer;
     await act(async () => { tree = renderer.create(<TxnDetail />); });
     const text = JSON.stringify(tree.toJSON());
-    for (const part of ['zitch', 'Money sent', '₦15,000', 'Chidi Eze', 'Kuda Bank · 2233445566', 'WILLIAM ADEYEMI', 'Zitch account · 0123****89',
+    for (const part of ['zitch', 'Money sent', '₦15,000', 'Chidi Eze', 'Kuda Bank · 2233445566', 'WILLIAM ADEYEMI', 'Wema Bank · 0123****89',
       'Total debited', '15,010', '14 Nov 2026, 05:40 PM', 'ZTC-POLL-1', 'Bank wherever you chat']) {
       expect(text).toContain(part);
     }
