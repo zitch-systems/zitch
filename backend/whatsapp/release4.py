@@ -367,6 +367,7 @@ def _to_address(ob) -> dict:
     from .router import _onboard_to
 
     ob.payload["flow_screen"] = F.SIGNUP_ADDRESS
+    ob.payload.pop(_BVN_SEALED, None)       # the bank has it: drop our sealed copy
     _onboard_to(ob, F.FLOW_ADDRESS_STATE)
     return signup_address_screen(ob)
 
@@ -454,11 +455,12 @@ def submit_signup_bvn(ob, data: dict) -> dict:
     the bank checks it and sends its SMS code, and the code box appears on this
     same page (the BVN stays typed). Next again: the code opens the account, then
     the address. A wrong code lands on SIGNUP_BVN_RETRY, whose box starts empty.
-    The BVN can't be skipped (17 Nov 2026): the published retry page still
-    shows a "Do this later" link, and tapping it now goes back to the BVN page.
-    """
-    from .router import _account_submit_identity
+    The BVN can't be skipped (17 Nov 2026).
 
+    SIGNUP_BVN_RETRY routes only forward (SIGNUP_ADDRESS, RESULT, SUCCESS): Meta
+    refuses an answer naming SIGNUP_BVN there. So a spent attempt on the retry
+    page sends the same BVN to the bank again for a fresh code and stays put.
+    """
     user = signup_user(ob)
     if user is None:
         return F._success_screen("This signup expired. Send us a message to start again.",
@@ -467,6 +469,8 @@ def submit_signup_bvn(ob, data: dict) -> dict:
     if data.get("alt"):
         data = {"face": True}
     if data.get("later"):
+        if _bvn_page(ob) == F.SIGNUP_BVN_RETRY:
+            return _stay(ob, error=NO_SKIP_RETRY)
         return _back_to_bvn(ob, NO_SKIP)
     if data.get("resend"):
         return _resend_bank_code(ob, user)
@@ -484,6 +488,15 @@ def submit_signup_bvn(ob, data: dict) -> dict:
     digits = "".join(ch for ch in str(data.get("bvn", "") or "") if ch.isdigit())
     if len(digits) != 11:
         return _stay(ob, error="Your BVN is 11 digits. Check it and try again.")
+    p[_BVN_SEALED] = _seal_bvn(digits)
+    return _send_bvn(ob, user, digits)
+
+
+def _send_bvn(ob, user, digits: str) -> dict:
+    """The BVN to the bank, through the chat's own account opening."""
+    from .router import _account_submit_identity
+
+    p = ob.payload
     pa = _account_action(ob, user)
     if p.get(_FACE_MODE):
         pa.payload["verification_method"] = "face"
@@ -541,6 +554,59 @@ def _code_retry(ob, error: str) -> dict:
     return _stay(ob, error=error)
 
 
+NO_SKIP_RETRY = ("Your BVN opens your account, so this step can't be skipped. "
+                 "Enter the code your bank sent by SMS.")
+
+_BVN_SEALED = "bvn_sealed"
+
+
+def _bvn_fernet():
+    import base64
+    import hashlib
+
+    from cryptography.fernet import Fernet
+    from django.conf import settings
+
+    digest = hashlib.sha256(b"zitch.signup-bvn.v1\0" + settings.SECRET_KEY.encode()).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def _seal_bvn(digits: str) -> str:
+    """The BVN kept only while the sign-up waits for the bank's code, encrypted, so
+    a spent code on SIGNUP_BVN_RETRY can ask for a new one without the BVN box."""
+    return _bvn_fernet().encrypt(digits.encode()).decode()
+
+
+def _unseal_bvn(ob) -> str:
+    from cryptography.fernet import InvalidToken
+
+    token = ob.payload.get(_BVN_SEALED) or ""
+    if not token:
+        return ""
+    try:
+        digits = _bvn_fernet().decrypt(token.encode()).decode()
+    except (InvalidToken, UnicodeDecodeError, ValueError):
+        return ""
+    return digits if len(digits) == 11 and digits.isdigit() else ""
+
+
+def _new_code_on_retry(ob, reason: str) -> dict:
+    """SIGNUP_BVN_RETRY can't go back to SIGNUP_BVN, so the same BVN goes to the
+    bank again and the page stays, with a fresh SMS code on its way."""
+    user = signup_user(ob)
+    digits = _unseal_bvn(ob)
+    ob.payload.pop(_ACCOUNT_PA_KEY, None)
+    ob.payload[_CODE_SENT] = False
+    if user is None or not digits:
+        ob.payload.pop(_BVN_SEALED, None)
+        return F._success_screen(
+            f"{reason} Send us a message to continue your sign-up.", status="failed")
+    answer = _send_bvn(ob, user, digits)
+    if answer.get("screen") == F.SIGNUP_BVN_RETRY and ob.payload.get(_CODE_SENT):
+        return _stay(ob, notice=f"{reason} ✓ We've sent a new code by SMS.")
+    return answer
+
+
 NO_SKIP = ("Your BVN opens your account, so this step can't be skipped. "
            "Enter your BVN and tap Next for a new code.")
 
@@ -555,10 +621,11 @@ def _back_to_bvn(ob, error: str) -> dict:
 
 def _code_expired(ob, reason: str) -> dict:
     """The attempt itself is over. On SIGNUP_BVN the BVN is still typed, so Next
-    starts a fresh one; from SIGNUP_BVN_RETRY, which has no BVN box, it goes back
-    to SIGNUP_BVN. There is no skipping the BVN."""
+    starts a fresh one. SIGNUP_BVN_RETRY has no BVN box and cannot route back to
+    SIGNUP_BVN, so there the sealed BVN is sent again for a new code. There is no
+    skipping the BVN."""
     if _bvn_page(ob) == F.SIGNUP_BVN_RETRY:
-        return _back_to_bvn(ob, f"{reason} Enter your BVN and tap Next for a new code.")
+        return _new_code_on_retry(ob, reason)
     ob.payload.pop(_ACCOUNT_PA_KEY, None)
     ob.payload[_CODE_SENT] = False
     return _stay(ob, error=f"{reason} Tap Next to get a new code.")
