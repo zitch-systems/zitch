@@ -16,4 +16,4 @@ opencv-python-headless>=4.14.0.94,<5   # Tier 2 selfie: YuNet face landmarks (wa
 numpy>=2.2,<3   # Tier 2 selfie measurements; also required by OpenCV
 qrcode>=8.2,<9   # QR rendering, and building fixture codes in the QR tests
 django-storages[s3]>=1.14.6,<2   # durable profile-photo storage on Render (S3-compatible)
-boto3>=1.44.1,<2   # explicit pin for the django-storages S3 backend
+boto3>=1.44.3,<2   # explicit pin for the django-storages S3 backend
