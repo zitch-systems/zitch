@@ -1591,6 +1591,16 @@ class WemaWalletCreateEnvelopeTests(SimpleTestCase):
     completed, so such a response must not be reported as success."""
 
     @patch("utility.wema.requests.post")
+    def test_bank_internal_error_is_not_sent_to_customer_as_is(self, mock_post):
+        mock_post.return_value = _resp({"message": "Internal Server Error",
+                                        "status": False, "statusCode": 500}, status=400)
+        with self.assertLogs("zitch", level="INFO") as logs:
+            result = wema.create_wallet_request("08030000000", "a@b.com", bvn="12345678901")
+        self.assertFalse(result["success"])
+        self.assertNotIn("Internal Server Error", result["message"])
+        self.assertIn("category=gateway_unavailable", " ".join(logs.output))
+
+    @patch("utility.wema.requests.post")
     def test_ok_without_tracking_id_is_not_success(self, mock_post):
         # Verbatim sandbox response for an identity that already has an ALAT account.
         mock_post.return_value = _resp({
