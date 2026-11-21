@@ -918,8 +918,10 @@ def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "
                          {"phoneNumber": phone, "email": email, "nin": nin})
         data = resp.json()
         log.info(
-            "wema_wallet_otp_request kind=%s status=%s success=%s response_keys=%s",
+            "wema_wallet_otp_request kind=%s status=%s success=%s category=%s response_keys=%s",
             kind, resp.status_code, _kyc_ok(data),
+            (_face_account_diagnostic(data, resp.status_code)["failure_category"]
+             if resp.status_code >= 400 else "none"),
             sorted(str(key) for key in data.keys()) if isinstance(data, dict) else [],
         )
         # The documented ResponseModel has no `data` envelope, but the live gateway
@@ -958,9 +960,13 @@ def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "
                     "otp_destination_kind": kind,
                     "message": "We couldn't complete your account setup. "
                                "Please contact support.", "raw": data}
+        message = _msg(data)
+        if not accepted and (resp.status_code >= 500 or
+                             re.search(r"\b(?:internal server error|gateway unavailable)\b", message, re.I)):
+            message = "Our bank could not start verification right now. Please try again later."
         return {"success": accepted, "tracking_id": tracking,
                 "otp_destination": dest, "otp_destination_kind": kind,
-                "message": _msg(data), "raw": data}
+                "message": message, "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
     except ValueError:
@@ -1218,7 +1224,8 @@ def _face_account_diagnostic(data, http_status: int) -> dict:
         category = "invalid_identity"
     elif isinstance(data, dict) and isinstance(data.get("errors"), dict):
         category = "request_validation"
-    elif http_status >= 500 or http_status in (408, 429):
+    elif http_status >= 500 or http_status in (408, 429) or re.search(
+            r"\b(?:internal server error|gateway unavailable)\b", text):
         category = "gateway_unavailable"
     return {"failure_category": category, "http_status": http_status}
 
@@ -1300,8 +1307,9 @@ def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
             **diagnostic,
             "raw": data,
         }
-    except (requests.RequestException, ValueError):
-        log.warning("wema_face_account_failed category=gateway_unavailable")
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("wema_face_account_failed category=gateway_unavailable error_type=%s host=%s",
+                    type(exc).__name__, _host(_url("face_account", path)))
         return {"success": False, "message": "Bank gateway unavailable",
                 "account_state": "unknown", "failure_category": "gateway_unavailable"}
 
