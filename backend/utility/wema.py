@@ -697,8 +697,12 @@ def _edge_refused(resp: requests.Response) -> bool:
     return False
 
 
-def _post_read(product: str, path: str, body: dict) -> requests.Response:
-    """POST for a read-only call, asked again when the bank's edge blocks it."""
+def _post_edge_retry(product: str, path: str, body: dict) -> requests.Response:
+    """POST asked again when the bank's edge blocks it with its own page.
+
+    That page is sent before the API gateway sees the request (no request id), so
+    nothing ran and a replay cannot duplicate anything. Used for reads and for
+    account creation - never for anything that moves money."""
     resp = _post(product, path, body)
     for delay in _EDGE_RETRY_DELAYS:
         if not _edge_refused(resp):
@@ -911,11 +915,11 @@ def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "
                 "message": "OTP sent (demo)"}
     try:
         if bvn:
-            resp = _post("wallet_bvn", "/api/CustomerAccount/PostPartnershipAccountCreationWithBvn",
-                         {"phoneNumber": phone, "email": email, "bvn": bvn})
+            resp = _post_edge_retry("wallet_bvn", "/api/CustomerAccount/PostPartnershipAccountCreationWithBvn",
+                                    {"phoneNumber": phone, "email": email, "bvn": bvn})
         else:
-            resp = _post("wallet_nin", "/api/CustomerAccount/GenerateWalletAccountForPartnerships/Request",
-                         {"phoneNumber": phone, "email": email, "nin": nin})
+            resp = _post_edge_retry("wallet_nin", "/api/CustomerAccount/GenerateWalletAccountForPartnerships/Request",
+                                    {"phoneNumber": phone, "email": email, "nin": nin})
         data = resp.json()
         log.info(
             "wema_wallet_otp_request kind=%s status=%s success=%s category=%s response_keys=%s",
@@ -961,16 +965,17 @@ def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "
                     "message": "We couldn't complete your account setup. "
                                "Please contact support.", "raw": data}
         message = _msg(data)
-        if not accepted and (resp.status_code >= 500 or
-                             re.search(r"\b(?:internal server error|gateway unavailable)\b", message, re.I)):
+        transient = (not accepted and (resp.status_code >= 500 or
+                     re.search(r"\b(?:internal server error|gateway unavailable)\b", message, re.I)))
+        if transient:
             message = "Our bank could not start verification right now. Please try again later."
         return {"success": accepted, "tracking_id": tracking,
                 "otp_destination": dest, "otp_destination_kind": kind,
-                "message": message, "raw": data}
+                "message": message, "raw": data, "transient": bool(transient)}
     except requests.RequestException as exc:
-        return _unreachable(exc)
+        return {**_unreachable(exc), "transient": True}
     except ValueError:
-        return {"success": False, "message": "Invalid bank response"}
+        return {"success": False, "message": "Invalid bank response", "transient": True}
 
 
 def validate_wallet_otp(phone: str, otp: str, tracking_id: str, *, bvn: bool = False) -> dict:
@@ -1259,7 +1264,7 @@ def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
         "correlationId": correlation_id,
     }
     try:
-        resp = _post("face_account", path, body)
+        resp = _post_edge_retry("face_account", path, body)
         try:
             data = resp.json()
         except ValueError:
@@ -2077,7 +2082,7 @@ def _history_request(account_number: str, date_from: str, date_to: str, keyword:
         if keyword:
             # Optional in the bank's spec; sent only for a real search.
             body["keyWord"] = keyword
-        resp = _post_read("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
+        resp = _post_edge_retry("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
                           body)
         data = resp.json()
         if not isinstance(data, dict):

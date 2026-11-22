@@ -1601,6 +1601,49 @@ class WemaWalletCreateEnvelopeTests(SimpleTestCase):
         self.assertIn("category=gateway_unavailable", " ".join(logs.output))
 
     @patch("utility.wema.requests.post")
+    def test_bank_internal_error_is_marked_transient(self, mock_post):
+        mock_post.return_value = _resp({"message": "Internal Server Error",
+                                        "status": False, "statusCode": 500}, status=400)
+        self.assertTrue(wema.create_wallet_request("08030000000", "a@b.com", bvn="12345678901")["transient"])
+
+    @patch("utility.wema.requests.post")
+    def test_a_real_refusal_is_not_transient(self, mock_post):
+        mock_post.return_value = _resp({"message": "BVN is invalid", "status": False}, status=400)
+        result = wema.create_wallet_request("08030000000", "a@b.com", bvn="12345678901")
+        self.assertFalse(result["transient"])
+        self.assertEqual(result["message"], "BVN is invalid")
+
+    @patch("utility.wema.time.sleep")
+    @patch("utility.wema.requests.post")
+    def test_account_request_survives_one_edge_block_page(self, mock_post, mock_sleep):
+        page = _resp(None, status=403)
+        page.content = b"<html><title>403 Forbidden</title></html>"
+        page.headers = {"Content-Type": "text/html"}
+        page.json.side_effect = ValueError("not json")
+        ok = _resp({"status": True, "data": {"trackingId": "TRK-1"}})
+        ok.content = b"{}"
+        mock_post.side_effect = [page, ok]
+        result = wema.create_wallet_request("08030000000", "a@b.com", bvn="12345678901")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["tracking_id"], "TRK-1")
+        self.assertEqual(mock_post.call_count, 2)
+
+    @patch("utility.wema.time.sleep")
+    @patch("utility.wema.requests.post")
+    def test_account_request_edge_block_that_persists_is_transient(self, mock_post, mock_sleep):
+        def page(*a, **k):
+            m = _resp(None, status=403)
+            m.content = b"<html><title>403 Forbidden</title></html>"
+            m.headers = {"Content-Type": "text/html"}
+            m.json.side_effect = ValueError("not json")
+            return m
+        mock_post.side_effect = page
+        result = wema.create_wallet_request("08030000000", "a@b.com", bvn="12345678901")
+        self.assertFalse(result["success"])
+        self.assertTrue(result["transient"])
+        self.assertEqual(mock_post.call_count, 1 + len(wema._EDGE_RETRY_DELAYS))
+
+    @patch("utility.wema.requests.post")
     def test_ok_without_tracking_id_is_not_success(self, mock_post):
         # Verbatim sandbox response for an identity that already has an ALAT account.
         mock_post.return_value = _resp({
