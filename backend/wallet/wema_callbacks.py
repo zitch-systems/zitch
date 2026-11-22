@@ -1103,6 +1103,10 @@ def wema_face_callback(request, state=""):
                     user_id = user.id
                     db_transaction.on_commit(
                         lambda: _reconnect_existing_customer(user_id, kind))
+                elif provider_validated_account.get("failure_category") in {
+                        "gateway_unavailable", "invalid_response"}:
+                    user_id = user.id
+                    db_transaction.on_commit(lambda: _tell_whatsapp_face_retry(user_id, kind))
                 return JsonResponse({"status": True}, status=200)
 
         # A successful face check may CLAIM an unverified identity, but it may not
@@ -1229,6 +1233,30 @@ def _reconnect_existing_customer(user_id: int, kind: str) -> None:
             reply(msisdn, EXISTING_ACCOUNT_RECONNECT_MESSAGE.format(kind=kind.upper()))
     except Exception:  # noqa: BLE001
         log.warning("wema_face_existing_notify_failed user=%s", user_id, exc_info=True)
+
+
+def _tell_whatsapp_face_retry(user_id: int, kind: str) -> None:
+    """The face check finished but the bank could not be reached to confirm it.
+
+    Without this the customer, who did everything right, hears nothing: the session
+    is closed and the callback answers 200. A new session is opened on retry, so
+    saying so is all that is needed."""
+    from accounts.models import User
+    from whatsapp.models import WhatsAppLink
+
+    try:
+        user = User.objects.get(pk=user_id)
+        msisdn = (WhatsAppLink.objects
+                  .filter(user=user, status=WhatsAppLink.ACTIVE)
+                  .exclude(wa_msisdn="")
+                  .values_list("wa_msisdn", flat=True).first())
+        if not msisdn:
+            return
+        from whatsapp.router import reply
+        reply(msisdn, f"⚠️ Our partner bank could not confirm your {kind.upper()} face check just now. "
+                      "Nothing was lost - reply *6* in a few minutes to try again.")
+    except Exception:  # noqa: BLE001 - a messaging hiccup must not fail the callback
+        log.warning("wa_face_retry_notify_failed user=%s", user_id, exc_info=True)
 
 
 def _tell_whatsapp_face_passed(user, identity_type: str,

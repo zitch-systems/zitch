@@ -5148,7 +5148,10 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
                           "will contact you, so there's no need to retry.")
             return "fail"
         _clear_actions(msisdn)
-        reply(msisdn, f"⚠️ {res.get('message', 'Account setup failed - please try again later.')}")
+        retry_hint = (" Nothing you entered was saved - reply *6* in a few minutes to try again."
+                      if res.get("transient") else "")
+        reply(msisdn, f"⚠️ {res.get('message', 'Account setup failed - please try again later.')}"
+                      + retry_hint)
         return "fail"
     pa.payload["tracking_id"] = str(res.get("tracking_id") or "")
     pa.payload["using_bvn"] = using_bvn
