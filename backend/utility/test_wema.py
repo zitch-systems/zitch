@@ -1601,6 +1601,18 @@ class WemaWalletCreateEnvelopeTests(SimpleTestCase):
         self.assertIn("category=gateway_unavailable", " ".join(logs.output))
 
     @patch("utility.wema.requests.post")
+    def test_the_banks_own_error_code_is_logged_but_never_free_text(self, mock_post):
+        mock_post.return_value = _resp({"message": "Phone 08030000000 is foreign",
+                                        "status": False, "code": "ForeignNumber",
+                                        "statusCode": "BadRequest"}, status=400)
+        with self.assertLogs("zitch", level="INFO") as logs:
+            wema.create_wallet_request("08030000000", "a@b.com", bvn="12345678901")
+        line = " ".join(logs.output)
+        self.assertIn("bank_code=ForeignNumber bank_status=BadRequest", line)
+        self.assertNotIn("08030000000", line)
+        self.assertEqual(wema._bank_enum({"code": "has spaces 080"}, "code"), "-")
+
+    @patch("utility.wema.requests.post")
     def test_bank_internal_error_is_marked_transient(self, mock_post):
         mock_post.return_value = _resp({"message": "Internal Server Error",
                                         "status": False, "statusCode": 500}, status=400)

@@ -57,13 +57,13 @@ class BrowserFaceCorrelationTrustTests(TestCase):
             identity_value="33333333333", correlation_id="untrusted-correlation")
         return response
 
-    def assert_unverified(self):
+    def assert_unverified(self, session_status=WemaFaceSession.FAILED):
         self.user.refresh_from_db()
         self.session.refresh_from_db()
         self.assertFalse(self.user.nin_verified)
         self.assertEqual(self.user.nin_hash, "")
         self.assertEqual(self.user.tier, 1)
-        self.assertEqual(self.session.status, WemaFaceSession.FAILED)
+        self.assertEqual(self.session.status, session_status)
         self.assertEqual(self.session.correlation_id, "")
         self.assertFalse(IdentityProof.objects.filter(user=self.user).exists())
         self.notify.assert_not_called()
@@ -118,7 +118,8 @@ class BrowserFaceCorrelationTrustTests(TestCase):
 
     def test_real_non_json_response_fails_closed_without_crashing_callback(self):
         self.callback_envelope(None, invalid_json=True)
-        self.assert_unverified()
+        # Nothing is verified, and the bank judged nothing: the link stays usable.
+        self.assert_unverified(session_status=WemaFaceSession.PENDING)
 
     def test_real_pascalcase_success_envelope_attests_correlation(self):
         self.callback_envelope({"Status": True, "Message": "Processing",
@@ -1111,6 +1112,18 @@ class FaceIsTheWayOutOfAnUndeliveredCodeTests(TestCase):
         self.assertEqual(res.status_code, 200, res.content)
         self.assertEqual(res.json()["account_setup_state"], "bank_history_review")
         self.assertFalse(res.json()["spending_available"])
+
+    def test_a_check_the_bank_could_not_confirm_stops_the_app_polling(self):
+        session = WemaFaceSession.objects.create(
+            user=self.user, state="status-bank-down", identity_type="nin",
+            identity_hash=self.user.nin_hash, account_failure_category="gateway_unavailable",
+            expires_at=timezone.now() + timedelta(minutes=20))
+        res = self.client.post("/api/kyc/face/status/", {
+            "access_token": self.token, "session": session.state,
+        }, content_type="application/json")
+        self.assertEqual(res.json()["status"], "failed", res.content)
+        session.refresh_from_db()
+        self.assertEqual(session.status, WemaFaceSession.PENDING)
 
     def test_without_asking_the_pending_code_is_still_the_answer(self):
         """The default is unchanged: don't re-prove an identity for nothing."""

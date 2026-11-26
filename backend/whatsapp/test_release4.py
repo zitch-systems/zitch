@@ -377,10 +377,13 @@ class SignupBvnTests(FlowContractMixin, TestCase):
         cache.clear()
         self.bank = patch("wallet.views._wema_funding_enabled", return_value=True)
         self.allowed = patch("utility.providers.partnership_new_business_allowed", return_value=True)
+        self.face = patch("whatsapp.router._face_step_available", return_value=True)
         self.bank.start()
         self.allowed.start()
+        self.face.start()
         self.addCleanup(self.bank.stop)
         self.addCleanup(self.allowed.stop)
+        self.addCleanup(self.face.stop)
         self.ob = _signup_ob()
         self.token = sign_onboarding_token(self.ob)
         with patch("whatsapp.router.sms_live", return_value=True), \
@@ -481,6 +484,7 @@ class SignupBvnTests(FlowContractMixin, TestCase):
             sent = self.submit(bvn="22345678901")
         self.assertEqual(submit.call_args.args[0].payload["verification_method"], "face")
         self.assertIn("Open the face check link in the chat", sent["data"]["notice"])
+        self.face_session()
         with patch("whatsapp.router.customer_funding_account", return_value={}), \
              patch("wallet.identity.accepted_identity_pending", return_value=False):
             waiting = self.submit()
@@ -489,6 +493,87 @@ class SignupBvnTests(FlowContractMixin, TestCase):
                    return_value={"account_number": "0123456789", "account_name": "NGOZI ADE"}):
             page = self.submit()
         self.assertEqual(page["screen"], flows.SIGNUP_ADDRESS)
+
+    def face_session(self, status="pending", minutes=20):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from wallet.models import WemaFaceSession
+        return WemaFaceSession.objects.create(
+            user=User.objects.get(phone=PHONE), state=f"s-{WemaFaceSession.objects.count()}",
+            identity_type="bvn", identity_hash="h", status=status,
+            expires_at=timezone.now() + timedelta(minutes=minutes))
+
+    def face_link_sent(self):
+        self.submit(alt=True)
+        with patch("whatsapp.router._account_submit_identity", return_value="face"):
+            self.submit(bvn="22345678901")
+
+    def test_a_spent_face_link_gets_a_new_one_on_next(self):
+        """21 Nov 2026: the bank refused a finished face check, the session was
+        closed, and Next said "hasn't confirmed yet" for ever."""
+        self.face_link_sent()
+        self.face_session(status="failed")
+        with patch("whatsapp.router.customer_funding_account", return_value={}), \
+             patch("wallet.identity.accepted_identity_pending", return_value=False), \
+             patch("whatsapp.router._account_submit_identity", return_value="face") as again:
+            resp = self.submit(bvn="22345678901")
+        again.assert_called_once()
+        self.assertEqual(again.call_args.args[0].payload["verification_method"], "face")
+        self.assertIn("Open the face check link in the chat", resp["data"]["notice"])
+        self.assertEqual(resp["data"]["error"], "")
+
+    def test_an_expired_face_link_gets_a_new_one_on_next(self):
+        self.face_link_sent()
+        self.face_session(minutes=-1)
+        with patch("whatsapp.router.customer_funding_account", return_value={}), \
+             patch("wallet.identity.accepted_identity_pending", return_value=False), \
+             patch("whatsapp.router._account_submit_identity", return_value="face") as again:
+            self.submit(bvn="22345678901")
+        again.assert_called_once()
+
+    def test_face_check_can_be_swapped_back_for_the_sms_code(self):
+        self.face_link_sent()
+        self.face_session()
+        with patch("whatsapp.router.customer_funding_account", return_value={}), \
+             patch("wallet.identity.accepted_identity_pending", return_value=False):
+            waiting = self.submit()
+        self.assertEqual((waiting["data"]["alt_link"], waiting["data"]["alt_text"]),
+                         (True, "Use SMS code instead"))
+        back = self.submit(alt=True)
+        self.assertIn("SMS code", back["data"]["notice"])
+        with patch("whatsapp.router._account_submit_identity", side_effect=_otp) as submit:
+            resp = self.submit(bvn="22345678901")
+        self.assertNotIn("verification_method", submit.call_args.args[0].payload)
+        self.assertTrue(resp["data"]["code_sent"])
+
+    def test_a_face_verified_bvn_with_no_account_number_yet_goes_on(self):
+        self.face_link_sent()
+        self.face_session(status="verified")
+        User.objects.filter(phone=PHONE).update(bvn_verified=True)
+        with patch("whatsapp.router.customer_funding_account", return_value={}), \
+             patch("wallet.identity.accepted_identity_pending", return_value=False):
+            page = self.submit()
+        self.assertEqual(page["screen"], flows.SIGNUP_ADDRESS)
+
+    def test_an_unreachable_bank_is_not_blamed_on_the_bvn(self):
+        def down(pa, *args, **kwargs):
+            pa.payload["bank_unavailable"] = True
+            return "fail"
+        with patch("whatsapp.router._account_submit_identity", side_effect=down):
+            resp = self.submit(bvn="22345678901")
+        self.assertIn("couldn't be reached", resp["data"]["error"])
+        self.assertNotIn("Check it", resp["data"]["error"])
+        self.assertEqual(resp["data"]["alt_text"], "Use face check instead")
+
+    def test_face_check_is_not_offered_when_the_bank_has_it_switched_off(self):
+        self.face.stop()
+        self.addCleanup(self.face.start)
+        with patch("whatsapp.router._face_step_available", return_value=False), \
+             patch("whatsapp.router._account_submit_identity", side_effect=_otp):
+            resp = self.submit(bvn="22345678901")
+        self.assertFalse(resp["data"]["alt_link"])
 
     def test_resend_asks_the_bank_for_the_same_code(self):
         with patch("whatsapp.router._account_submit_identity", side_effect=_otp):

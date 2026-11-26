@@ -2603,6 +2603,12 @@ def kyc_face_status(request):
     status = session.status
     if status == WemaFaceSession.PENDING and session.expired:
         status = "expired"
+    elif (status == WemaFaceSession.PENDING
+          and session.account_failure_category in ("gateway_unavailable", "invalid_response")):
+        # The face check finished but the bank could not be reached to confirm
+        # it. The session stays open for its link; the app, which starts a new
+        # one on retry, is told this attempt is over rather than left polling.
+        status = WemaFaceSession.FAILED
     has_account = bool(get_or_create_wallet(user).account_number)
     account_state = "ready" if has_account else session.account_state
     if account_state == "unknown" and status == WemaFaceSession.VERIFIED:

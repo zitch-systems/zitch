@@ -396,9 +396,13 @@ def signup_bvn_screen(ob, error: str = "", notice: str = "") -> dict:
         return {"screen": F.SIGNUP_BVN_RETRY,
                 "data": {"summary": notice or "Enter the code your bank sent by SMS.",
                          "error": _warn(error)}}
-    # The second link offers the bank's face check instead of its SMS code.
-    # There is no "Do this later": the BVN can't be skipped (17 Nov 2026).
-    alt = "face" if (code_sent or error) and not face_sent else ""
+    # The second link switches between the bank's SMS code and its face check, so
+    # neither is a dead end when the other is not working. There is no "Do this
+    # later": the BVN can't be skipped (17 Nov 2026).
+    if face_mode:
+        alt = "sms"
+    else:
+        alt = "face" if (code_sent or error) and _face_offered() else ""
     if p.get("bvn_alt", "") != alt:
         p["bvn_alt"] = alt
         ob.save(update_fields=["payload"])
@@ -406,8 +410,25 @@ def signup_bvn_screen(ob, error: str = "", notice: str = "") -> dict:
             "data": {"summary": "✓ Phone number verified", "notice": notice,
                      "code_sent": code_sent,
                      "alt_link": bool(alt),
-                     "alt_text": "Use face check instead" if alt else " ",
+                     "alt_text": {"face": "Use face check instead",
+                                  "sms": "Use SMS code instead"}.get(alt, " "),
                      "error": _warn(error)}}
+
+
+def _face_offered() -> bool:
+    from .router import _face_step_available
+
+    return bool(_face_step_available())
+
+
+def _face_check_waiting(user) -> bool:
+    """True while a face link this customer was sent can still be completed."""
+    from django.utils import timezone
+
+    from wallet.models import WemaFaceSession
+
+    return WemaFaceSession.objects.filter(
+        user=user, status=WemaFaceSession.PENDING, expires_at__gt=timezone.now()).exists()
 
 
 def _account_action(ob, user):
@@ -467,6 +488,12 @@ def submit_signup_bvn(ob, data: dict) -> dict:
                                  status="failed")
     p = ob.payload
     if data.get("alt"):
+        if p.get(_FACE_MODE):
+            # Back to the SMS code. The BVN is still typed, so Next sends it.
+            p.update({_FACE_MODE: False, _FACE_SENT: False, _CODE_SENT: False})
+            p.pop(_ACCOUNT_PA_KEY, None)
+            return _stay(ob, notice="SMS code: tap Next and your bank will send a code to the "
+                                    "phone number on your BVN.")
         data = {"face": True}
     if data.get("later"):
         if _bvn_page(ob) == F.SIGNUP_BVN_RETRY:
@@ -478,10 +505,16 @@ def submit_signup_bvn(ob, data: dict) -> dict:
         p.update({_FACE_MODE: True, _CODE_SENT: False})
         return _stay(ob)
     if p.get(_FACE_SENT):
-        if _account_open(user):
+        user.refresh_from_db(fields=["bvn_verified"])
+        if _account_open(user) or user.bvn_verified:
+            # Verified with no account number yet: the bank is still issuing it,
+            # and the welcome message says so. Asking for the face again cannot help.
             return _to_address(ob)
-        return _stay(ob, error="Your bank hasn't confirmed the face check yet. Finish it from "
-                               "the link in the chat, then tap Next.")
+        if _face_check_waiting(user):
+            return _stay(ob, error="Your bank hasn't confirmed the face check yet. Finish it from "
+                                   "the link in the chat, then tap Next.")
+        # That link is spent or expired. Next sends a new one for the BVN typed here.
+        p[_FACE_SENT] = False
     if p.get(_CODE_SENT) and not p.get(_FACE_MODE):
         return _submit_bank_code(ob, user, str(data.get("code", "") or ""))
 
@@ -515,6 +548,9 @@ def _send_bvn(ob, user, digits: str) -> dict:
         # The chat already carries the bank's reason, and the action is cleared.
         p.pop(_ACCOUNT_PA_KEY, None)
         p[_CODE_SENT] = False
+        if pa.payload.get("bank_unavailable"):
+            return _stay(ob, error="Your bank couldn't be reached just now, so nothing was "
+                                   "checked. Tap Next to try again in a few minutes.")
         return _stay(ob, error="We couldn't verify that BVN - see the chat for why. Check it "
                                "and try again.")
     # "processing", "adopted", "upgrade" or an adopted account: the bank has it.

@@ -5148,8 +5148,14 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
                           "will contact you, so there's no need to retry.")
             return "fail"
         _clear_actions(msisdn)
-        retry_hint = (" Nothing you entered was saved - reply *6* in a few minutes to try again."
-                      if res.get("transient") else "")
+        retry_hint = ""
+        if res.get("transient"):
+            # Read by the sign-up form, which words its own page from it.
+            pa.payload["bank_unavailable"] = True
+            # Only the sign-up form stays open on a failure; the identity form closes.
+            retry_hint = (" Nothing you entered was saved - tap *Next* on the form in a few "
+                          "minutes to try again." if pa.payload.get("signup_bvn_form") else
+                          " Nothing you entered was saved - reply *6* in a few minutes to try again.")
         reply(msisdn, f"⚠️ {res.get('message', 'Account setup failed - please try again later.')}"
                       + retry_hint)
         return "fail"
