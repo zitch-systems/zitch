@@ -850,6 +850,55 @@ def _screen_contract() -> dict:
     return _CONTRACT
 
 
+_ROUTES: dict | None = None
+
+
+def _screen_routes() -> dict:
+    """screen id -> the screens the published Flow lets it be answered with (its
+    routing_model). Empty on any read failure."""
+    global _ROUTES
+    if _ROUTES is None:
+        try:
+            import json
+            import os
+
+            path = os.path.join(os.path.dirname(__file__), "flow_assets", "pin_flow.json")
+            with open(path, encoding="utf-8") as fh:
+                doc = json.load(fh)
+            _ROUTES = {str(k): frozenset(v or ()) for k, v in (doc.get("routing_model") or {}).items()}
+        except Exception:  # noqa: BLE001 - a guard that cannot load must stay silent
+            log.exception("could not read the Flow routing model")
+            _ROUTES = {}
+    return _ROUTES
+
+
+def _check_route(payload, response: dict) -> None:
+    """Log when a data_exchange is answered with a screen the page it came from
+    cannot route to.
+
+    Meta refuses such an answer and the customer sees "Couldn't load content",
+    with a 200 in our logs. That is how SIGNUP_BVN_RETRY -> SIGNUP_BVN stranded
+    sign-ups (Nov 2026) on a path no test walked. Nothing here can repair the
+    answer - the right screen is the handler's to choose - so this only makes
+    the first customer to hit one findable: search the logs for
+    `wa_flow_off_route`. Names are logged from the Flow's own list, never echoed.
+    """
+    try:
+        if not isinstance(payload, dict) or payload.get("action") != "data_exchange":
+            return
+        routes = _screen_routes()
+        source = _screen_label(payload.get("screen"))
+        target = _screen_label(response.get("screen"))
+        if "-" in (source, target) or source == target or source not in routes:
+            return
+        if _TERMINATION_KEY in (response.get("data") or {}):
+            return
+        if target not in routes[source]:
+            log.error("wa_flow_off_route from=%s to=%s", source, target)
+    except Exception:  # noqa: BLE001 - never let a check cost a customer their answer
+        log.exception("wa_flow_off_route check failed")
+
+
 #: What an absent property becomes, per declared type. A declared-but-missing key
 #: is as unrenderable as a wrong one, and a blank of the right shape is the only
 #: substitute that renders.
@@ -979,6 +1028,7 @@ def handle_flow_request(payload: dict) -> dict:
             and _TERMINATION_KEY not in (response.get("data") or {})):
         response = _close_flow(str(payload.get("flow_token", "")) if isinstance(payload, dict) else "")
     response = _check_contract(response)
+    _check_route(payload, response)
     # One line per answered exchange. Without it the only trace of a Flow session
     # in Render was gunicorn's access log - a 200 and a byte count - which is why
     # "every request succeeded" and "the customer saw an error screen" were both
