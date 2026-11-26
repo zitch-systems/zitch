@@ -210,6 +210,14 @@ class FaceLinkTests(TestCase):
         self.upgrade.return_value = {"success": True, "raw": {}}
         self.assertEqual(self.send().json()["status"], "verified")
 
+    def test_bank_timeout_is_pending_not_a_retake(self):
+        self.upgrade.return_value = {"success": False, "pending": True,
+                                     "message": "Bank gateway is temporarily unavailable"}
+        response = self.send()
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["status"], "pending")
+        self.assertEqual(self.action().state, FACE_PENDING)
+
     def test_bank_nin_bvn_mismatch_asks_for_the_numbers_not_a_new_photo(self):
         self.upgrade.return_value = {"success": False, "message":
                                      "There is a mismatch between the NIN and BVN. "

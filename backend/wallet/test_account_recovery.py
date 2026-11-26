@@ -195,6 +195,30 @@ class AccountRecoveryTests(TestCase):
 
     @override_settings(TESTING=False, DEBUG=False, WEMA_CUTOVER_APPROVED=True,
                        SECURE_SSL_REDIRECT=False, ALLOWED_HOSTS=["testserver"])
+    def test_bank_outage_after_a_completed_face_check_tells_the_customer_to_retry(self):
+        self.prepare(approve=True)
+        down = {"success": False, "http_status": 500, "account_state": "unknown",
+                "failure_category": "gateway_unavailable"}
+        with mock.patch("utility.wema.create_wallet_with_face", return_value=down), \
+                mock.patch("wallet.wema_callbacks._tell_whatsapp_face_retry") as tell, \
+                self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.callback().status_code, 200)
+        tell.assert_called_once_with(self.user.id, "bvn")
+
+    @override_settings(TESTING=False, DEBUG=False, WEMA_CUTOVER_APPROVED=True,
+                       SECURE_SSL_REDIRECT=False, ALLOWED_HOSTS=["testserver"])
+    def test_a_bank_refusal_does_not_send_the_retry_message(self):
+        self.prepare(approve=True)
+        refused = {"success": False, "http_status": 400, "account_state": "rejected",
+                   "failure_category": "invalid_correlation"}
+        with mock.patch("utility.wema.create_wallet_with_face", return_value=refused), \
+                mock.patch("wallet.wema_callbacks._tell_whatsapp_face_retry") as tell, \
+                self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.callback().status_code, 200)
+        tell.assert_not_called()
+
+    @override_settings(TESTING=False, DEBUG=False, WEMA_CUTOVER_APPROVED=True,
+                       SECURE_SSL_REDIRECT=False, ALLOWED_HOSTS=["testserver"])
     def test_fresh_callback_submits_once_but_old_correlation_never_replays(self):
         session, _ = self.prepare(approve=True)
         with mock.patch("utility.wema.create_wallet_with_face", return_value={"success": True, "http_status": 200}) as create, \

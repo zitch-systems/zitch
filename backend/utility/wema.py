@@ -697,8 +697,12 @@ def _edge_refused(resp: requests.Response) -> bool:
     return False
 
 
-def _post_read(product: str, path: str, body: dict) -> requests.Response:
-    """POST for a read-only call, asked again when the bank's edge blocks it."""
+def _post_edge_retry(product: str, path: str, body: dict) -> requests.Response:
+    """POST asked again when the bank's edge blocks it with its own page.
+
+    That page is sent before the API gateway sees the request (no request id), so
+    nothing ran and a replay cannot duplicate anything. Used for reads and for
+    account creation - never for anything that moves money."""
     resp = _post(product, path, body)
     for delay in _EDGE_RETRY_DELAYS:
         if not _edge_refused(resp):
@@ -911,15 +915,17 @@ def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "
                 "message": "OTP sent (demo)"}
     try:
         if bvn:
-            resp = _post("wallet_bvn", "/api/CustomerAccount/PostPartnershipAccountCreationWithBvn",
-                         {"phoneNumber": phone, "email": email, "bvn": bvn})
+            resp = _post_edge_retry("wallet_bvn", "/api/CustomerAccount/PostPartnershipAccountCreationWithBvn",
+                                    {"phoneNumber": phone, "email": email, "bvn": bvn})
         else:
-            resp = _post("wallet_nin", "/api/CustomerAccount/GenerateWalletAccountForPartnerships/Request",
-                         {"phoneNumber": phone, "email": email, "nin": nin})
+            resp = _post_edge_retry("wallet_nin", "/api/CustomerAccount/GenerateWalletAccountForPartnerships/Request",
+                                    {"phoneNumber": phone, "email": email, "nin": nin})
         data = resp.json()
         log.info(
-            "wema_wallet_otp_request kind=%s status=%s success=%s response_keys=%s",
+            "wema_wallet_otp_request kind=%s status=%s success=%s category=%s response_keys=%s",
             kind, resp.status_code, _kyc_ok(data),
+            (_face_account_diagnostic(data, resp.status_code)["failure_category"]
+             if resp.status_code >= 400 else "none"),
             sorted(str(key) for key in data.keys()) if isinstance(data, dict) else [],
         )
         # The documented ResponseModel has no `data` envelope, but the live gateway
@@ -958,13 +964,18 @@ def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "
                     "otp_destination_kind": kind,
                     "message": "We couldn't complete your account setup. "
                                "Please contact support.", "raw": data}
+        message = _msg(data)
+        transient = (not accepted and (resp.status_code >= 500 or
+                     re.search(r"\b(?:internal server error|gateway unavailable)\b", message, re.I)))
+        if transient:
+            message = "Our bank could not start verification right now. Please try again later."
         return {"success": accepted, "tracking_id": tracking,
                 "otp_destination": dest, "otp_destination_kind": kind,
-                "message": _msg(data), "raw": data}
+                "message": message, "raw": data, "transient": bool(transient)}
     except requests.RequestException as exc:
-        return _unreachable(exc)
+        return {**_unreachable(exc), "transient": True}
     except ValueError:
-        return {"success": False, "message": "Invalid bank response"}
+        return {"success": False, "message": "Invalid bank response", "transient": True}
 
 
 def validate_wallet_otp(phone: str, otp: str, tracking_id: str, *, bvn: bool = False) -> dict:
@@ -1218,7 +1229,8 @@ def _face_account_diagnostic(data, http_status: int) -> dict:
         category = "invalid_identity"
     elif isinstance(data, dict) and isinstance(data.get("errors"), dict):
         category = "request_validation"
-    elif http_status >= 500 or http_status in (408, 429):
+    elif http_status >= 500 or http_status in (408, 429) or re.search(
+            r"\b(?:internal server error|gateway unavailable)\b", text):
         category = "gateway_unavailable"
     return {"failure_category": category, "http_status": http_status}
 
@@ -1252,7 +1264,7 @@ def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
         "correlationId": correlation_id,
     }
     try:
-        resp = _post("face_account", path, body)
+        resp = _post_edge_retry("face_account", path, body)
         try:
             data = resp.json()
         except ValueError:
@@ -1300,8 +1312,9 @@ def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
             **diagnostic,
             "raw": data,
         }
-    except (requests.RequestException, ValueError):
-        log.warning("wema_face_account_failed category=gateway_unavailable")
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("wema_face_account_failed category=gateway_unavailable error_type=%s host=%s",
+                    type(exc).__name__, _host(_url("face_account", path)))
         return {"success": False, "message": "Bank gateway unavailable",
                 "account_state": "unknown", "failure_category": "gateway_unavailable"}
 
@@ -1692,7 +1705,11 @@ def upgrade_tier2(account_number: str, *, bvn: str = "", nin: str = "", live_ima
         resp = _post("upgrade", path, body)
         return _upgrade_response(resp)
     except requests.RequestException as exc:
-        return _unreachable(exc)
+        # A read timeout means the bank has the request and may still upgrade
+        # the account (it often takes longer than our timeout): that is not a
+        # refusal. Only a request that never left counts as a failure.
+        sent = isinstance(exc, requests.ReadTimeout)
+        return _unreachable(exc, pending=sent)
     except ValueError:
         return {"success": False, "message": "Invalid bank response"}
 
@@ -2065,7 +2082,7 @@ def _history_request(account_number: str, date_from: str, date_to: str, keyword:
         if keyword:
             # Optional in the bank's spec; sent only for a real search.
             body["keyWord"] = keyword
-        resp = _post_read("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
+        resp = _post_edge_retry("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
                           body)
         data = resp.json()
         if not isinstance(data, dict):

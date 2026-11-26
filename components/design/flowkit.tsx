@@ -7,6 +7,7 @@ import { formatAmountInput } from '@/lib/format';
 import { normalizeAmountInput } from '@/lib/amounts';
 import { useTheme, font, iconTint } from '@/lib/theme';
 import { router } from 'expo-router';
+import { preferKeypadOnce } from '@/lib/payApproval';
 
 // Network/provider id → brand color, for monograms & accents.
 export const NET_COLORS: Record<string, string> = {
@@ -335,8 +336,8 @@ export const ConfirmSheet = ({
   rows: [string, string][];
   balance: number;
   /** `pinOnly` is true when the customer chose "Use Payment PIN" rather than the
-   *  Pay button. Callers that ignore the argument keep their previous behaviour
-   *  (biometric offered first), so this stays backward-compatible. */
+   *  Pay button. The next PIN pad then opens on the keypad by itself
+   *  (preferKeypadOnce), so callers need not pass it on. */
   onPay: (pinOnly?: boolean) => void;
   // Overrides for non-payment flows (e.g. a loan disbursement, where money is
   // received, not paid). Defaults reproduce the standard "Pay with wallet" look.
@@ -357,7 +358,7 @@ export const ConfirmSheet = ({
           before Pay so customers can choose it without a biometric prompt. */}
       <View style={{ alignItems: 'flex-end', marginBottom: 10 }}>
         <Pressable
-          onPress={() => onPay(true)}
+          onPress={() => { preferKeypadOnce(); onPay(true); }}
           accessibilityRole="button"
           accessibilityLabel="Use payment PIN"
           hitSlop={10}

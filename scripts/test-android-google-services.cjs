@@ -39,7 +39,7 @@ test('preserves internal preview builds but fails production without configurati
 test('publishes only the native push capability and preserves the existing Expo project', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.config.js'), 'utf8');
   for (const filename of [undefined, '/private-build/google-services.json']) {
-    const context = { module: { exports: {} }, require: (name) => {
+    const context = { process: { env: {} }, module: { exports: {} }, require: (name) => {
       assert.equal(name, './scripts/android-google-services.cjs');
       return { resolveGoogleServices: (packageName) => {
         assert.equal(packageName, 'com.zitch.app');
@@ -55,6 +55,20 @@ test('publishes only the native push capability and preserves the existing Expo 
     assert.equal(result.android.googleServicesFile, filename);
     assert.deepEqual(Object.keys(result.extra.push), ['androidConfigured']);
   }
+});
+
+test('a sideload test build is its own app without push, and never reads the store push config', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'app.config.js'), 'utf8');
+  const context = { process: { env: { ZITCH_ANDROID_VARIANT: 'test' } }, module: { exports: {} }, require: () => ({
+    resolveGoogleServices: () => { throw new Error('test builds must not resolve the store push config'); },
+  }) };
+  vm.runInNewContext(source, context);
+  const result = context.module.exports({ config: { name: 'Zitch', scheme: 'zitch', android: { package: 'com.zitch.app' }, extra: {} } });
+  assert.equal(result.android.package, 'com.zitch.app.test');
+  assert.equal(result.name, 'Zitch Test');
+  assert.equal(result.scheme, 'zitchtest');
+  assert.equal(result.android.googleServicesFile, undefined);
+  assert.equal(result.extra.push.androidConfigured, false);
 });
 
 test('EAS production requires Android push configuration without applying the Android gate to iOS', () => {

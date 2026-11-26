@@ -11,6 +11,7 @@ import { NText } from '@/components/design/Naira';
 import { flash, notifyError } from '@/components/design/Notify';
 import ReceiptExport, { ExportAction } from '@/components/design/ReceiptExport';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
+import BioPayOffer from '@/components/design/BioPayOffer';
 import { BANK_WHATSAPP_DISPLAY, SUPPORT_EMAIL } from '@/components/configFiles/links';
 import {
   RECEIPT_COLORS as C,
@@ -336,13 +337,13 @@ const Receipt = ({
   // loaded yet rather than printing a blank row onto a document people treat as
   // proof. accountName is the bank's legal name for the NUBAN; firstName is a
   // greeting and only stands in when the fuller name isn't there.
-  // The partner bank is never named on a receipt: the sender's account is their
-  // Zitch account (review, Nov 2026).
-  const { accountName, firstName, accountNumber } = useWallet();
+  // The account's own bank beside its number (18 Nov 2026: "wema bank not zitch
+  // account"), as on Home, Wallet and Add money; "Zitch account" only until it loads.
+  const { accountName, firstName, accountNumber, bankName } = useWallet();
   const from = senderRows({
     name: accountName || firstName,
     account: accountNumber,
-    bank: accountNumber ? 'Zitch account' : undefined,
+    bank: accountNumber ? (bankName || 'Zitch account') : undefined,
   });
 
   // Date and time always; the reference only when the server actually gave us one
@@ -408,6 +409,9 @@ const Receipt = ({
       <View style={{ paddingBottom: 16, paddingTop: 10 }}>
         <Btn label="Back to Dashboard" onPress={onDone} />
       </View>
+
+      {/* Paid with the typed PIN: offer the fingerprint for next time (at most once in five days). */}
+      <BioPayOffer show={/^success/i.test(status)} />
     </View>
   );
 };
