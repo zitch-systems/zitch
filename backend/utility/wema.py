@@ -882,6 +882,17 @@ def _kyc_ok(data, *, allow_pending: bool = False) -> bool:
             or _ci_get(data, "hasError", default=None) is False)
 
 
+def _bank_enum(data, key: str) -> str:
+    """The bank's `code` or `statusCode` for a log line.
+
+    Both are documented enums (code: InvalidBvn, ForeignNumber, Error, ...;
+    statusCode: an HTTP status name or number), so only a short word or number
+    is ever logged - never free text, which could carry customer details."""
+    value = _ci_get(data, key, default="")
+    text = str(value) if isinstance(value, (str, int)) and not isinstance(value, bool) else ""
+    return text if re.fullmatch(r"[A-Za-z0-9]{1,40}", text) else "-"
+
+
 @_new_partnership_instruction
 def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "") -> dict:
     """Step 1 — request wallet creation; the bank validates the ID and sends its OTP.
@@ -922,10 +933,13 @@ def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "
                                     {"phoneNumber": phone, "email": email, "nin": nin})
         data = resp.json()
         log.info(
-            "wema_wallet_otp_request kind=%s status=%s success=%s category=%s response_keys=%s",
+            "wema_wallet_otp_request kind=%s status=%s success=%s category=%s bank_code=%s "
+            "bank_status=%s request_id=%s response_keys=%s",
             kind, resp.status_code, _kyc_ok(data),
             (_face_account_diagnostic(data, resp.status_code)["failure_category"]
              if resp.status_code >= 400 else "none"),
+            _bank_enum(data, "code"), _bank_enum(data, "statusCode"),
+            _gateway_request_id(getattr(resp, "headers", None) or {}) or "-",
             sorted(str(key) for key in data.keys()) if isinstance(data, dict) else [],
         )
         # The documented ResponseModel has no `data` envelope, but the live gateway
@@ -1002,16 +1016,25 @@ def validate_wallet_otp(phone: str, otp: str, tracking_id: str, *, bvn: bool = F
         # initiation may accept 202 with tracking; validation must fail closed.
         completed = (200 <= resp.status_code < 300 and resp.status_code != 202
                      and _kyc_ok(data))
+        # Which field, if any, turned an otherwise positive answer down. A code
+        # the bank accepted but we refused is spent, so this must be visible.
+        held_by = "-"
         for item in (data, _ci_get(data, "data"), _ci_get(data, "result")):
             for key in ("message", "otpStatus", "verificationStatus"):
                 value = _ci_get(item, key)
                 if isinstance(value, str) and re.search(
                         r"\b(?:pending|processing|queued|in[ _-]?progress|failed|rejected|declined)\b",
                         value, re.I):
+                    if completed:
+                        held_by = key
                     completed = False
-        log.info(
-            "wema_wallet_otp_validate kind=%s status=%s success=%s has_tracking=%s",
+        log.log(
+            logging.WARNING if held_by != "-" else logging.INFO,
+            "wema_wallet_otp_validate kind=%s status=%s success=%s has_tracking=%s "
+            "held_by=%s bank_code=%s bank_status=%s message_fingerprint=%s",
             "bvn" if bvn else "nin", resp.status_code, completed, bool(tracking_id),
+            held_by, _bank_enum(data, "code"), _bank_enum(data, "statusCode"),
+            _fingerprint(_msg(data)),
         )
         return {"success": completed,
                 "message": _msg(data), "raw": data}
@@ -1299,8 +1322,12 @@ def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
                          "rejected" if resp.status_code in (400, 401, 403, 404, 422) else "unknown")
         if not ok:
             log.warning(
-                "wema_face_account_failed status=%s category=%s message_fingerprint=%s",
-                resp.status_code, diagnostic["failure_category"], _fingerprint(message),
+                "wema_face_account_failed status=%s category=%s bank_code=%s bank_status=%s "
+                "request_id=%s message_fingerprint=%s",
+                resp.status_code, diagnostic["failure_category"], _bank_enum(data, "code"),
+                _bank_enum(data, "statusCode"),
+                _gateway_request_id(getattr(resp, "headers", None) or {}) or "-",
+                _fingerprint(message),
             )
         return {
             "success": ok,
@@ -1313,8 +1340,12 @@ def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
             "raw": data,
         }
     except (requests.RequestException, ValueError) as exc:
-        log.warning("wema_face_account_failed category=gateway_unavailable error_type=%s host=%s",
-                    type(exc).__name__, _host(_url("face_account", path)))
+        response = getattr(exc, "response", None)
+        log.warning("wema_face_account_failed category=gateway_unavailable error_type=%s "
+                    "http_status=%s request_id=%s host=%s",
+                    type(exc).__name__, getattr(response, "status_code", None),
+                    _gateway_request_id(getattr(response, "headers", None) or {}) or "-",
+                    _host(_url("face_account", path)))
         return {"success": False, "message": "Bank gateway unavailable",
                 "account_state": "unknown", "failure_category": "gateway_unavailable"}
 

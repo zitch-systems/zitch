@@ -196,7 +196,7 @@ class AccountRecoveryTests(TestCase):
     @override_settings(TESTING=False, DEBUG=False, WEMA_CUTOVER_APPROVED=True,
                        SECURE_SSL_REDIRECT=False, ALLOWED_HOSTS=["testserver"])
     def test_bank_outage_after_a_completed_face_check_tells_the_customer_to_retry(self):
-        self.prepare(approve=True)
+        session, _ = self.prepare(approve=True)
         down = {"success": False, "http_status": 500, "account_state": "unknown",
                 "failure_category": "gateway_unavailable"}
         with mock.patch("utility.wema.create_wallet_with_face", return_value=down), \
@@ -204,6 +204,15 @@ class AccountRecoveryTests(TestCase):
                 self.captureOnCommitCallbacks(execute=True):
             self.assertEqual(self.callback().status_code, 200)
         tell.assert_called_once_with(self.user.id, "bvn")
+        # The bank never judged the check, so the same link must still work.
+        session.refresh_from_db()
+        self.assertEqual(session.status, "pending")
+        ok = {"success": True, "http_status": 200}
+        with mock.patch("utility.wema.create_wallet_with_face", return_value=ok), \
+                mock.patch("wallet.wema_callbacks._tell_whatsapp_face_passed"):
+            self.assertEqual(self.callback().status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.status, "verified")
 
     @override_settings(TESTING=False, DEBUG=False, WEMA_CUTOVER_APPROVED=True,
                        SECURE_SSL_REDIRECT=False, ALLOWED_HOSTS=["testserver"])
