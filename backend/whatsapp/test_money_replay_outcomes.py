@@ -98,8 +98,12 @@ class DuplicateMoneyOutcomeTests(TestCase):
         """27 Nov 2026: the bank answered one enquiry with no name, then named
         the same account again. The first blank cancelled the payment."""
         pa = self._transfer_action()
-        txn = self._ledger(pa, Transaction.SUCCESS)
-        Transaction.objects.filter(pk=txn.pk).update(idempotency_key="other")
+        # The row the payout returns; not yet keyed to this action, so the
+        # executor reaches the enquiry instead of replaying a prior outcome.
+        txn = Transaction.objects.create(
+            user=self.user, service="Transfer", amount=Decimal("5000"),
+            direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+            reference="ZWARETRY00000001", idempotency_key="retry-test", meta={})
         answers = [{"success": False, "name": ""}, {"success": True, "name": "JOHN DOE"}]
         with patch.object(router, "_ENQUIRY_RETRY_WAIT", 0), \
                 patch.object(router, "payout_resolve_account", side_effect=answers) as enquiry, \
