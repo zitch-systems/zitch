@@ -39,6 +39,9 @@ def _ledger(user, action_id, status):
 class SettleWaitTests(TestCase):
 
     def setUp(self):
+        # Action ids restart with each test database; the cache does not.
+        from django.core.cache import cache
+        cache.clear()
         self.user = _make_user()
 
     @override_settings(WHATSAPP_FLOW_SETTLE_WAIT=2)
@@ -74,6 +77,41 @@ class SettleWaitTests(TestCase):
     def test_no_ledger_row_at_all_gives_up_cleanly(self):
         pa = _action(self.user)
         self.assertIsNone(router._await_settlement(pa.id, self.user))
+
+    @override_settings(WHATSAPP_FLOW_SETTLE_WAIT=2)
+    def test_a_payment_refused_before_any_money_moved_says_why(self):
+        """27 Nov 2026: the bank could not confirm the recipient, so nothing was
+        sent and no ledger row existed. The form waited six seconds and said
+        "processing"; the chat had already said it was not sent."""
+        from django.core.cache import cache
+        cache.clear()
+        pa = _action(self.user)
+        flows.remember_unsent(pa, "❌ We couldn't verify the recipient with the bank. "
+                                  "Your transfer was not sent and you were not charged.")
+        outcome = router._await_settlement(pa.id, self.user)
+        self.assertEqual(outcome.status, router.OUTCOME_FAILED)
+        self.assertTrue(str(outcome).startswith("We couldn't verify the recipient"))
+
+    @override_settings(WHATSAPP_FLOW_SETTLE_WAIT=2)
+    def test_the_ledger_outranks_a_recorded_refusal(self):
+        from django.core.cache import cache
+        cache.clear()
+        pa = _action(self.user)
+        flows.remember_unsent(pa, "not sent")
+        _ledger(self.user, pa.id, Transaction.SUCCESS)
+        self.assertEqual(router._await_settlement(pa.id, self.user).status, router.OUTCOME_SUCCESS)
+
+    def test_done_on_a_pending_screen_reads_the_refusal_once_the_action_is_gone(self):
+        from django.core.cache import cache
+        cache.clear()
+        pa = _action(self.user)
+        token = flows.sign_flow_token(pa)
+        flows.remember_pending(pa, self.user)
+        flows.remember_unsent(pa, "We couldn't verify the recipient with the bank.")
+        PendingAction.objects.filter(pk=pa.pk).delete()
+        screen = flows._refresh_pending_result(token)
+        self.assertIn("couldn't verify the recipient", screen["data"]["message"])
+        self.assertIn("Not completed", screen["data"]["status"])
 
     @override_settings(WHATSAPP_FLOW_SETTLE_WAIT=0)
     def test_a_zero_budget_never_queries_or_sleeps(self):
@@ -226,6 +264,9 @@ class FlowNeverInlineInProductionTests(TestCase):
     WHATSAPP_PROCESS_INLINE is on for chat messages."""
 
     def setUp(self):
+        # Action ids restart with each test database; the cache does not.
+        from django.core.cache import cache
+        cache.clear()
         self.user = _make_user()
 
     @override_settings(WHATSAPP_PROCESS_INLINE=True, WHATSAPP_FLOW_INLINE=False,
@@ -276,6 +317,9 @@ class FlowDeadlineTests(TestCase):
     "Couldn't load content"."""
 
     def setUp(self):
+        # Action ids restart with each test database; the cache does not.
+        from django.core.cache import cache
+        cache.clear()
         self.user = _make_user()
 
     @override_settings(WHATSAPP_FLOW_SETTLE_WAIT=6)
