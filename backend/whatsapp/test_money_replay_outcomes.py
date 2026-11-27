@@ -94,6 +94,38 @@ class DuplicateMoneyOutcomeTests(TestCase):
                 self.assertEqual(
                     Transaction.objects.filter(idempotency_key=f"wa-{pa.pk}").count(), 1)
 
+    def test_one_blank_name_enquiry_does_not_cancel_an_authorised_transfer(self):
+        """27 Nov 2026: the bank answered one enquiry with no name, then named
+        the same account again. The first blank cancelled the payment."""
+        pa = self._transfer_action()
+        # The row the payout returns; not yet keyed to this action, so the
+        # executor reaches the enquiry instead of replaying a prior outcome.
+        txn = Transaction.objects.create(
+            user=self.user, service="Transfer", amount=Decimal("5000"),
+            direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+            reference="ZWARETRY00000001", idempotency_key="retry-test", meta={})
+        answers = [{"success": False, "name": ""}, {"success": True, "name": "JOHN DOE"}]
+        with patch.object(router, "_ENQUIRY_RETRY_WAIT", 0), \
+                patch.object(router, "payout_resolve_account", side_effect=answers) as enquiry, \
+                patch.object(router, "execute_payout", return_value=txn) as execute, \
+                patch.object(router, "reply_receipt"), patch.object(router, "reply"):
+            outcome = router._exec_transfer(pa, self.user, pa.msisdn)
+        self.assertEqual(enquiry.call_count, 2)
+        execute.assert_called_once()
+        self.assertEqual(outcome.status, router.OUTCOME_SUCCESS)
+
+    def test_a_recipient_the_bank_twice_cannot_name_is_not_paid(self):
+        pa = self._transfer_action()
+        with patch.object(router, "_ENQUIRY_RETRY_WAIT", 0), \
+                patch.object(router, "payout_resolve_account",
+                             return_value={"success": False}) as enquiry, \
+                patch.object(router, "execute_payout") as execute, patch.object(router, "reply"):
+            outcome = router._exec_transfer(pa, self.user, pa.msisdn)
+        self.assertEqual(enquiry.call_count, 2)
+        execute.assert_not_called()
+        self.assertEqual(outcome.status, router.OUTCOME_FAILED)
+        self.assertIn("not sent", outcome)
+
     def test_vtu_duplicate_reports_each_durable_state_without_rebuying(self):
         cases = (
             (Transaction.SUCCESS, router.OUTCOME_SUCCESS, "already completed", True),

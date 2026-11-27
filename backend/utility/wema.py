@@ -2643,7 +2643,15 @@ def confirm_transfer_status(reference: str, *, platform_reference: str = "") -> 
         }
 
     if terminal_results:
-        return terminal_results[0][1]
+        outcome, result = terminal_results[0]
+        if outcome == "failed":
+            # The bank's own reason for a failed transfer was recorded nowhere.
+            log.warning(
+                "wema_transfer_status_failed ref=%s status=%s message=%s",
+                _log_safe(reference, 40), _log_safe(result.get("status", ""), 40),
+                _log_safe(result.get("message", "")),
+            )
+        return result
 
     # Prefer an identified in-flight answer to an earlier lookup error or
     # reference mismatch when all lookups remain non-terminal.

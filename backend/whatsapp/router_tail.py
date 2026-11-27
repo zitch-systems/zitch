@@ -423,6 +423,9 @@ def _transfer_outcome(pa: PendingAction, user, msisdn: str, txn, *, replay: bool
                    OUTCOME_SUCCESS)
 
 
+_ENQUIRY_RETRY_WAIT = 1.0
+
+
 def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
     """Execute a PIN-confirmed transfer (called by the chat PIN path AND the
     secure Flow endpoint). Sends the chat receipt and returns a short outcome
@@ -454,6 +457,12 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
     # paying against the stale name sends money to the wrong real person.
     confirmed_name = pa.payload["name"]
     fresh = payout_resolve_account(pa.payload["account"], bank.bank_code)
+    if not fresh.get("success") or not str(fresh.get("name") or "").strip():
+        # A read, so asking again is safe. On 27 Nov 2026 the bank answered one
+        # enquiry with no name for an account it had named two minutes earlier,
+        # and that single blank cancelled a payment the customer had authorised.
+        time.sleep(_ENQUIRY_RETRY_WAIT)
+        fresh = payout_resolve_account(pa.payload["account"], bank.bank_code)
     if not fresh.get("success") or not str(fresh.get("name") or "").strip():
         _clear_actions(msisdn)
         msg = ("We couldn't verify the recipient with the bank. Your transfer was not sent "
@@ -2911,6 +2920,12 @@ def _await_settlement(action_id: int, user, action_type: str = "", success: str 
             # message they may scroll past.
             return Outcome("That payment was not completed. Check your balance and the chat "
                            "for any reversal details before trying again.", OUTCOME_FAILED)
+        if txn is None:
+            # Ended before any money moved: say why instead of "processing".
+            from .flows import unsent_outcome
+            unsent = unsent_outcome(action_id)
+            if unsent:
+                return Outcome(unsent, OUTCOME_FAILED)
         if time.monotonic() >= deadline:
             return None
         time.sleep(_SETTLE_POLL)
@@ -3003,6 +3018,10 @@ def run_flow_execution(pa: PendingAction, user) -> str:
         from .flows import remember_settled
 
         remember_settled(pa, str(outcome))
+    if getattr(outcome, "status", "") == OUTCOME_FAILED:
+        from .flows import remember_unsent
+
+        remember_unsent(pa, str(outcome))
     # Only the executor may retire an authorised action. Chat cancel/menu cannot
     # erase a queued payment or misreport cancellation after PIN confirmation.
     PendingAction.objects.filter(pk=pa.pk, user_id=user.pk).delete()

@@ -369,6 +369,41 @@ def remember_settled(pa, outcome: str) -> None:
         log.warning("wa_flow_settled_not_recorded pa=%s", getattr(pa, "pk", "?"), exc_info=True)
 
 
+def _unsent_key(action_id) -> str:
+    return f"wa_flow_unsent:{action_id}"
+
+
+def remember_unsent(pa, outcome: str) -> None:
+    """Record that an authorised action ended without a payment being made.
+
+    A recipient the bank could not confirm, a balance that fell short, a bank
+    switched off: each ends the action before any ledger row exists. The form
+    only ever read the ledger, so it waited out its budget and said "processing"
+    for a payment that had already been refused. Keyed on the action id, which
+    only server code holds here; a customer reaches it through their signed token.
+    """
+    if pa is None or not getattr(pa, "pk", None):
+        return
+    try:
+        from django.core.cache import cache
+        text = str(outcome or "").lstrip("❌⚠️ ").strip()[:300]
+        cache.set(_unsent_key(pa.pk), text or "That payment was not made.", _SETTLED_TTL)
+    except Exception:  # noqa: BLE001 - wording on a closing screen, never the payment
+        log.warning("wa_flow_unsent_not_recorded pa=%s", getattr(pa, "pk", "?"), exc_info=True)
+
+
+def unsent_outcome(action_id) -> str:
+    """Why this action ended with no payment, or "" if that was never recorded."""
+    if not action_id:
+        return ""
+    try:
+        from django.core.cache import cache
+        value = cache.get(_unsent_key(action_id))
+        return value if isinstance(value, str) else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _pending_key(token: str) -> str:
     """Cache key for an authorised payment whose Flow was answered too early.
 
@@ -577,6 +612,10 @@ def _refresh_pending_result(token: str):
         live = (PendingAction.objects.filter(pk=meta.get("action_id"))
                 .only("state").first())
         if live is None or live.state != "executing":
+            unsent = unsent_outcome(meta.get("action_id"))
+            if unsent:
+                forget_pending(token, status="failed")
+                return _result_screen(unsent, status="failed")
             forget_pending(token)
             return None
         return _result_screen(
