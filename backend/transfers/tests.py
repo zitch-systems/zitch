@@ -95,11 +95,15 @@ class BankTransferTests(TestCase):
         self.assertFalse(Transaction.objects.filter(user=self.user, direction=Transaction.OUT).exists())
 
     def test_transfer_charge_preserves_confirmed_zero_fee(self):
+        # Below ₦10,000, so no stamp duty: the bank's zero NIP fee is the whole quote.
         with patch("utility.providers.payout_charge", return_value=Decimal("0.00")):
-            res, body = self.post("/api/transfers/charge/", {"access_token": self.token, "amount": "20000"})
+            res, body = self.post("/api/transfers/charge/", {"access_token": self.token, "amount": "2000"})
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["success"])
         self.assertEqual(body["fee"], "0.00")
+        with patch("utility.providers.payout_charge", return_value=Decimal("0.00")):
+            res, body = self.post("/api/transfers/charge/", {"access_token": self.token, "amount": "20000"})
+        self.assertEqual(body["fee"], "50.00")  # the duty alone
 
     def test_transfer_charge_to_another_wema_account_is_free(self):
         with patch("utility.providers.payout_charge", return_value=Decimal("10.00")):
