@@ -682,6 +682,10 @@ TRANSFER_FEE_VAT_RATE = os.environ.get("TRANSFER_FEE_VAT_RATE", "") or "0.075"
 TRANSFER_FEE_FREE_BANK_CODES = tuple(
     code.strip() for code in (os.environ.get("TRANSFER_FEE_FREE_BANK_CODES", "") or "035,000017").split(",")
     if code.strip())
+# After the bank refuses a product at authentication (our access, not the
+# customer), that product takes no payments for this long: wallet.services
+# product_refusal_paused. 0 switches the pause off.
+VAS_REFUSED_PAUSE_SECONDS = max(0, int(os.environ.get("VAS_REFUSED_PAUSE_SECONDS", "900") or 0))
 # Stamp duty the bank takes from the sender of a transfer of this size or more,
 # debited with the NIP fee in the same "Transfer fee" row. ON_US charges it on
 # transfers to another Wema account too; set it only if the bank is seen to.

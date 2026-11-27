@@ -12,6 +12,7 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import IntegrityError, transaction as db_transaction
 from django.db.models import F, Q, Sum
 from django.utils import timezone
@@ -646,6 +647,54 @@ def customer_safe_failure(result: dict, *, service: str = "",
     return message or fallback
 
 
+_PRODUCT_KIND_RE = re.compile(r"^(airtime|data|cable|electricity|remita|betting|exam)\b", re.I)
+
+
+def _refusal_pause_key(service) -> str:
+    match = _PRODUCT_KIND_RE.match(str(service or "").strip())
+    return f"vas:refused:{match.group(1).lower()}" if match else ""
+
+
+def _refusal_pause_seconds() -> int:
+    return max(0, int(getattr(settings, "VAS_REFUSED_PAUSE_SECONDS", 900) or 0))
+
+
+def product_refusal_paused(service) -> bool:
+    """True while this product is paused because the bank refused it at authentication.
+
+    From 16 to 26 November 2026 the bank answered "Authentication Failed" to
+    every electricity payment. Nothing stopped the next one: each customer was
+    debited, refused, refunded and told to try again. A refusal of that kind is
+    about the product, not the customer, so it now stops the product taking
+    payments for VAS_REFUSED_PAUSE_SECONDS. The first payment after the pause
+    finds out whether the bank has fixed it.
+    """
+    key = _refusal_pause_key(service)
+    if not key or not _refusal_pause_seconds():
+        return False
+    try:
+        return bool(cache.get(key))
+    except Exception:  # noqa: BLE001 - a cache that is down pauses nothing
+        return False
+
+
+def _note_product_refusal(service, status, result) -> None:
+    """Start the pause on a bank refusal; end it early on a delivered payment."""
+    key = _refusal_pause_key(service)
+    seconds = _refusal_pause_seconds()
+    if not key or not seconds:
+        return
+    try:
+        if status == "success":
+            cache.delete(key)
+        elif status == "failed" and _PROVIDER_REFUSED_RE.search(
+                str((result or {}).get("message") or "")):
+            cache.set(key, True, timeout=seconds)
+            log.warning("vas_product_paused product=%s seconds=%s", key.rsplit(":", 1)[-1], seconds)
+    except Exception:  # noqa: BLE001 - the pause must never break a settled purchase
+        log.exception("vas_product_pause_failed")
+
+
 def run_provider_purchase(user, amount, service: str, meta: dict, provider_call,
                           idempotency_key: str = ""):
     """Debit the wallet (PENDING) → call the provider → settle the row.
@@ -671,6 +720,10 @@ def run_provider_purchase(user, amount, service: str, meta: dict, provider_call,
     # debit still arbitrates concurrent requests via its unique idempotency key.
     if existing_for_key(user, idempotency_key) is not None:
         raise DuplicateTransaction(idempotency_key)
+    if product_refusal_paused(service):
+        from utility.providers import _VAS_UNAVAILABLE
+
+        raise LimitExceeded(_VAS_UNAVAILABLE)
     reconcile_meta = {**(meta or {}), "reconcile": True,
                       "provider_purchase": True}
     vas_type = biller_transaction_type(service)
@@ -695,6 +748,7 @@ def run_provider_purchase(user, amount, service: str, meta: dict, provider_call,
     txn = debit(user, amount, service, meta=reconcile_meta, idempotency_key=idempotency_key)
     result = provider_call(txn.reference)
     status = settle_or_refund(txn, result)
+    _note_product_refusal(service, status, result)
     return status, txn, result
 
 
