@@ -11,7 +11,7 @@ negative, equals what the ledger implies, and every transfer has at most one
 fee row whose state follows the transfer's.
 
 The bank's fee schedule is patched out so the published tariff applies
-(N10.75 up to N5,000, N26.88 up to N50,000).
+(N10.75 up to N5,000, N26.88 up to N50,000), plus N50 stamp duty from N10,000.
 
 ``RegressionSimulation`` holds three defects this simulation found and the
 fixes that closed them.
@@ -490,7 +490,7 @@ class BankOutcomeSimulation(LiveSimulationCase):
         self.assertEqual(loser.status_code, 402, loser.json())
         self.assertEqual(len(self.bank.transfers), 1)
         self.assertEqual(self.payouts().count(), 1)
-        self.assertEqual(self.balance(), Decimal(self.opening) - Decimal("26026.88"))
+        self.assertEqual(self.balance(), Decimal(self.opening) - Decimal("26076.88"))
 
 
 class RegressionSimulation(LiveSimulationCase):

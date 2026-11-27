@@ -3,8 +3,9 @@
 - The WhatsApp worker writes a heartbeat every 30 seconds. The scheduler cron
   checks it on every run: no heartbeat for 5 minutes means chat replies and
   transaction alerts have stopped.
-- The worker checks the scheduler: no completed reconcile_wema run for 20
-  minutes means the deposit and payout backstop has stopped.
+- The worker checks the scheduler: no finished reconcile_wema run for 20
+  minutes means the cron itself has stopped (a run that failed is reported by
+  the cron, not here).
 - The scheduler checks the alert outbox: an alert that has waited 5 minutes for
   its first send (the worker picks them up within a second) is stuck.
 - The scheduler checks Wema's deposit notifications: deposits credited in the
@@ -57,13 +58,19 @@ def check_worker(now=None) -> bool:
 
 
 def check_scheduler(now=None) -> bool:
-    """Alert when the scheduler cron has stopped completing runs."""
+    """Alert when the scheduler cron has stopped completing runs.
+
+    A run that finished with a failure still proves the cron is running, and
+    run_schedule reports that failure itself. Counting only clean runs made a
+    bank outage arrive as three alerts, the third wrongly naming the cron.
+    """
     from utility.alerts import alert
     from utility.models import ScheduledJobRun
 
     try:
         latest = (ScheduledJobRun.objects
-                  .filter(job="reconcile_wema", status=ScheduledJobRun.SUCCEEDED)
+                  .filter(job="reconcile_wema", finished__isnull=False,
+                          status__in=(ScheduledJobRun.SUCCEEDED, ScheduledJobRun.FAILED))
                   .order_by("-finished").values_list("finished", flat=True).first())
     except Exception:  # noqa: BLE001 - the database check runs again next time
         log.warning("watchdog_scheduler_check_failed")
