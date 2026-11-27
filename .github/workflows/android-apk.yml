@@ -95,23 +95,52 @@ jobs:
           ZITCH_ANDROID_VARIANT: test
         run: npx expo prebuild --platform android --clean
 
-      - name: Build release APK
-        # No production keystore is exposed to this preview workflow, so the
-        # release-signing plugin deliberately falls back to the debug key. This
-        # artifact is for internal testing/sideloading only, never Play upload.
+      # Two builds of the same app from one prebuild. Phones run ARM, the CI
+      # emulator runs x86_64, and an APK carrying all four ABIs is twice the
+      # download and twice the storage a phone needs (a common cause of
+      # "App not installed"). No production keystore is exposed to this preview
+      # workflow, so both are signed with the debug key: internal testing only,
+      # never Play upload.
+      - name: Build the emulator APK (x86_64)
         working-directory: android
-        run: ./gradlew assembleRelease --no-daemon
+        run: |
+          ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=x86_64
+          mkdir -p ../emulator-apk
+          cp app/build/outputs/apk/release/app-release.apk ../emulator-apk/ZitchTest-emulator.apk
+
+      - name: Build the phone APK (ARM, 32-bit and 64-bit)
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=armeabi-v7a,arm64-v8a
 
       - name: Verify and stage the exact installable APK
         run: |
+          # The name carries the version and revision, so an older download
+          # left on the phone cannot be opened by mistake.
+          apk_name="ZitchTest-$(node -p "require('./app.json').expo.version")-${GITHUB_SHA::8}.apk"
           mkdir -p release-apk
-          cp android/app/build/outputs/apk/release/app-release.apk release-apk/Zitch.apk
+          cp android/app/build/outputs/apk/release/app-release.apk "release-apk/$apk_name"
           python3 scripts/verify-android-apk.py \
-            --apk release-apk/Zitch.apk \
+            --apk emulator-apk/ZitchTest-emulator.apk --abis x86_64 \
+            --keystore android/app/debug.keystore --signing preview --package com.zitch.app.test \
+            --revision "$GITHUB_SHA" --metadata emulator-apk/build-info.json
+          python3 scripts/verify-android-apk.py \
+            --apk "release-apk/$apk_name" --abis armeabi-v7a,arm64-v8a \
+            --same-app-as emulator-apk/ZitchTest-emulator.apk \
             --keystore android/app/debug.keystore --signing preview --package com.zitch.app.test \
             --revision "$GITHUB_SHA" --metadata release-apk/build-info.json
+          # A test build must carry every signature scheme (withAndroidTestSigning).
+          apksigner="$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)"
+          # --min-sdk-version 21: apksigner skips the v1 check for an Android 7+ range.
+          "$apksigner" verify --verbose --min-sdk-version 21 "release-apk/$apk_name" | tee signature.txt
+          for scheme in 'v1 scheme (JAR signing)' 'v2 scheme (APK Signature Scheme v2)' 'v3 scheme (APK Signature Scheme v3)'; do
+            grep -qF "Verified using $scheme: true" signature.txt || {
+              echo "The phone APK is not signed with $scheme." >&2
+              exit 1
+            }
+          done
           cd release-apk
-          sha256sum Zitch.apk > SHA256SUMS.txt
+          sha256sum "$apk_name" > SHA256SUMS.txt
+          ls -l
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -119,6 +148,13 @@ jobs:
           path: release-apk/
           if-no-files-found: error
           retention-days: 30
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: zitch-emulator-apk
+          path: emulator-apk/ZitchTest-emulator.apk
+          if-no-files-found: error
+          retention-days: 7
 
   smoke:
     name: Android emulator smoke
@@ -134,10 +170,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Download this run's verified APK
+      - name: Download this run's verified APKs
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name zitch-sideload-apk --dir release-apk
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name zitch-sideload-apk --dir release-apk
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name zitch-emulator-apk --dir emulator-apk
       - name: Enable Android emulator acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -152,7 +190,7 @@ jobs:
           disable-animations: true
           script: |
             cd release-apk && sha256sum -c SHA256SUMS.txt && cd ..
-            adb install release-apk/Zitch.apk
+            adb install emulator-apk/ZitchTest-emulator.apk
             python3 scripts/android-release-smoke.py --package com.zitch.app.test --output-dir android-smoke-results
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -162,9 +200,37 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  install-oldest:
+    # The app claims Android 7 as its minimum. Prove the package installs there.
+    name: Android 7 install check
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/zitch-android-test-') || startsWith(github.ref, 'refs/heads/release/zitch-android-test-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download this run's emulator APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name zitch-emulator-apk --dir emulator-apk
+      - name: Enable Android emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install on Android 7.0
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 24
+          arch: x86_64
+          target: default
+          disable-animations: true
+          script: |
+            adb install emulator-apk/ZitchTest-emulator.apk
+            adb shell pm path com.zitch.app.test | grep -q '^package:'
+
   publish:
     name: Publish downloadable test APK
-    needs: [build, smoke]
+    needs: [build, smoke, install-oldest]
     if: startsWith(github.ref, 'refs/tags/zitch-android-test-') || startsWith(github.ref, 'refs/heads/release/zitch-android-test-')
     runs-on: ubuntu-latest
     permissions:
@@ -201,11 +267,11 @@ jobs:
           cd release-apk
           sha256sum -c SHA256SUMS.txt
           cat > release-notes.md <<'NOTES'
-          Download **Zitch.apk** under Assets on your Android phone and open it to install. The Source code ZIP files are not needed.
+          Download the **ZitchTest-….apk** file under Assets on your Android phone and open it to install. The Source code ZIP files are not needed.
 
-          This is an internal Android test build, signed with the existing debug/test key. It connects to https://api.zitch.ng and is not a Play Store production release. If Android reports a signing conflict with an existing installation, keep that installation and report the conflict before removing it.
+          It installs as its own app, **Zitch Test** (com.zitch.app.test), beside any Zitch already on the phone, and works on Android 7 and later, on 32-bit and 64-bit ARM phones. This is an internal Android test build, signed with the debug/test key. It connects to https://api.zitch.ng and is not a Play Store production release.
 
-          Automated checks cover the exact revision's app tests, native package/version, APK signature, permissions, embedded JavaScript, and emulator startup/sign-in validation. Bank activation, real OTP, push notification delivery, device biometrics, and live money settlement require separate verification.
+          Automated checks cover the exact revision's app tests, native package/version, APK signature (schemes v1, v2 and v3), permissions, embedded JavaScript, installation on Android 7, and emulator startup/sign-in validation. The emulator runs an x86_64 build of the same JavaScript and manifest; the ARM file published here has not been run on a physical phone by these checks. Bank activation, real OTP, push notification delivery, device biometrics, and live money settlement require separate verification.
 
           build-info.json reports whether Firebase configuration is embedded in this APK. When android_push.firebase_config_present is false, remote push notifications are unavailable in this build. Even when present, live delivery needs the matching FCM v1 credential in the Expo project and a physical-device check.
 
@@ -215,6 +281,6 @@ jobs:
 
           SHA256SUMS.txt verifies the downloaded APK. build-info.json records its source commit, version, and signing certificate.
           NOTES
-          gh release create "$release_tag" Zitch.apk SHA256SUMS.txt build-info.json \
+          gh release create "$release_tag" ZitchTest-*.apk SHA256SUMS.txt build-info.json \
             --repo "$GITHUB_REPOSITORY" "${tag_args[@]}" --prerelease --latest=false \
             --title "Zitch Android test APK — $release_tag" --notes-file release-notes.md
