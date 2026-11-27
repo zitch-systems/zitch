@@ -52,16 +52,33 @@ def target_sdk(badging):
     return int(match.group(1))
 
 
-def verify_payload(apk):
+def verify_payload(apk, abis=None):
     with zipfile.ZipFile(apk) as archive:
         files = archive.namelist()
         bundle = 'assets/index.android.bundle'
         if bundle not in files or archive.getinfo(bundle).file_size == 0:
             raise ValueError('APK has no bundled JavaScript; it would depend on Metro')
-        if not any(name.startswith('lib/arm64-v8a/') for name in files):
+        present = {name.split('/')[1] for name in files if name.startswith('lib/') and name.count('/') >= 2}
+        if abis is not None:
+            # A build made for one kind of device must hold exactly those native
+            # libraries: a stale slice from an earlier Gradle run would bloat it.
+            if present != set(abis):
+                raise ValueError(f'APK native libraries are {sorted(present)}; expected exactly {sorted(abis)}')
+            return
+        if 'arm64-v8a' not in present:
             raise ValueError('APK is missing arm64 support for current Android phones')
-        if not any(name.startswith('lib/x86_64/') for name in files):
+        if 'x86_64' not in present:
             raise ValueError('APK is missing x86_64 support for emulator verification')
+
+
+def verify_same_app(apk, other):
+    """The phone APK and the emulator APK differ only in native libraries."""
+    def digests(filename):
+        with zipfile.ZipFile(filename) as archive:
+            return {name: hashlib.sha256(archive.read(name)).hexdigest()
+                    for name in ('assets/index.android.bundle', 'AndroidManifest.xml')}
+    if digests(apk) != digests(other):
+        raise ValueError('The two APKs do not hold the same JavaScript and manifest')
 
 
 def verify_push_resources(resources, signing):
@@ -119,7 +136,14 @@ def main():
     parser.add_argument('--metadata', required=True, type=Path)
     # A sideload test build is its own app (com.zitch.app.test) so it installs beside the store app.
     parser.add_argument('--package', help='expected package of a preview build, if not the store package')
+    parser.add_argument('--abis', help='comma-separated native ABIs the APK must hold, exactly')
+    parser.add_argument('--same-app-as', type=Path, help='another APK that must hold the same JavaScript and manifest')
     args = parser.parse_args()
+    abis = None
+    if args.abis:
+        abis = args.abis.split(',')
+        if args.signing != 'preview' or not set(abis) <= {'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'}:
+            raise ValueError('Only a preview build may name its ABIs, from armeabi-v7a, arm64-v8a, x86, x86_64')
     if args.package and (args.signing != 'preview' or not re.fullmatch(r'com\.zitch\.app\.[a-z]+', args.package)):
         raise ValueError('Only a preview build may use another package, and it must be com.zitch.app.<variant>')
     if not re.fullmatch(r'[0-9a-f]{40}', args.revision):
@@ -136,7 +160,9 @@ def main():
     target = target_sdk(badging)
     if args.signing == 'upload' and target < 36:
         raise ValueError(f'Google Play release must target API 36 or later, APK targets {target}')
-    verify_payload(args.apk)
+    verify_payload(args.apk, abis)
+    if args.same_app_as:
+        verify_same_app(args.apk, args.same_app_as)
     resources = subprocess.check_output([aapt, 'dump', '--values', 'resources', str(args.apk)], text=True)
     push_configuration = verify_push_resources(resources, args.signing)
 
@@ -169,6 +195,7 @@ def main():
         'signing_certificate_sha256': fingerprint,
         'apk_sha256': digest.hexdigest(),
         'permissions': permissions,
+        'native_abis': sorted(abis) if abis else None,
         'release_mode': True,
         'bundled_javascript': True,
         'android_push': push_configuration,

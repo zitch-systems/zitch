@@ -140,6 +140,28 @@ class AndroidApkVerificationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'JavaScript'):
                 verifier.verify_payload(apk)
 
+    def test_phone_apk_holds_exactly_the_named_abis_and_matches_the_emulator_apk(self):
+        with tempfile.TemporaryDirectory() as directory:
+            phone, emulator = Path(directory) / 'phone.apk', Path(directory) / 'emulator.apk'
+            for apk, abis, bundle in ((phone, ('arm64-v8a', 'armeabi-v7a'), 'bundle'), (emulator, ('x86_64',), 'bundle')):
+                with zipfile.ZipFile(apk, 'w') as archive:
+                    archive.writestr('assets/index.android.bundle', bundle)
+                    archive.writestr('AndroidManifest.xml', 'manifest')
+                    for abi in abis:
+                        archive.writestr(f'lib/{abi}/libhermes.so', abi)
+            verifier.verify_payload(phone, ['armeabi-v7a', 'arm64-v8a'])
+            verifier.verify_payload(emulator, ['x86_64'])
+            verifier.verify_same_app(phone, emulator)
+            with self.assertRaisesRegex(ValueError, 'expected exactly'):
+                verifier.verify_payload(phone, ['arm64-v8a'])
+            with self.assertRaisesRegex(ValueError, 'expected exactly'):
+                verifier.verify_payload(emulator, ['x86_64', 'arm64-v8a'])
+            with zipfile.ZipFile(emulator, 'w') as archive:
+                archive.writestr('assets/index.android.bundle', 'another bundle')
+                archive.writestr('AndroidManifest.xml', 'manifest')
+            with self.assertRaisesRegex(ValueError, 'same JavaScript'):
+                verifier.verify_same_app(phone, emulator)
+
 
 if __name__ == '__main__':
     unittest.main()

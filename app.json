@@ -90,7 +90,8 @@
         }
       ],
       "./plugins/withAndroidSecurity",
-      "./plugins/withAndroidReleaseSigning"
+      "./plugins/withAndroidReleaseSigning",
+      "./plugins/withAndroidTestSigning"
     ],
     "experiments": {
       "typedRoutes": true
