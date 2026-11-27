@@ -13,9 +13,9 @@ from wallet.tests import make_user
 
 from .models import Bank, Beneficiary
 
-# The bank's fee on ₦10,000 to another bank: ₦25 NIP charge + 7.5% VAT
-# (wallet.transfer_fees), debited with the transfer and refunded with it.
-BANK_FEE_10K = Decimal("26.88")
+# What the bank takes on ₦10,000 to another bank: ₦25 NIP charge + 7.5% VAT, and
+# ₦50 stamp duty (wallet.transfer_fees), debited with the transfer and refunded with it.
+BANK_FEE_10K = Decimal("76.88")
 
 
 class BankTransferTests(TestCase):
@@ -76,29 +76,34 @@ class BankTransferTests(TestCase):
                 resolve.assert_not_called()
         self.assertEqual(self.balance(), Decimal("50000"))
 
-    def test_transfer_charge_returns_the_nip_fee_with_vat(self):
-        # The bank takes its schedule charge plus 7.5% VAT: ₦25 -> ₦26.88.
+    def test_transfer_charge_returns_the_nip_fee_with_vat_and_the_stamp_duty(self):
+        # The bank takes its schedule charge plus 7.5% VAT (₦25 -> ₦26.88), and
+        # ₦50 stamp duty from ₦10,000.
         with patch("utility.providers.payout_charge", return_value=Decimal("25.00")):
             res, body = self.post("/api/transfers/charge/", {"access_token": self.token, "amount": "20000"})
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(body["fee"], "26.88")
-        self.assertEqual(body["total"], "20026.88")
+        self.assertEqual(body["fee"], "76.88")
+        self.assertEqual(body["total"], "20076.88")
 
     def test_transfer_charge_quotes_the_published_tariff_when_the_schedule_is_unavailable(self):
         # The bank charges its fee either way; the quote is never "free" by omission.
         with patch("utility.providers.payout_charge", return_value=None):
             res, body = self.post("/api/transfers/charge/", {"access_token": self.token, "amount": "20000"})
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(body["fee"], "26.88")
+        self.assertEqual(body["fee"], "76.88")
         self.assertEqual(self.balance(), Decimal("50000"))
         self.assertFalse(Transaction.objects.filter(user=self.user, direction=Transaction.OUT).exists())
 
     def test_transfer_charge_preserves_confirmed_zero_fee(self):
+        # Below ₦10,000, so no stamp duty: the bank's zero NIP fee is the whole quote.
         with patch("utility.providers.payout_charge", return_value=Decimal("0.00")):
-            res, body = self.post("/api/transfers/charge/", {"access_token": self.token, "amount": "20000"})
+            res, body = self.post("/api/transfers/charge/", {"access_token": self.token, "amount": "2000"})
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["success"])
         self.assertEqual(body["fee"], "0.00")
+        with patch("utility.providers.payout_charge", return_value=Decimal("0.00")):
+            res, body = self.post("/api/transfers/charge/", {"access_token": self.token, "amount": "20000"})
+        self.assertEqual(body["fee"], "50.00")  # the duty alone
 
     def test_transfer_charge_to_another_wema_account_is_free(self):
         with patch("utility.providers.payout_charge", return_value=Decimal("10.00")):

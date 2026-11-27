@@ -98,8 +98,8 @@ def _schedule_charge(amount: Decimal):
     return None if charge is None else Decimal(str(charge))
 
 
-def transfer_fee(amount, bank_code: str = "", bank_name: str = "") -> Decimal:
-    """The fee the bank will take for sending ``amount`` to this bank, VAT included.
+def nip_fee(amount, bank_code: str = "", bank_name: str = "") -> Decimal:
+    """The NIP fee the bank will take for sending ``amount`` to this bank, VAT included.
 
     The bank's schedule quotes what it debits: ₦10.75, ₦26.88, ₦53.75. Adding VAT
     to that again charged ₦11.56 for a ₦10.75 fee, and the bank's balance check on
@@ -118,6 +118,41 @@ def transfer_fee(amount, bank_code: str = "", bank_name: str = "") -> Decimal:
     if charge is None or charge == published:
         charge = published * (Decimal("1") + vat)
     return charge.quantize(_KOBO, rounding=ROUND_HALF_UP)
+
+
+def stamp_duty(amount, bank_code: str = "", bank_name: str = "") -> Decimal:
+    """The stamp duty the bank takes from the sender of ``amount``.
+
+    ₦50 on a transfer of ₦10,000 or more, on top of the NIP fee. The bank posts
+    it to the sender's account as its own debit, dated the next business day.
+    Until 27 November 2026 the send flow did not debit it: from 18 November the
+    six-hourly balance check found one customer's ledger ₦50 further above the
+    bank's balance after each such transfer, ₦300 after six of them.
+
+    Only transfers to another bank have been observed carrying it. A transfer
+    to another Wema account is charged only when TRANSFER_STAMP_DUTY_ON_US is
+    set; if the bank does take it there, the balance check reports the ledger
+    above the bank by ₦50 and that setting is the fix.
+    """
+    if not _enabled():
+        return Decimal("0.00")
+    duty = Decimal(str(getattr(settings, "TRANSFER_STAMP_DUTY", "50.00") or "0"))
+    threshold = Decimal(str(getattr(settings, "TRANSFER_STAMP_DUTY_THRESHOLD", "10000") or "0"))
+    if duty <= 0 or Decimal(str(amount)) < threshold:
+        return Decimal("0.00")
+    if (_free_destination(bank_code, bank_name)
+            and not getattr(settings, "TRANSFER_STAMP_DUTY_ON_US", False)):
+        return Decimal("0.00")
+    return duty.quantize(_KOBO, rounding=ROUND_HALF_UP)
+
+
+def transfer_fee(amount, bank_code: str = "", bank_name: str = "") -> Decimal:
+    """Everything the bank takes from the sender besides ``amount``: NIP fee and stamp duty.
+
+    This is the one figure the customer is quoted and the fee row debits, so the
+    Zitch balance and the bank's balance agree after the transfer.
+    """
+    return nip_fee(amount, bank_code, bank_name) + stamp_duty(amount, bank_code, bank_name)
 
 
 def debit_transfer_fee(user, payout, fee: Decimal):
