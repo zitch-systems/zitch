@@ -15,7 +15,8 @@ from wallet.services import (
 )
 from wallet.tests import make_user
 from wallet.transfer_fees import (
-    FEE_FOR_KEY, fee_reference, reconcile_transfer_fees, settle_transfer_fee, transfer_fee,
+    FEE_FOR_KEY, fee_reference, nip_fee, reconcile_transfer_fees, settle_transfer_fee,
+    stamp_duty, transfer_fee,
 )
 
 SENT = {"success": True, "status": "SUCCESS"}
@@ -28,40 +29,72 @@ class TransferFeeQuoteTests(TestCase):
 
     def test_the_published_tariff_applies_when_the_schedule_cannot_be_read(self):
         with patch("utility.providers.payout_charge", return_value=None):
-            self.assertEqual(transfer_fee(56, "058", "GTBank"), Decimal("10.75"))
-            self.assertEqual(transfer_fee(3900, "058"), Decimal("10.75"))
-            self.assertEqual(transfer_fee(5000, "058"), Decimal("10.75"))
-            self.assertEqual(transfer_fee(5001, "058"), Decimal("26.88"))
-            self.assertEqual(transfer_fee(50000, "058"), Decimal("26.88"))
-            self.assertEqual(transfer_fee(50001, "058"), Decimal("53.75"))
+            self.assertEqual(nip_fee(56, "058", "GTBank"), Decimal("10.75"))
+            self.assertEqual(nip_fee(3900, "058"), Decimal("10.75"))
+            self.assertEqual(nip_fee(5000, "058"), Decimal("10.75"))
+            self.assertEqual(nip_fee(5001, "058"), Decimal("26.88"))
+            self.assertEqual(nip_fee(50000, "058"), Decimal("26.88"))
+            self.assertEqual(nip_fee(50001, "058"), Decimal("53.75"))
 
     def test_the_banks_own_schedule_wins_when_it_can_be_read(self):
         with patch("utility.providers.payout_charge", return_value=Decimal("12.00")):
-            self.assertEqual(transfer_fee(1000, "058"), Decimal("12.00"))
+            self.assertEqual(nip_fee(1000, "058"), Decimal("12.00"))
 
     def test_a_schedule_that_already_includes_vat_is_not_taxed_again(self):
         # What the bank debits, and what its schedule quotes: charging ₦11.56 for
         # a ₦10.75 fee left the ledger ₦0.81 below the bank on every transfer.
         for amount, quoted in ((1000, "10.75"), (20000, "26.88"), (80000, "53.75")):
             with patch("utility.providers.payout_charge", return_value=Decimal(quoted)):
-                self.assertEqual(transfer_fee(amount, "058"), Decimal(quoted))
+                self.assertEqual(nip_fee(amount, "058"), Decimal(quoted))
 
     def test_a_schedule_listing_the_bare_tariff_still_gets_vat(self):
         for amount, bare, charged in ((1000, "10", "10.75"), (20000, "25.00", "26.88"),
                                       (80000, "50", "53.75")):
             with patch("utility.providers.payout_charge", return_value=Decimal(bare)):
-                self.assertEqual(transfer_fee(amount, "058"), Decimal(charged))
+                self.assertEqual(nip_fee(amount, "058"), Decimal(charged))
 
     def test_a_transfer_to_another_wema_account_is_free(self):
         with patch("utility.providers.payout_charge", return_value=Decimal("10.00")):
-            self.assertEqual(transfer_fee(1000, "035"), Decimal("0.00"))
-            self.assertEqual(transfer_fee(1000, "000017"), Decimal("0.00"))
-            self.assertEqual(transfer_fee(1000, "999", "Wema Bank"), Decimal("0.00"))
-            self.assertEqual(transfer_fee(1000, "999", "ALAT by WEMA"), Decimal("0.00"))
+            self.assertEqual(nip_fee(1000, "035"), Decimal("0.00"))
+            self.assertEqual(nip_fee(1000, "000017"), Decimal("0.00"))
+            self.assertEqual(nip_fee(1000, "999", "Wema Bank"), Decimal("0.00"))
+            self.assertEqual(nip_fee(1000, "999", "ALAT by WEMA"), Decimal("0.00"))
 
     @override_settings(TRANSFER_FEE_ENABLED=False)
     def test_the_fee_can_be_switched_off(self):
-        self.assertEqual(transfer_fee(1000, "058"), Decimal("0.00"))
+        self.assertEqual(nip_fee(1000, "058"), Decimal("0.00"))
+        self.assertEqual(transfer_fee(20000, "058"), Decimal("0.00"))
+
+
+class StampDutyTests(TestCase):
+    """The bank also takes ₦50 stamp duty from the sender of ₦10,000 or more.
+
+    Six transfers between 18 and 26 November 2026 were sent without it: after
+    each one the ledger stood another ₦50 above the bank's balance.
+    """
+
+    def test_duty_is_charged_from_ten_thousand_naira(self):
+        self.assertEqual(stamp_duty(Decimal("9999.99"), "058"), Decimal("0.00"))
+        self.assertEqual(stamp_duty(10000, "058"), Decimal("50.00"))
+        self.assertEqual(stamp_duty(30000, "058", "GTBank"), Decimal("50.00"))
+
+    def test_the_quote_is_the_nip_fee_plus_the_duty(self):
+        with patch("utility.providers.payout_charge", return_value=None):
+            self.assertEqual(transfer_fee(9999, "058"), Decimal("26.88"))
+            self.assertEqual(transfer_fee(10000, "058"), Decimal("76.88"))
+            self.assertEqual(transfer_fee(30000, "058"), Decimal("76.88"))
+            self.assertEqual(transfer_fee(80000, "058"), Decimal("103.75"))
+
+    def test_a_transfer_to_another_wema_account_carries_no_duty_unless_configured(self):
+        self.assertEqual(transfer_fee(30000, "035"), Decimal("0.00"))
+        with override_settings(TRANSFER_STAMP_DUTY_ON_US=True):
+            self.assertEqual(transfer_fee(30000, "035"), Decimal("50.00"))
+            self.assertEqual(transfer_fee(5000, "035"), Decimal("0.00"))
+
+    @override_settings(TRANSFER_STAMP_DUTY="0")
+    def test_the_duty_can_be_switched_off(self):
+        with patch("utility.providers.payout_charge", return_value=None):
+            self.assertEqual(transfer_fee(30000, "058"), Decimal("26.88"))
 
 
 @override_settings(PAYMENT_PROVIDER="wema")
@@ -135,7 +168,8 @@ class TransferFeeLedgerTests(TestCase):
             self._send(amount="10000")
 
         self.assertEqual(refused.exception.kind, "insufficient")
-        self.assertIn("₦26.88 bank fee", refused.exception.message)  # ₦10,000 is the ₦25 band
+        # ₦10,000 is the ₦25 band, and the first amount that carries stamp duty.
+        self.assertIn("₦76.88 bank fee", refused.exception.message)
         self.assertFalse(Transaction.objects.filter(user=self.user).exclude(
             direction=Transaction.IN).exists())
         self.assertEqual(self._balance(), Decimal("10000.00"))
@@ -148,6 +182,20 @@ class TransferFeeLedgerTests(TestCase):
         self.assertEqual(again.exception.kind, "duplicate")
         self.assertEqual(Transaction.objects.filter(meta__has_key=FEE_FOR_KEY).count(), 1)
         self.assertEqual(self._balance(), Decimal("6089.25"))
+
+    def test_a_transfer_of_ten_thousand_or_more_debits_the_stamp_duty_with_its_fee(self):
+        self.user2, _ = make_user("08071240002", "duty@zitch.test", balance="50000")
+        with patch("transfers.services.payout_send", return_value=SENT):
+            payout = execute_payout(self.user2, Decimal("30000"), "0123456789", self.bank,
+                                    "JOHN DOE", idempotency_key="duty-1")
+
+        fee = Transaction.objects.get(reference=fee_reference(payout.reference))
+        self.assertEqual(fee.amount, Decimal("76.88"))  # 25 + 7.5% VAT, + 50 duty
+        self.assertEqual(payout.meta["transfer_fee"], "76.88")
+        self.assertEqual(payout.meta["stamp_duty"], "50.00")
+        # What the bank's own balance shows after it takes the fee and the duty.
+        self.assertEqual(get_or_create_wallet(self.user2).balance, Decimal("19923.12"))
+        self.assertEqual(wallet_expected_balance(self.user2.pk), Decimal("19923.12"))
 
     def test_the_fee_the_customer_confirmed_is_the_fee_charged(self):
         payout = self._send(fee=Decimal("10.75"), amount="6000")  # quote would say 26.88

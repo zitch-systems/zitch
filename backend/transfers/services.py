@@ -514,6 +514,11 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
             "reconcile": True, "channel": channel}
     if fee > 0:
         meta["transfer_fee"] = str(fee)
+        from wallet.transfer_fees import stamp_duty
+
+        duty = stamp_duty(amount, bank.bank_code, bank.name)
+        if 0 < duty <= fee:
+            meta["stamp_duty"] = str(duty)
 
     try:
         # The transfer and its fee commit together or not at all: a balance

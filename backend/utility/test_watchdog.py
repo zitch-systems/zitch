@@ -51,6 +51,27 @@ class SchedulerWatchTests(TestCase):
             self.assertFalse(watchdog.check_scheduler())
         self.assertEqual(alert.call_args.kwargs["minutes_silent"], 25)
 
+    def test_a_run_that_failed_because_the_bank_was_down_is_still_a_run(self):
+        # 25 November 2026: the bank answered 500 for half an hour. The cron ran
+        # every ten minutes and reported each failure itself; this then emailed
+        # "the scheduler cron has not completed a run" about a cron that was running.
+        self.run_at(timezone.now() - timedelta(minutes=25))
+        failed = timezone.now() - timedelta(minutes=4)
+        ScheduledJobRun.objects.create(job="reconcile_wema", slot=failed, status=ScheduledJobRun.FAILED,
+                                       attempts=1, started=failed, finished=failed, exit_code=1)
+        with mock.patch("utility.alerts.alert") as alert:
+            self.assertTrue(watchdog.check_scheduler())
+        alert.assert_not_called()
+
+    def test_a_run_that_never_finished_does_not_count(self):
+        self.run_at(timezone.now() - timedelta(minutes=25))
+        started = timezone.now() - timedelta(minutes=4)
+        ScheduledJobRun.objects.create(job="reconcile_wema", slot=started, status=ScheduledJobRun.RUNNING,
+                                       attempts=1, started=started)
+        with mock.patch("utility.alerts.alert") as alert:
+            self.assertFalse(watchdog.check_scheduler())
+        self.assertEqual(alert.call_args.kwargs["minutes_silent"], 25)
+
     def test_before_the_scheduler_is_in_use_nothing_is_reported(self):
         with mock.patch("utility.alerts.alert") as alert:
             self.assertTrue(watchdog.check_scheduler())

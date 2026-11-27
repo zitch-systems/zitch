@@ -682,6 +682,12 @@ TRANSFER_FEE_VAT_RATE = os.environ.get("TRANSFER_FEE_VAT_RATE", "") or "0.075"
 TRANSFER_FEE_FREE_BANK_CODES = tuple(
     code.strip() for code in (os.environ.get("TRANSFER_FEE_FREE_BANK_CODES", "") or "035,000017").split(",")
     if code.strip())
+# Stamp duty the bank takes from the sender of a transfer of this size or more,
+# debited with the NIP fee in the same "Transfer fee" row. ON_US charges it on
+# transfers to another Wema account too; set it only if the bank is seen to.
+TRANSFER_STAMP_DUTY = os.environ.get("TRANSFER_STAMP_DUTY", "") or "50.00"
+TRANSFER_STAMP_DUTY_THRESHOLD = os.environ.get("TRANSFER_STAMP_DUTY_THRESHOLD", "") or "10000"
+TRANSFER_STAMP_DUTY_ON_US = env_bool("TRANSFER_STAMP_DUTY_ON_US", False)
 # Credit/debit alerts, per channel (see wallet/alerts.py). Email defaults ON —
 # it is effectively free and customers expect an alert on every movement. SMS
 # defaults OFF: at Nigerian per-message rates, one alert per transaction is a
